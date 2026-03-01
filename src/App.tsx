@@ -7,11 +7,12 @@ import { TailwindIndicator } from "./components/tailwind-indicator"
 import { Player } from "./components/Player"
 import { CreatePlaylist } from "./components/Pages/CreatePlaylist"
 import { useConnectionStore, useLibraryStore, useUIStore } from "./stores"
+import { useCallback } from "react"
 
 function App() {
   const { isConnected, musicSectionId, isLoading, loadAndConnect } = useConnectionStore()
-  const { fetchPlaylists, fetchRecentlyAdded, fetchHubs, prefetchAllPlaylists } = useLibraryStore()
-  const { showCreatePlaylist, setShowCreatePlaylist } = useUIStore()
+  const { fetchPlaylists, fetchRecentlyAdded, fetchHubs, prefetchAllPlaylists, refreshAll, invalidateCache } = useLibraryStore()
+  const { showCreatePlaylist, setShowCreatePlaylist, isRefreshing, setIsRefreshing, incrementPageRefreshKey } = useUIStore()
   const [location, navigate] = useLocation()
 
   useEffect(() => {

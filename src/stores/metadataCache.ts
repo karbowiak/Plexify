@@ -1,7 +1,7 @@
 /**
  * Persistent metadata cache for artist and album pages.
  *
- * Zustand store with `persist` middleware — survives app restarts via localStorage.
+ * Zustand store with `persist` middleware — survives app restarts via IndexedDB.
  * Hover-prefetch (`prefetchArtist`/`prefetchAlbum`) loads ALL data a page needs
  * so navigation always renders instantly from cache with zero layout shift.
  *
@@ -14,6 +14,7 @@
 
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
+import { idbJSONStorage } from "./idbStorage"
 import {
   getArtist,
   getArtistAlbumsInSection,
@@ -57,7 +58,7 @@ export interface AlbumCacheEntry {
 /** Data older than this is considered stale — still served, but re-fetched in background. */
 const STALE_MS = 30 * 60_000 // 30 minutes
 
-/** Entries older than this are evicted on write to keep localStorage bounded. */
+/** Entries older than this are evicted on write to keep the cache bounded. */
 const EVICT_MS = 24 * 60 * 60_000 // 24 hours
 
 const MAX_ARTISTS = 50
@@ -124,6 +125,7 @@ const useMetadataCacheStore = create<MetadataCacheState>()(persist((set, get) =>
   }),
 }), {
   name: "plex-metadata-cache-v1",
+  storage: idbJSONStorage,
   partialize: (state) => ({
     artists: state.artists,
     albums: state.albums,

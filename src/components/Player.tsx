@@ -69,6 +69,34 @@ export function Player() {
     return () => clearInterval(id)
   }, [currentTrack?.rating_key, isPlaying])
 
+  // Media session action handlers — wire OS media keys / headphone controls / Control Center
+  useEffect(() => {
+    if (!navigator.mediaSession) return
+    navigator.mediaSession.setActionHandler("play", () => resume())
+    navigator.mediaSession.setActionHandler("pause", () => pause())
+    navigator.mediaSession.setActionHandler("previoustrack", () => prev())
+    navigator.mediaSession.setActionHandler("nexttrack", () => next())
+    navigator.mediaSession.setActionHandler("stop", () => pause())
+    return () => {
+      for (const action of ["play", "pause", "previoustrack", "nexttrack", "stop"] as const) {
+        navigator.mediaSession.setActionHandler(action, null)
+      }
+    }
+  }, [])
+
+  // Media session metadata + playback state — update whenever track or play state changes
+  useEffect(() => {
+    if (!navigator.mediaSession) return
+    if (currentTrack) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.title,
+        artist: currentTrack.grandparent_title,
+        album: currentTrack.parent_title,
+      })
+    }
+    navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused"
+  }, [currentTrack?.rating_key, isPlaying])
+
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const ms = parseFloat(e.target.value)
     if (audioRef.current) audioRef.current.currentTime = ms / 1000

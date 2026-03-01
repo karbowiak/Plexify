@@ -9,6 +9,7 @@ import {
   getRecentlyAdded,
 } from "../lib/plex"
 import type { Hub, Playlist, PlexMedia, Track } from "../types/plex"
+import { idbJSONStorage } from "./idbStorage"
 
 const TTL_MS = {
   playlists: 5 * 60_000,     //  5 minutes
@@ -281,8 +282,9 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
   }),
 }), {
   name: "plex-library-v1",
-  // Only persist the library data and TTL timestamps.
-  // Ephemeral state (loading flags, per-playlist track cache, etc.) is never saved.
+  storage: idbJSONStorage,
+  // Persist library data + TTL timestamps. Ephemeral state (loading flags,
+  // per-playlist track cache, etc.) is intentionally excluded.
   partialize: (state) => ({
     playlists: state.playlists,
     recentlyAdded: state.recentlyAdded,
