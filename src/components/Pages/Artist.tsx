@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, buildPlexImageUrl, usePlayerStore, useUIStore } from "../../stores"
@@ -24,6 +24,9 @@ import { useLastfmMetadataStore } from "../../stores/lastfmMetadataStore"
 import type { LastfmArtistInfo } from "../../lib/lastfm"
 import { useDeezerMetadataStore } from "../../stores/deezerMetadataStore"
 import type { DeezerArtistInfo } from "../../lib/deezer"
+import { useItunesMetadataStore } from "../../stores/itunesMetadataStore"
+import type { ItunesArtistInfo } from "../../lib/itunes"
+import { buildMetaImageUrl } from "../../lib/metadataImage"
 
 function fmtDuration(ms: number) {
   const s = Math.floor(ms / 1000)
@@ -80,8 +83,9 @@ function DeezerArtistAvatar({ name }: { name: string }) {
     return () => { cancelled = true }
   }, [name, getDeezerArtist])
 
-  if (imageUrl) {
-    return <img src={imageUrl} alt={name} className="h-16 w-16 rounded-full object-cover" />
+  const cachedUrl = buildMetaImageUrl(imageUrl)
+  if (cachedUrl) {
+    return <img src={cachedUrl} alt={name} className="h-16 w-16 rounded-full object-cover" />
   }
   return (
     <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/10 text-xl font-bold text-white/30">
@@ -121,6 +125,10 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   // Deezer metadata
   const getDeezerArtist = useDeezerMetadataStore(s => s.getArtist)
   const [deezerData, setDeezerData] = useState<DeezerArtistInfo | null>(null)
+
+  // iTunes metadata
+  const getItunesArtist = useItunesMetadataStore(s => s.getArtist)
+  const [itunesData, setItunesData] = useState<ItunesArtistInfo | null>(null)
 
   useEffect(() => {
     setError(null)
@@ -197,27 +205,41 @@ export function ArtistPage({ artistId }: { artistId: number }) {
       .finally(() => setIsLoading(false))
   }, [artistId, musicSectionId, pageRefreshKey])
 
-  // Fetch LastFM + Deezer metadata once we know the artist name
+  // Fetch LastFM + Deezer + iTunes metadata once we know the artist name
   useEffect(() => {
     if (!artist?.title) return
     let cancelled = false
     setLastfmData(null)
     setDeezerData(null)
+    setItunesData(null)
     void getLastfmArtist(artist.title).then(d => {
       if (!cancelled && d) setLastfmData(d)
     })
     void getDeezerArtist(artist.title).then(d => {
       if (!cancelled && d) setDeezerData(d)
     })
+    void getItunesArtist(artist.title).then(d => {
+      if (!cancelled && d) setItunesData(d)
+    })
     return () => { cancelled = true }
-  }, [artist?.title, getLastfmArtist, getDeezerArtist])
+  }, [artist?.title, getLastfmArtist, getDeezerArtist, getItunesArtist])
 
   // Compute artUrl before early returns so useFocalPoint can be called unconditionally.
-  // Fall back to Deezer artist image when Plex has no art/thumb.
+  // Fall back to Deezer artist image when Plex has no art/thumb (disk-cached via metaimg://).
   const artUrl = artist?.art
     ? buildPlexImageUrl(baseUrl, token, artist.art)
-    : (deezerData?.image_url ?? null)
+    : buildMetaImageUrl(deezerData?.image_url)
   const heroBgPos = useFocalPoint(artUrl)
+
+  // Map from lowercase artist name → Plex ratingKey for "Fans Also Like" linking.
+  // Covers both Plex-similar and sonically-similar artists that are in the library.
+  const plexArtistMap = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const a of [...similarArtists, ...sonicallySimilar]) {
+      map.set(a.title.toLowerCase(), a.rating_key)
+    }
+    return map
+  }, [similarArtists, sonicallySimilar])
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading artist…</div>
   if (error) return <div className="p-8 text-sm text-red-400">{error}</div>
@@ -225,7 +247,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
 
   const thumbUrl = artist.thumb
     ? buildPlexImageUrl(baseUrl, token, artist.thumb)
-    : (deezerData?.image_url ?? null)
+    : buildMetaImageUrl(deezerData?.image_url)
 
   const albumHubs = relatedHubs.filter(h =>
     !SKIP_HUB_IDS.has(h.hub_identifier) &&
@@ -252,8 +274,21 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   // LastFM computed values
   // Always prefer LastFM bio when available — Plex bio is the fallback
   const displayBio = lastfmData?.bio || artist.summary
-  // Merge LastFM tags + Plex genres (deduped by lowercase, LastFM tags first)
-  const mergedTags = [...(lastfmData?.tags ?? []), ...genres.filter(g => !lastfmData?.tags?.some(t => t.toLowerCase() === g.toLowerCase()))]
+  // Merge tags from all sources (deduped by lowercase): LastFM → Plex → iTunes
+  const allSources = [
+    ...(lastfmData?.tags ?? []),
+    ...genres.filter(g => !lastfmData?.tags?.some(t => t.toLowerCase() === g.toLowerCase())),
+    ...(itunesData?.genre && !lastfmData?.tags?.some(t => t.toLowerCase() === itunesData.genre.toLowerCase()) && !genres.some(g => g.toLowerCase() === itunesData.genre.toLowerCase())
+      ? [itunesData.genre]
+      : []),
+  ]
+  const seen = new Set<string>()
+  const mergedTags = allSources.filter(tag => {
+    const key = tag.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
   const heroTags = mergedTags.slice(0, 8)
 
   return (
@@ -665,12 +700,28 @@ export function ArtistPage({ artistId }: { artistId: number }) {
               <span className="ml-2 text-xs font-normal text-gray-500">via Last.fm</span>
             </h2>
             <div className="flex flex-wrap gap-4">
-              {lastfmData.similar.map(a => (
-                <div key={a.name} className="flex w-20 flex-col items-center gap-1.5">
-                  <DeezerArtistAvatar name={a.name} />
-                  <span className="line-clamp-2 text-center text-xs leading-tight text-gray-300">{a.name}</span>
-                </div>
-              ))}
+              {lastfmData.similar.map(a => {
+                const plexId = plexArtistMap.get(a.name.toLowerCase())
+                const avatar = <DeezerArtistAvatar name={a.name} />
+                return (
+                  <div key={a.name} className="flex w-20 flex-col items-center gap-1.5">
+                    {plexId ? (
+                      <Link
+                        href={`/artist/${plexId}`}
+                        className="block rounded-full ring-2 ring-transparent hover:ring-white/40 transition-all"
+                        title={`Open ${a.name}`}
+                      >
+                        {avatar}
+                      </Link>
+                    ) : (
+                      <div className="opacity-40">{avatar}</div>
+                    )}
+                    <span className={`line-clamp-2 text-center text-xs leading-tight ${plexId ? "text-gray-300" : "text-gray-500"}`}>
+                      {a.name}
+                    </span>
+                  </div>
+                )
+              })}
             </div>
           </section>
         )}

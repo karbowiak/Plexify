@@ -14,6 +14,9 @@ import { useLastfmMetadataStore } from "../../stores/lastfmMetadataStore"
 import type { LastfmAlbumInfo } from "../../lib/lastfm"
 import { useDeezerMetadataStore } from "../../stores/deezerMetadataStore"
 import type { DeezerAlbumInfo } from "../../lib/deezer"
+import { useItunesMetadataStore } from "../../stores/itunesMetadataStore"
+import type { ItunesAlbumInfo } from "../../lib/itunes"
+import { buildMetaImageUrl } from "../../lib/metadataImage"
 
 function formatMs(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -66,6 +69,10 @@ export function AlbumPage({ albumId }: { albumId: number }) {
   const getDeezerAlbum = useDeezerMetadataStore(s => s.getAlbum)
   const [deezerData, setDeezerData] = useState<DeezerAlbumInfo | null>(null)
 
+  // iTunes metadata
+  const getItunesAlbum = useItunesMetadataStore(s => s.getAlbum)
+  const [itunesData, setItunesData] = useState<ItunesAlbumInfo | null>(null)
+
   useEffect(() => {
     setError(null)
     setDescExpanded(false)
@@ -103,20 +110,24 @@ export function AlbumPage({ albumId }: { albumId: number }) {
       .finally(() => setIsLoading(false))
   }, [albumId, pageRefreshKey])
 
-  // Fetch LastFM + Deezer metadata once we know the album / artist names
+  // Fetch LastFM + Deezer + iTunes metadata once we know the album / artist names
   useEffect(() => {
     if (!album?.title || !album?.parent_title) return
     let cancelled = false
     setLastfmData(null)
     setDeezerData(null)
+    setItunesData(null)
     void getLastfmAlbum(album.parent_title, album.title).then(d => {
       if (!cancelled && d) setLastfmData(d)
     })
     void getDeezerAlbum(album.parent_title, album.title).then(d => {
       if (!cancelled && d) setDeezerData(d)
     })
+    void getItunesAlbum(album.parent_title, album.title).then(d => {
+      if (!cancelled && d) setItunesData(d)
+    })
     return () => { cancelled = true }
-  }, [album?.title, album?.parent_title, getLastfmAlbum, getDeezerAlbum])
+  }, [album?.title, album?.parent_title, getLastfmAlbum, getDeezerAlbum, getItunesAlbum])
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading album…</div>
   if (error) return <div className="p-8 text-sm text-red-400">{error}</div>
@@ -124,7 +135,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
 
   const thumbUrl = album.thumb
     ? buildPlexImageUrl(baseUrl, token, album.thumb)
-    : (deezerData?.cover_url ?? null)
+    : (buildMetaImageUrl(deezerData?.cover_url) ?? buildMetaImageUrl(itunesData?.cover_url) ?? null)
   const parentThumbUrl = album.parent_thumb
     ? buildPlexImageUrl(baseUrl, token, album.parent_thumb)
     : null
@@ -150,15 +161,27 @@ export function AlbumPage({ albumId }: { albumId: number }) {
     !plexTags.some(pt => pt.tag.toLowerCase() === g.toLowerCase()) &&
     !lastfmOnlyTags.some(t => t.toLowerCase() === g.toLowerCase())
   ) ?? []
+  const allThirdPartyTags = [
+    ...lastfmOnlyTags.map(t => t.toLowerCase()),
+    ...deezerOnlyGenres.map(g => g.toLowerCase()),
+  ]
+  const itunesOnlyGenre = itunesData?.genre && itunesData.genre.length > 0 &&
+    !plexTags.some(pt => pt.tag.toLowerCase() === itunesData.genre.toLowerCase()) &&
+    !allThirdPartyTags.includes(itunesData.genre.toLowerCase())
+    ? [itunesData.genre]
+    : []
   const allTags = [
     ...plexTags,
     ...lastfmOnlyTags.map(t => ({ tag: t, id: null, filter: null })),
     ...deezerOnlyGenres.map(g => ({ tag: g, id: null, filter: null })),
+    ...itunesOnlyGenre.map(g => ({ tag: g, id: null, filter: null })),
   ]
-  // Use Deezer label as fallback when Plex has none
+  // Use Deezer label as fallback when Plex has none.
+  // Deezer returns the literal string "[no label]" for unlabelled releases — filter that out.
+  const deezerLabel = deezerData?.label && deezerData.label !== "[no label]" ? deezerData.label : null
   const displayLabel = album.label.length > 0
     ? album.label.map(l => l.tag).join(", ")
-    : (deezerData?.label || null)
+    : deezerLabel
 
   // Show all non-empty hubs (sonically similar, more by artist, etc.)
   const nonEmptyHubs = relatedHubs.filter(h => h.metadata.length > 0)

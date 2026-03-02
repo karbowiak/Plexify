@@ -4,6 +4,7 @@
 mod audio;
 mod commands;
 mod deezer;
+mod itunes;
 mod lastfm;
 mod mediasession;
 mod plex;
@@ -60,6 +61,16 @@ fn plex_img_cache_key(src_url: &str) -> String {
         .and_then(|rest| rest.splitn(2, '/').nth(1))
         .unwrap_or(without_query);
     format!("{}.img", path.replace('/', "_"))
+}
+
+/// Derives a cache key for an external (non-Plex) image URL using MD5 of the full URL.
+///
+/// External CDN URLs (Deezer, Apple Music) are too long and varied to derive
+/// a human-readable key from, so we hash the full URL instead.
+fn meta_img_cache_key(src_url: &str) -> String {
+    use md5::{Digest, Md5};
+    let hash = format!("{:x}", Md5::digest(src_url.as_bytes()));
+    format!("{}.img", hash)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -138,6 +149,7 @@ pub fn run() {
                         return tauri::http::Response::builder()
                             .header("Content-Type", "image/jpeg")
                             .header("Cache-Control", "max-age=86400")
+                            .header("Access-Control-Allow-Origin", "*")
                             .body(bytes)
                             .unwrap();
                     }
@@ -157,11 +169,77 @@ pub fn run() {
                     tauri::http::Response::builder()
                         .header("Content-Type", "image/jpeg")
                         .header("Cache-Control", "max-age=86400")
+                        .header("Access-Control-Allow-Origin", "*")
                         .body(bytes.to_vec())
                         .unwrap()
                 }
                 Err(_) => tauri::http::Response::builder()
                     .status(404)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(vec![])
+                    .unwrap(),
+            }
+        })
+        // ---- External metadata image-caching protocol ----
+        .register_uri_scheme_protocol("metaimg", |app, request| {
+            // Extract and decode the `src` query param (the full external image URL).
+            let query = request.uri().query().unwrap_or("");
+            let src = url::form_urlencoded::parse(query.as_bytes())
+                .find(|(k, _)| k == "src")
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or_default();
+
+            if src.is_empty() {
+                return tauri::http::Response::builder()
+                    .status(400)
+                    .body(vec![])
+                    .unwrap();
+            }
+
+            // Locate the cache file.
+            let cache_key = meta_img_cache_key(&src);
+            let cache_dir: Option<std::path::PathBuf> = app
+                .app_handle()
+                .path()
+                .app_cache_dir()
+                .ok()
+                .map(|d| d.join("metaimg"));
+
+            if let Some(ref dir) = cache_dir {
+                let _ = std::fs::create_dir_all(dir);
+                let file_path = dir.join(&cache_key);
+                if file_path.exists() {
+                    if let Ok(bytes) = std::fs::read(&file_path) {
+                        return tauri::http::Response::builder()
+                            .header("Content-Type", "image/jpeg")
+                            .header("Cache-Control", "max-age=604800")
+                            .header("Access-Control-Allow-Origin", "*")
+                            .body(bytes)
+                            .unwrap();
+                    }
+                }
+            }
+
+            // Cache miss — fetch from external CDN.
+            let result = IMGCACHE_RT.block_on(async {
+                IMG_HTTP.get(&src).send().await?.bytes().await
+            });
+
+            match result {
+                Ok(bytes) => {
+                    if let Some(ref dir) = cache_dir {
+                        let _ = std::fs::write(dir.join(&cache_key), &bytes);
+                    }
+                    tauri::http::Response::builder()
+                        .header("Content-Type", "image/jpeg")
+                        .header("Cache-Control", "max-age=604800")
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(bytes.to_vec())
+                        .unwrap()
+                }
+                Err(_) => tauri::http::Response::builder()
+                    .status(404)
+                    .header("Access-Control-Allow-Origin", "*")
                     .body(vec![])
                     .unwrap(),
             }
@@ -229,6 +307,8 @@ pub fn run() {
             commands::save_settings,
             // Cache
             commands::clear_image_cache,
+            commands::get_image_cache_info,
+            commands::clear_meta_image_cache,
             // Plex.tv OAuth
             commands::plex_auth_start,
             commands::plex_auth_poll,
@@ -276,6 +356,8 @@ pub fn run() {
             commands::lastfm_get_album_info,
             commands::deezer_search_artist,
             commands::deezer_search_album,
+            commands::itunes_search_artist,
+            commands::itunes_search_album,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

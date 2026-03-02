@@ -25,6 +25,7 @@ import {
   type LastfmTrackInfo,
 } from "../lib/lastfm"
 import { idbJSONStorage } from "./idbStorage"
+import { useLastfmStore } from "./lastfmStore"
 
 // ---------------------------------------------------------------------------
 // TTLs
@@ -84,6 +85,7 @@ export const useLastfmMetadataStore = create<LastfmMetadataState>()(
       tracks: {},
 
       getArtist: async (artist) => {
+        if (!useLastfmStore.getState().hasApiKey) return null
         const key = artist.toLowerCase()
         const cached = get().artists[key]
         if (cached && Date.now() - cached.cachedAt < ARTIST_ALBUM_TTL_MS) {
@@ -101,6 +103,7 @@ export const useLastfmMetadataStore = create<LastfmMetadataState>()(
       },
 
       getAlbum: async (artist, album) => {
+        if (!useLastfmStore.getState().hasApiKey) return null
         const key = `${artist.toLowerCase()}::${album.toLowerCase()}`
         const cached = get().albums[key]
         if (cached && Date.now() - cached.cachedAt < ARTIST_ALBUM_TTL_MS) {
@@ -118,6 +121,7 @@ export const useLastfmMetadataStore = create<LastfmMetadataState>()(
       },
 
       getTrack: async (artist, track) => {
+        if (!useLastfmStore.getState().hasApiKey) return null
         const key = `${artist.toLowerCase()}::${track.toLowerCase()}`
         const cached = get().tracks[key]
         if (cached && Date.now() - cached.cachedAt < TRACK_TTL_MS) {

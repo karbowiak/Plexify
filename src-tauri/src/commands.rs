@@ -1278,6 +1278,62 @@ pub async fn clear_image_cache(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Delete all cached external metadata artwork from disk (Deezer, Apple Music, etc.).
+#[tauri::command]
+pub async fn clear_meta_image_cache(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("{:#}", e))?
+        .join("metaimg");
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Returns file count and total byte size for both image caches (Plex + external metadata).
+#[tauri::command]
+pub async fn get_image_cache_info(
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    use tauri::Manager;
+    let cache_root = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("{:#}", e))?;
+
+    fn dir_stats(dir: &std::path::Path) -> (usize, u64) {
+        match std::fs::read_dir(dir) {
+            Ok(entries) => {
+                let mut count = 0usize;
+                let mut bytes = 0u64;
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_file() {
+                            count += 1;
+                            bytes += meta.len();
+                        }
+                    }
+                }
+                (count, bytes)
+            }
+            Err(_) => (0, 0),
+        }
+    }
+
+    let (plex_files, plex_bytes) = dir_stats(&cache_root.join("pleximg"));
+    let (meta_files, meta_bytes) = dir_stats(&cache_root.join("metaimg"));
+
+    Ok(serde_json::json!({
+        "plex_files": plex_files,
+        "plex_bytes": plex_bytes,
+        "meta_files": meta_files,
+        "meta_bytes": meta_bytes,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Last.fm integration
 // ---------------------------------------------------------------------------
@@ -1579,6 +1635,31 @@ pub async fn deezer_search_album(
     album: String,
 ) -> Result<Option<crate::deezer::DeezerAlbumInfo>, String> {
     crate::deezer::search_album(&artist, &album)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+// ---------------------------------------------------------------------------
+// iTunes commands (no API key required — public endpoints)
+// ---------------------------------------------------------------------------
+
+/// Search iTunes for an artist and return genre info.
+#[tauri::command]
+pub async fn itunes_search_artist(
+    artist: String,
+) -> Result<Option<crate::itunes::ItunesArtistInfo>, String> {
+    crate::itunes::search_artist(&artist)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Search iTunes for an album and return cover art, genre, and release date.
+#[tauri::command]
+pub async fn itunes_search_album(
+    artist: String,
+    album: String,
+) -> Result<Option<crate::itunes::ItunesAlbumInfo>, String> {
+    crate::itunes::search_album(&artist, &album)
         .await
         .map_err(|e| format!("{:#}", e))
 }

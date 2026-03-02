@@ -3,7 +3,7 @@ import { useLocation } from "wouter"
 import { open } from "@tauri-apps/plugin-shell"
 import clsx from "clsx"
 import { useConnectionStore, useLibraryStore } from "../../stores"
-import { plexAuthPoll, plexGetResources, testServerConnection, audioCacheInfo, audioClearCache, audioSetCacheMaxBytes, audioGetOutputDevices } from "../../lib/plex"
+import { plexAuthPoll, plexGetResources, testServerConnection, audioCacheInfo, audioClearCache, audioSetCacheMaxBytes, audioGetOutputDevices, getImageCacheInfo, clearMetaImageCache, clearImageCache, type ImageCacheInfo } from "../../lib/plex"
 import type { PlexResource } from "../../types/plex"
 import { getVersion } from "@tauri-apps/api/app"
 import { useAudioSettingsStore } from "../../stores/audioSettingsStore"
@@ -11,12 +11,15 @@ import { useUpdateStore } from "../../stores/updateStore"
 import { useLastfmStore } from "../../stores/lastfmStore"
 import { useLastfmMetadataStore } from "../../stores/lastfmMetadataStore"
 import { lastfmSaveCredentials, lastfmGetToken } from "../../lib/lastfm"
+import { useDeezerMetadataStore } from "../../stores/deezerMetadataStore"
+import { useItunesMetadataStore } from "../../stores/itunesMetadataStore"
 import { useAccentStore, ACCENT_PRESETS } from "../../stores/accentStore"
 import { getTheme, setTheme, subscribeTheme } from "../../stores/themeStore"
 import { getFont, setFont, subscribeFont, FONT_PRESETS } from "../../stores/fontStore"
 import type { FontPreset } from "../../stores/fontStore"
+import { useMetadataSourceStore, type MetadataSource, SOURCE_LABELS, SOURCE_DESCRIPTIONS } from "../../stores/metadataSourceStore"
 
-type Section = "account" | "playback" | "lastfm" | "downloads" | "ai" | "experience" | "about"
+type Section = "account" | "playback" | "lastfm" | "metadata" | "downloads" | "ai" | "experience" | "about"
 type AuthState = "idle" | "polling" | "picking"
 
 const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
@@ -45,6 +48,15 @@ const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
       <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
         {/* Last.fm-style waveform/radio icon */}
         <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
+      </svg>
+    ),
+  },
+  {
+    id: "metadata" as Section,
+    label: "Metadata",
+    icon: (
+      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M4 6h16v2H4zm2 5h12v2H6zm4 5h4v2h-4z" />
       </svg>
     ),
   },
@@ -1095,12 +1107,9 @@ type LastfmAuthStep = "idle" | "waiting"
 
 function LastfmSection() {
   const {
-    isAuthenticated, isEnabled, username, replaceMetadata, loveThreshold,
-    setEnabled, completeAuth, disconnect, setReplaceMetadata, setLoveThreshold,
+    isAuthenticated, isEnabled, username, loveThreshold,
+    setEnabled, completeAuth, disconnect, setLoveThreshold,
   } = useLastfmStore()
-
-  const metadataStore = useLastfmMetadataStore()
-  const cacheStats = metadataStore.stats()
 
   const [apiKey, setApiKey] = useState("")
   const [apiSecret, setApiSecret] = useState("")
@@ -1296,80 +1305,330 @@ function LastfmSection() {
         )}
       </div>
 
-      {/* Panel B — Metadata cache */}
-      <div className="space-y-4 border-t border-white/5 pt-6">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-white/30">Metadata Cache</h2>
-        <p className="text-xs text-white/40">
-          Artist, album, and track info fetched from Last.fm is cached in IndexedDB.
-          Clears on app data reset.
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Metadata section — source priority, metadata caches, image caches
+// ---------------------------------------------------------------------------
+
+function MetadataSection() {
+  const lastfmMetadata = useLastfmMetadataStore()
+  const deezerMetadata = useDeezerMetadataStore()
+  const itunesMetadata = useItunesMetadataStore()
+  const { hasApiKey: lastfmHasApiKey } = useLastfmStore()
+  const { priority, setPriority } = useMetadataSourceStore()
+
+  const [lastfmClearing, setLastfmClearing] = useState(false)
+  const [deezerClearing, setDeezerClearing] = useState(false)
+  const [itunesClearing, setItunesClearing] = useState(false)
+
+  const [imgCacheInfo, setImgCacheInfo] = useState<ImageCacheInfo | null>(null)
+  const [plexImgClearing, setPlexImgClearing] = useState(false)
+  const [metaImgClearing, setMetaImgClearing] = useState(false)
+
+  // Pointer-based drag — reliable in Tauri's WKWebView where HTML5 DnD drop events don't fire
+  const [draggingIdx, setDraggingIdx] = useState<number | null>(null)
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+  const sortListRef = useRef<HTMLDivElement>(null)
+
+  const lastfmStats = lastfmMetadata.stats()
+  const deezerStats = deezerMetadata.stats()
+  const itunesStats = itunesMetadata.stats()
+
+  useEffect(() => {
+    void getImageCacheInfo().then(setImgCacheInfo).catch(() => {})
+  }, [])
+
+  function handleClearLastfm() {
+    setLastfmClearing(true)
+    lastfmMetadata.clearCache()
+    setTimeout(() => setLastfmClearing(false), 400)
+  }
+
+  function handleClearDeezer() {
+    setDeezerClearing(true)
+    deezerMetadata.clearCache()
+    setTimeout(() => setDeezerClearing(false), 400)
+  }
+
+  function handleClearItunes() {
+    setItunesClearing(true)
+    itunesMetadata.clearCache()
+    setTimeout(() => setItunesClearing(false), 400)
+  }
+
+  async function handleClearPlexImg() {
+    setPlexImgClearing(true)
+    try {
+      await clearImageCache()
+      const info = await getImageCacheInfo()
+      setImgCacheInfo(info)
+    } finally {
+      setPlexImgClearing(false)
+    }
+  }
+
+  async function handleClearMetaImg() {
+    setMetaImgClearing(true)
+    try {
+      await clearMetaImageCache()
+      const info = await getImageCacheInfo()
+      setImgCacheInfo(info)
+    } finally {
+      setMetaImgClearing(false)
+    }
+  }
+
+  // Pointer-based drag reordering — works in Tauri's WKWebView where HTML5 DnD drop events don't fire
+  function getHoveredIndex(clientY: number): number | null {
+    if (!sortListRef.current) return null
+    const children = Array.from(sortListRef.current.children) as HTMLElement[]
+    for (let i = 0; i < children.length; i++) {
+      const rect = children[i].getBoundingClientRect()
+      if (clientY >= rect.top && clientY <= rect.bottom) return i
+    }
+    return null
+  }
+
+  function onHandlePointerDown(e: React.PointerEvent, idx: number) {
+    e.preventDefault()
+    // Capture pointer on the list container so move/up fire even if cursor leaves the handle
+    sortListRef.current?.setPointerCapture(e.pointerId)
+    setDraggingIdx(idx)
+    setHoverIdx(idx)
+  }
+
+  function onListPointerMove(e: React.PointerEvent) {
+    if (draggingIdx === null) return
+    const idx = getHoveredIndex(e.clientY)
+    if (idx !== null) setHoverIdx(idx)
+  }
+
+  function onListPointerUp(e: React.PointerEvent) {
+    if (draggingIdx === null) return
+    const toIdx = getHoveredIndex(e.clientY) ?? draggingIdx
+    if (toIdx !== draggingIdx) {
+      const next = [...priority]
+      const [item] = next.splice(draggingIdx, 1)
+      next.splice(toIdx, 0, item)
+      setPriority(next)
+    }
+    setDraggingIdx(null)
+    setHoverIdx(null)
+  }
+
+  const SOURCE_ICONS: Record<MetadataSource, React.ReactNode> = {
+    plex: (
+      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-yellow-400">
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" />
+      </svg>
+    ),
+    deezer: (
+      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-[#EF5466]">
+        <rect x="2" y="14" width="3" height="6" rx="1" />
+        <rect x="6.5" y="11" width="3" height="9" rx="1" />
+        <rect x="11" y="8" width="3" height="12" rx="1" />
+        <rect x="15.5" y="5" width="3" height="15" rx="1" />
+        <rect x="20" y="2" width="2" height="18" rx="1" />
+      </svg>
+    ),
+    lastfm: (
+      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-red-500">
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
+      </svg>
+    ),
+    apple: (
+      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-pink-400">
+        <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+      </svg>
+    ),
+  }
+
+  return (
+    <div className="space-y-10 max-w-2xl">
+
+      {/* ── Source Priority ── */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-1">Metadata Source Priority</h3>
+        <p className="text-xs text-white/40 mb-5">
+          Drag to reorder. Higher sources take precedence for bios, images, genres, and tags.
+          Artist, album, and track names always come from Plex.
         </p>
-        <div className="grid grid-cols-3 gap-3">
-          {[
-            { label: "Artists", count: cacheStats.artistCount },
-            { label: "Albums",  count: cacheStats.albumCount },
-            { label: "Tracks",  count: cacheStats.trackCount },
-          ].map(({ label, count }) => (
-            <div key={label} className="rounded-lg border border-white/8 bg-white/3 p-3 text-center">
-              <p className="text-2xl font-bold text-white">{count}</p>
-              <p className="text-xs text-white/40 mt-0.5">{label}</p>
+        <div
+          ref={sortListRef}
+          className="flex flex-col gap-2 touch-none"
+          onPointerMove={onListPointerMove}
+          onPointerUp={onListPointerUp}
+          onPointerCancel={onListPointerUp}
+        >
+          {priority.map((source, idx) => (
+            <div
+              key={source}
+              className={clsx(
+                "flex items-center gap-3 rounded-xl border px-4 py-3 transition-colors select-none",
+                draggingIdx === idx
+                  ? "border-accent/60 bg-accent/15 opacity-70"
+                  : hoverIdx === idx && draggingIdx !== null
+                    ? "border-accent/50 bg-accent/10"
+                    : "border-white/10 bg-white/3"
+              )}
+            >
+              {/* Drag handle — pointer down here starts the drag */}
+              <div
+                className="cursor-grab active:cursor-grabbing p-0.5 -ml-0.5 flex-shrink-0"
+                onPointerDown={e => onHandlePointerDown(e, idx)}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" className="text-white/30 pointer-events-none">
+                  <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" />
+                </svg>
+              </div>
+              <span className="flex-shrink-0">{SOURCE_ICONS[source]}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white">{SOURCE_LABELS[source]}</p>
+                <p className="text-xs text-white/40 truncate">{SOURCE_DESCRIPTIONS[source]}</p>
+              </div>
+              <span className="text-xs font-mono text-white/20 tabular-nums">#{idx + 1}</span>
+              {source === "lastfm" && !lastfmHasApiKey && (
+                <span className="rounded-full bg-white/8 px-2 py-0.5 text-xs text-white/35 flex-shrink-0">No API key</span>
+              )}
             </div>
           ))}
         </div>
-        <button
-          onClick={() => metadataStore.clearCache()}
-          className="rounded-lg border border-white/10 px-4 py-2 text-sm text-white/60 hover:text-white hover:border-white/25 transition-colors"
-        >
-          Clear Last.fm Cache
-        </button>
       </div>
 
-      {/* Panel C — Metadata mode (only if api key configured = isAuthenticated) */}
-      {isAuthenticated && (
-        <div className="space-y-4 border-t border-white/5 pt-6">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-white/30">Metadata Source</h2>
-          <p className="text-xs text-white/40">
-            Choose how Last.fm metadata is used alongside your Plex library data.
-          </p>
-          <div className="space-y-2">
-            {[
-              {
-                value: false,
-                title: "Augment Plex",
-                desc: "Show Plex data with Last.fm biography, tags, and similar artists added below",
-              },
-              {
-                value: true,
-                title: "Replace with Last.fm",
-                desc: "Use Last.fm as the primary metadata source. Only track title and audio file come from Plex",
-              },
-            ].map(option => (
-              <button
-                key={String(option.value)}
-                onClick={() => void setReplaceMetadata(option.value)}
-                className={`w-full text-left rounded-lg border px-4 py-3 transition-colors ${
-                  replaceMetadata === option.value
-                    ? "border-accent/50 bg-accent/10"
-                    : "border-white/10 bg-white/3 hover:border-white/20"
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <div className={`mt-0.5 h-4 w-4 flex-shrink-0 rounded-full border-2 flex items-center justify-center ${
-                    replaceMetadata === option.value ? "border-accent" : "border-white/30"
-                  }`}>
-                    {replaceMetadata === option.value && (
-                      <div className="h-2 w-2 rounded-full bg-accent" />
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-white">{option.title}</p>
-                    <p className="text-xs text-white/40 mt-0.5">{option.desc}</p>
-                  </div>
-                </div>
-              </button>
-            ))}
+      {/* ── Image Cache ── */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-1">Image Cache</h3>
+        <p className="text-xs text-white/40 mb-4">
+          Artwork fetched from Plex and external metadata sources is saved to disk. Cached images load instantly without re-downloading.
+        </p>
+        <div className="flex flex-col gap-3">
+
+          {/* Plex image cache */}
+          <div className="rounded-xl border border-white/10 bg-white/3 px-5 py-4 flex items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white">Plex Artwork</p>
+              <p className="text-xs text-white/40 mt-0.5">
+                {imgCacheInfo
+                  ? `${formatBytes(imgCacheInfo.plex_bytes)} · ${imgCacheInfo.plex_files} ${imgCacheInfo.plex_files === 1 ? "file" : "files"}`
+                  : "Loading…"}
+              </p>
+            </div>
+            <button
+              onClick={() => void handleClearPlexImg()}
+              disabled={plexImgClearing || (imgCacheInfo?.plex_files ?? 0) === 0}
+              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+            >
+              {plexImgClearing ? "Clearing…" : "Clear"}
+            </button>
+          </div>
+
+          {/* External metadata image cache */}
+          <div className="rounded-xl border border-white/10 bg-white/3 px-5 py-4 flex items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white">Metadata Images</p>
+              <p className="text-xs text-white/40 mt-0.5">
+                {imgCacheInfo
+                  ? `${formatBytes(imgCacheInfo.meta_bytes)} · ${imgCacheInfo.meta_files} ${imgCacheInfo.meta_files === 1 ? "file" : "files"}`
+                  : "Loading…"}
+              </p>
+              <p className="text-xs text-white/25 mt-0.5">Deezer, Apple Music, Last.fm artwork</p>
+            </div>
+            <button
+              onClick={() => void handleClearMetaImg()}
+              disabled={metaImgClearing || (imgCacheInfo?.meta_files ?? 0) === 0}
+              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+            >
+              {metaImgClearing ? "Clearing…" : "Clear"}
+            </button>
           </div>
         </div>
-      )}
+      </div>
+
+      {/* ── Metadata Caches ── */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-1">Metadata Cache</h3>
+        <p className="text-xs text-white/40 mb-4">
+          Artist and album info fetched from third-party sources is cached locally in IndexedDB with a 7-day TTL.
+        </p>
+
+        {/* Last.fm */}
+        <div className="mb-5">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-sm font-medium text-white">Last.fm</span>
+            {!lastfmHasApiKey && (
+              <span className="rounded-full bg-white/8 px-2 py-0.5 text-xs text-white/40">No API key — metadata disabled</span>
+            )}
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
+            <div className="flex items-center justify-between px-5 py-3">
+              <span className="text-sm text-white/60">Artists</span>
+              <span className="text-sm font-medium text-white tabular-nums">{lastfmStats.artistCount}</span>
+            </div>
+            <div className="flex items-center justify-between px-5 py-3">
+              <span className="text-sm text-white/60">Albums</span>
+              <span className="text-sm font-medium text-white tabular-nums">{lastfmStats.albumCount}</span>
+            </div>
+            <div className="flex items-center justify-between px-5 py-3">
+              <span className="text-sm text-white/60">Tracks</span>
+              <span className="text-sm font-medium text-white tabular-nums">{lastfmStats.trackCount}</span>
+            </div>
+          </div>
+          <button
+            onClick={handleClearLastfm}
+            disabled={lastfmClearing || (lastfmStats.artistCount + lastfmStats.albumCount + lastfmStats.trackCount === 0)}
+            className="mt-2 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {lastfmClearing ? "Cleared" : "Clear Last.fm Cache"}
+          </button>
+        </div>
+
+        {/* Deezer */}
+        <div className="mb-5">
+          <p className="text-sm font-medium text-white mb-3">Deezer</p>
+          <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
+            <div className="flex items-center justify-between px-5 py-3">
+              <span className="text-sm text-white/60">Artists</span>
+              <span className="text-sm font-medium text-white tabular-nums">{deezerStats.artistCount}</span>
+            </div>
+            <div className="flex items-center justify-between px-5 py-3">
+              <span className="text-sm text-white/60">Albums</span>
+              <span className="text-sm font-medium text-white tabular-nums">{deezerStats.albumCount}</span>
+            </div>
+          </div>
+          <button
+            onClick={handleClearDeezer}
+            disabled={deezerClearing || (deezerStats.artistCount + deezerStats.albumCount === 0)}
+            className="mt-2 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {deezerClearing ? "Cleared" : "Clear Deezer Cache"}
+          </button>
+        </div>
+
+        {/* iTunes / Apple Music */}
+        <div>
+          <p className="text-sm font-medium text-white mb-3">Apple Music</p>
+          <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
+            <div className="flex items-center justify-between px-5 py-3">
+              <span className="text-sm text-white/60">Artists</span>
+              <span className="text-sm font-medium text-white tabular-nums">{itunesStats.artistCount}</span>
+            </div>
+            <div className="flex items-center justify-between px-5 py-3">
+              <span className="text-sm text-white/60">Albums</span>
+              <span className="text-sm font-medium text-white tabular-nums">{itunesStats.albumCount}</span>
+            </div>
+          </div>
+          <button
+            onClick={handleClearItunes}
+            disabled={itunesClearing || (itunesStats.artistCount + itunesStats.albumCount === 0)}
+            className="mt-2 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {itunesClearing ? "Cleared" : "Clear Apple Music Cache"}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1419,6 +1678,7 @@ export function SettingsPage() {
         {section === "account" && <AccountSection />}
         {section === "playback" && <PlaybackSection />}
         {section === "lastfm" && <LastfmSection />}
+        {section === "metadata" && <MetadataSection />}
         {section === "downloads" && (
           <ComingSoon title="Downloads" description="Offline caching and download quality settings will appear here." />
         )}

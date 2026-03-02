@@ -530,6 +530,23 @@ export function clearImageCache(): Promise<void> {
   return invoke("clear_image_cache")
 }
 
+export interface ImageCacheInfo {
+  plex_files: number
+  plex_bytes: number
+  meta_files: number
+  meta_bytes: number
+}
+
+/** Returns file count and total size for the Plex and external metadata image caches. */
+export function getImageCacheInfo(): Promise<ImageCacheInfo> {
+  return invoke("get_image_cache_info")
+}
+
+/** Delete all cached external metadata artwork from disk (Deezer, Apple Music, etc.). */
+export function clearMetaImageCache(): Promise<void> {
+  return invoke("clear_meta_image_cache")
+}
+
 // ---------------------------------------------------------------------------
 // Plex.tv OAuth (PIN-based authentication)
 // ---------------------------------------------------------------------------

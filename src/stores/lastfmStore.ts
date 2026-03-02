@@ -23,6 +23,8 @@ interface LastfmState {
   isAuthenticated: boolean
   /** Whether scrobbling + now-playing updates are enabled. */
   isEnabled: boolean
+  /** True if the user has configured a Last.fm API key (needed even for public metadata). */
+  hasApiKey: boolean
   /** Last.fm username to display in Settings. Null if not authenticated. */
   username: string | null
   /** Whether to use Last.fm as the primary metadata source (true) or augment Plex (false). */
@@ -52,6 +54,7 @@ interface LastfmState {
 export const useLastfmStore = create<LastfmState>((set) => ({
   isAuthenticated: false,
   isEnabled: false,
+  hasApiKey: false,
   username: null,
   replaceMetadata: false,
   loveThreshold: 6,
@@ -62,6 +65,7 @@ export const useLastfmStore = create<LastfmState>((set) => ({
       set({
         isAuthenticated: !!settings.lastfm_session_key,
         isEnabled: settings.lastfm_enabled,
+        hasApiKey: !!settings.lastfm_api_key,
         username: settings.lastfm_username || null,
         replaceMetadata: settings.lastfm_replace_metadata,
         loveThreshold: settings.lastfm_love_threshold ?? 6,
@@ -81,6 +85,7 @@ export const useLastfmStore = create<LastfmState>((set) => ({
     await lastfmSetEnabledApi(true)
     set({
       isAuthenticated: true,
+      hasApiKey: true,
       isEnabled: true,
       username: session.username,
     })
@@ -92,6 +97,8 @@ export const useLastfmStore = create<LastfmState>((set) => ({
       isAuthenticated: false,
       isEnabled: false,
       username: null,
+      // Keep hasApiKey — the API key is still on disk after disconnect;
+      // public metadata lookups remain functional without a session key.
     })
   },
 

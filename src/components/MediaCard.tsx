@@ -5,6 +5,8 @@ interface MediaCardProps {
   title: string
   desc: string
   thumb: string | null
+  /** Fallback image URL shown when `thumb` is null (e.g. a metaimg:// cached external URL). */
+  thumbFallback?: string | null
   isArtist?: boolean
   /** When true, fixes card at 160px wide and prevents flex shrink (for scroll rows) */
   scrollItem?: boolean
@@ -18,7 +20,8 @@ interface MediaCardProps {
   onPlay?: (e: React.MouseEvent) => void
 }
 
-export function MediaCard({ title, desc, thumb, isArtist, scrollItem, large, href, onClick, prefetch, onPlay }: MediaCardProps) {
+export function MediaCard({ title, desc, thumb, thumbFallback, isArtist, scrollItem, large, href, onClick, prefetch, onPlay }: MediaCardProps) {
+  const displayThumb = thumb || thumbFallback || null
   const inner = (
     <div
       onMouseEnter={prefetch}
@@ -28,9 +31,9 @@ export function MediaCard({ title, desc, thumb, isArtist, scrollItem, large, hre
       )}
     >
       <div className="relative mb-3">
-        {thumb ? (
+        {displayThumb ? (
           <img
-            src={thumb}
+            src={displayThumb}
             alt={title}
             draggable={false}
             loading="lazy"

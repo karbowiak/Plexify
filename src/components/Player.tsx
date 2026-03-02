@@ -253,7 +253,7 @@ export function Player() {
   const djShortName = djMode ? DJ_MODES.find(d => d.key === djMode)?.name.replace("DJ ", "") ?? djMode : null
 
   return (
-    <div className="relative border-t border-[var(--border)]">
+    <div className="relative border-t border-[var(--border)] bg-app-card">
       {/* Error toast — shown briefly when playRadio or other player actions fail */}
       {playerError && (
         <div className="absolute bottom-28 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-red-900/90 px-4 py-2 text-sm text-white shadow-xl backdrop-blur-sm max-w-md text-center">
@@ -261,7 +261,7 @@ export function Player() {
         </div>
       )}
       {fullscreenOpen && <VisualizerFullscreen />}
-      <div className="flex h-fit w-screen min-w-[620px] flex-col overflow-clip rounded-b-lg bg-app-card">
+      <div className="flex h-fit w-screen min-w-[620px] flex-col overflow-clip bg-app-card">
         <div className="h-24">
           <div className="flex h-full items-center justify-between px-4">
 
