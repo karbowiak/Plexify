@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import { searchLibrary } from "../lib/plex"
+import { recordRecentSearch } from "../lib/recentSearches"
 import type { PlexMedia } from "../types/plex"
 
 interface SearchState {
@@ -30,6 +31,7 @@ export const useSearchStore = create<SearchState>((set) => ({
     try {
       const results = await searchLibrary(sectionId, q)
       set({ results, isSearching: false })
+      recordRecentSearch(q)
     } catch (err) {
       set({ error: String(err), isSearching: false })
     }

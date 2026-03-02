@@ -13,7 +13,7 @@ use symphonia::core::codecs::CodecRegistry;
 use ringbuf::traits::Producer;
 use ringbuf::HeapProd;
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CodecType, DecoderOptions, CODEC_TYPE_NULL, CODEC_TYPE_OPUS};
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::{Limit, MetadataOptions, StandardTagKey, Value};
@@ -253,26 +253,16 @@ fn parse_rg_gain(s: &str) -> Option<f32> {
     Some(10f32.powf(db / 20.0).clamp(0.1, 4.0))
 }
 
-/// Extract a normalization gain from the format reader's embedded metadata.
-///
-/// Checks in priority order:
-///   1. `REPLAYGAIN_TRACK_GAIN` (string like "-3.14 dB") — MP3, FLAC, OGG Vorbis
-///   2. `R128_TRACK_GAIN` (Q7.8 integer string like "-1052") — Opus / EBU R128
-///
-/// R128 targets -23 LUFS; a +5 dB offset is applied to align it with the
-/// ReplayGain 2.0 reference of -18 LUFS so cross-format loudness stays consistent.
-///
-/// Returns 1.0 (unity gain) when no usable tag is found.
+/// Extract REPLAYGAIN_TRACK_GAIN from the format reader's embedded metadata.
+/// Returns a linear gain factor (1.0 = no change) if the tag is absent or unparseable.
 fn try_extract_replaygain(fmt: &mut Box<dyn FormatReader>) -> f32 {
     let meta = fmt.metadata();
     let Some(rev) = meta.current() else { return 1.0 };
 
-    let mut r128_gain: Option<f32> = None;
-
     for tag in rev.tags() {
-        // Standard ReplayGain tag (string value with "dB" suffix)
         let is_rg = matches!(tag.std_key, Some(StandardTagKey::ReplayGainTrackGain))
             || tag.key.eq_ignore_ascii_case("REPLAYGAIN_TRACK_GAIN");
+
         if is_rg {
             if let Value::String(ref s) = tag.value {
                 if let Some(g) = parse_rg_gain(s) {
@@ -280,22 +270,9 @@ fn try_extract_replaygain(fmt: &mut Box<dyn FormatReader>) -> f32 {
                 }
             }
         }
-
-        // Opus / EBU R128 tag: Q7.8 fixed-point integer (divide by 256 → dB)
-        if tag.key.eq_ignore_ascii_case("R128_TRACK_GAIN") {
-            let db_opt = match &tag.value {
-                Value::String(s) => s.trim().parse::<i16>().ok().map(|n| n as f32 / 256.0),
-                Value::SignedInt(n) => Some(*n as f32 / 256.0),
-                _ => None,
-            };
-            if let Some(db) = db_opt {
-                // +5 dB offset converts R128 reference (-23 LUFS) → ReplayGain reference (-18 LUFS)
-                r128_gain = Some(10f32.powf((db + 5.0) / 20.0).clamp(0.1, 4.0));
-            }
-        }
     }
 
-    r128_gain.unwrap_or(1.0)
+    1.0
 }
 
 /// Target RMS level in dBFS for fallback normalization. -18 dBFS RMS gives
@@ -329,7 +306,7 @@ fn compute_fallback_loudness(url: &str, shared: &Arc<DecoderShared>) -> f32 {
     };
 
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let (mut fmt, mut dec, tid, sr, _ch) = match probe_audio(mss, url) {
+    let (mut fmt, mut dec, tid, sr, _ch, _codec) = match probe_audio(mss, url) {
         Ok(t) => t,
         Err(e) => {
             warn!(error = %e, "Fallback loudness: failed to probe audio");
@@ -337,11 +314,10 @@ fn compute_fallback_loudness(url: &str, shared: &Arc<DecoderShared>) -> f32 {
         }
     };
 
-    let max_frames = sr as usize * 15; // 15 seconds of audio frames
+    let max_samples = sr as usize * 15; // 15 seconds worth of frames
     let mut sum_sq: f64 = 0.0;
     let mut peak: f32 = 0.0;
-    let mut total_samples: usize = 0; // interleaved sample count for RMS denominator
-    let mut total_frames: usize = 0;  // frame count for duration limit (channel-independent)
+    let mut total_samples: usize = 0;
     let mut sb: Option<SampleBuffer<f32>> = None;
 
     loop {
@@ -368,8 +344,7 @@ fn compute_fallback_loudness(url: &str, shared: &Arc<DecoderShared>) -> f32 {
                     }
                     total_samples += 1;
                 }
-                total_frames += frames;
-                if total_frames >= max_frames {
+                if total_samples >= max_samples {
                     break;
                 }
             }
@@ -410,7 +385,7 @@ fn compute_fallback_loudness(url: &str, shared: &Arc<DecoderShared>) -> f32 {
         gain_db = format!("{:.2}", gain_db),
         linear_gain = format!("{:.3}", linear),
         peak = format!("{:.4}", peak),
-        frames_scanned = total_frames,
+        samples_scanned = total_samples,
         "Fallback loudness normalization computed"
     );
 
@@ -418,23 +393,34 @@ fn compute_fallback_loudness(url: &str, shared: &Arc<DecoderShared>) -> f32 {
 }
 
 /// Resolve the normalization gain for a track. Priority:
-/// 1. Plex API `gain_db` (server-side loudness analysis)
+/// 1. Plex API `gain_db` (server-side loudness analysis) — skipped for Opus
+///    because libopus applies the Opus header output gain during decode,
+///    making Plex's pre-decode analysis inaccurate.
 /// 2. Embedded ReplayGain tags in file metadata
 /// 3. RMS-based loudness pre-scan of first 15 seconds
 fn resolve_normalization_gain(
     meta: &TrackMeta,
     fmt: &mut Box<dyn FormatReader>,
     shared: &Arc<DecoderShared>,
+    codec: CodecType,
 ) -> f32 {
     if let Some(db) = meta.gain_db {
-        let gain = 10f32.powf(db / 20.0).clamp(0.1, 4.0);
-        warn!(
-            rating_key = meta.rating_key,
-            gain_db = db,
-            linear = format!("{:.3}", gain),
-            "Normalization: using Plex API gain"
-        );
-        return gain;
+        if codec == CODEC_TYPE_OPUS {
+            warn!(
+                rating_key = meta.rating_key,
+                gain_db = db,
+                "Normalization: skipping Plex API gain for Opus (libopus applies header output gain)"
+            );
+        } else {
+            let gain = 10f32.powf(db / 20.0).clamp(0.1, 4.0);
+            warn!(
+                rating_key = meta.rating_key,
+                gain_db = db,
+                linear = format!("{:.3}", gain),
+                "Normalization: using Plex API gain"
+            );
+            return gain;
+        }
     }
 
     let rg = try_extract_replaygain(fmt);
@@ -646,9 +632,10 @@ fn probe_audio(
     (
         Box<dyn FormatReader>,
         Box<dyn symphonia::core::codecs::Decoder>,
-        u32, // track_id
-        u32, // sample_rate
-        u32, // channels
+        u32,       // track_id
+        u32,       // sample_rate
+        u32,       // channels
+        CodecType, // codec
     ),
     String,
 > {
@@ -703,7 +690,8 @@ fn probe_audio(
         "Audio probed successfully"
     );
 
-    Ok((format, decoder, track_id, sample_rate, channels))
+    let codec = track.codec_params.codec;
+    Ok((format, decoder, track_id, sample_rate, channels, codec))
 }
 
 /// Decode and resample from the crossfade track until `cf.pending` contains at
@@ -774,7 +762,7 @@ fn detect_bpm_bg(url: &str, shared: &Arc<DecoderShared>) {
     };
 
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let Ok((mut fmt, mut dec, tid, sr, _ch)) = probe_audio(mss, url) else { return };
+    let Ok((mut fmt, mut dec, tid, sr, _ch, _codec)) = probe_audio(mss, url) else { return };
 
     // Decode first 30 s of mono samples for BPM analysis
     let max_frames = sr as usize * 30;
@@ -1040,11 +1028,11 @@ pub fn decoder_thread(
                                         match open_for_decode(&next_url, &shared)
                                             .and_then(|(mss, u)| probe_audio(mss, &u))
                                         {
-                                            Ok((mut nfmt, ndec, ntid, nsr, nch)) => {
+                                            Ok((mut nfmt, ndec, ntid, nsr, nch, ncodec)) => {
                                                 let next_meta_ref =
                                                     next_meta.as_ref().unwrap();
                                                 let next_norm = resolve_normalization_gain(
-                                                    next_meta_ref, &mut nfmt, &shared,
+                                                    next_meta_ref, &mut nfmt, &shared, ncodec,
                                                 );
                                                 shared.next_norm_gain_millths.store(
                                                     (next_norm * 1_000.0) as i64,
@@ -1262,7 +1250,7 @@ pub fn decoder_thread(
                         match open_for_decode(&nmeta.url, &shared)
                             .and_then(|(mss, u)| probe_audio(mss, &u))
                         {
-                            Ok((mut fmt, dec, tid, sr, ch)) => {
+                            Ok((mut fmt, dec, tid, sr, ch, codec)) => {
                                 // Use pre-computed gain from crossfade setup if
                                 // available, otherwise resolve from scratch.
                                 let norm_gain = {
@@ -1271,7 +1259,7 @@ pub fn decoder_thread(
                                     if next_g != 1_000 {
                                         next_g as f32 / 1_000.0
                                     } else {
-                                        resolve_normalization_gain(&nmeta, &mut fmt, &shared)
+                                        resolve_normalization_gain(&nmeta, &mut fmt, &shared, codec)
                                     }
                                 };
                                 if let Some(ref old) = current_track {
@@ -1383,8 +1371,8 @@ fn handle_command(
 
             match open_for_decode(&meta.url, shared) {
                 Ok((mss, url)) => match probe_audio(mss, &url) {
-                    Ok((mut fmt, dec, tid, sr, ch)) => {
-                        let norm_gain = resolve_normalization_gain(&meta, &mut fmt, shared);
+                    Ok((mut fmt, dec, tid, sr, ch, codec)) => {
+                        let norm_gain = resolve_normalization_gain(&meta, &mut fmt, shared, codec);
                         *format_reader = Some(fmt);
                         *decoder = Some(dec);
                         *current_track_id = tid;

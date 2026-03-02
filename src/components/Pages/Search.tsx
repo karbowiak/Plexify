@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { useShallow } from "zustand/shallow"
 import { useSearchStore, useConnectionStore, buildPlexImageUrl } from "../../stores"
+import { getRecentSearches, clearRecentSearches } from "../../lib/recentSearches"
 import type { PlexMedia, Track } from "../../types/plex"
 import { MediaCard } from "../MediaCard"
 import { PriorityMediaCard } from "../PriorityMediaCard"
@@ -84,7 +85,7 @@ function getInfo(item: PlexMedia, baseUrl: string, token: string) {
 }
 
 export function Search() {
-  const { results, isSearching, query } = useSearchStore()
+  const { results, isSearching, query, search } = useSearchStore()
   const { baseUrl, token, musicSectionId } = useConnectionStore(
     useShallow(s => ({
       baseUrl: s.baseUrl,
@@ -94,6 +95,13 @@ export function Search() {
   )
   const playTrack = usePlayerStore(s => s.playTrack)
   const showContextMenu = useContextMenuStore(s => s.show)
+
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => getRecentSearches())
+
+  // Refresh the list whenever the query is cleared so newly-recorded searches appear
+  useEffect(() => {
+    if (!query.trim()) setRecentSearches(getRecentSearches())
+  }, [query])
 
   const showResults = query.trim().length > 0
   const groups = groupByType(results)
@@ -154,8 +162,35 @@ export function Search() {
           })}
         </div>
       ) : (
-        <div className="py-12 text-center text-sm text-white/40">
-          Type something to search your library.
+        <div className="py-8">
+          {recentSearches.length > 0 ? (
+            <>
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-sm font-semibold text-gray-400">Recent searches</span>
+                <button
+                  onClick={() => { clearRecentSearches(); setRecentSearches([]) }}
+                  className="text-xs text-gray-600 hover:text-gray-300 transition-colors"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {recentSearches.map(q => (
+                  <button
+                    key={q}
+                    onClick={() => void search(musicSectionId!, q)}
+                    className="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-sm text-gray-300 hover:border-white/30 hover:bg-white/10 hover:text-white transition-all"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="py-12 text-center text-sm text-white/40">
+              Type something to search your library.
+            </div>
+          )}
         </div>
       )}
     </div>
