@@ -54,7 +54,7 @@ roxmltree = "0.19"
 
 # Audio engine
 symphonia = { version = "0.5", features = [
-    "mp3", "aac", "flac", "ogg", "wav", "pcm", "isomp4",
+    "mp3", "aac", "alac", "flac", "ogg", "wav", "pcm", "isomp4",
 ] }
 cpal = "0.15"
 ringbuf = "0.4"
