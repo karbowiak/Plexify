@@ -12,6 +12,7 @@ import {
   buildRadioPlayQueueUri,
   buildTagFilterUri,
   searchLibrary,
+  getMixTracks,
 } from "../../lib/plex"
 import { ScrollRow } from "../ScrollRow"
 import { MediaCard } from "../MediaCard"
@@ -438,7 +439,10 @@ export function StationsPage() {
     }))
   )
 
-  const playFromUri = usePlayerStore(s => s.playFromUri)
+  const { playFromUri, playTrack } = usePlayerStore(useShallow(s => ({
+    playFromUri: s.playFromUri,
+    playTrack:   s.playTrack,
+  })))
 
   const [stations, setStations] = useState<KnownPlexMedia[]>([])
   const [stationsLoaded, setStationsLoaded] = useState(false)
@@ -542,6 +546,15 @@ export function StationsPage() {
                 onClick={() => {
                   selectMix(item as Playlist & { type: "playlist" })
                   navigate("/mix")
+                }}
+                onPlay={() => {
+                  getMixTracks(item.key)
+                    .then(tracks => {
+                      if (tracks.length === 0) return
+                      const shuffled = [...tracks].sort(() => Math.random() - 0.5)
+                      void playTrack(shuffled[0], shuffled, item.title, "/mix")
+                    })
+                    .catch(() => {})
                 }}
                 scrollItem
                 large

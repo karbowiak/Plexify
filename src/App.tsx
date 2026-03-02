@@ -11,6 +11,7 @@ import LyricsPanel from "./components/LyricsPanel"
 import { UpdateDialog } from "./components/UpdateDialog"
 import { createAppMenu } from "./lib/appMenu"
 import { useConnectionStore, useLibraryStore, useUIStore } from "./stores"
+import { useLastfmStore } from "./stores/lastfmStore"
 import "./stores/accentStore"  // import so the module runs applyAccent() on load
 import "./stores/themeStore"   // import so the module runs applyTheme() on load
 import "./stores/fontStore"    // import so the module runs applyFont() on load
@@ -19,11 +20,13 @@ function App() {
   const { isConnected, musicSectionId, isLoading, loadAndConnect } = useConnectionStore()
   const { fetchPlaylists, fetchRecentlyAdded, fetchHubs, fetchTags, prefetchAllPlaylists, prefetchMixTracks } = useLibraryStore()
   const { showCreatePlaylist, setShowCreatePlaylist } = useUIStore()
+  const initLastfm = useLastfmStore(s => s.initialize)
   const [location, navigate] = useLocation()
 
   useEffect(() => {
     void loadAndConnect()
     void createAppMenu(() => navigate("/settings"))
+    void initLastfm()
   }, [])
 
   useEffect(() => {

@@ -306,6 +306,18 @@ export interface PlexSettings {
   client_id: string
   /** All known connection URLs ordered best-first; used as fallbacks. */
   all_urls: string[]
+  /** Last.fm API key (user-registered). Empty if not configured. */
+  lastfm_api_key: string
+  /** Last.fm session key obtained after OAuth. Empty if not authenticated. */
+  lastfm_session_key: string
+  /** Last.fm username, cached for display. Empty if not authenticated. */
+  lastfm_username: string
+  /** Whether Last.fm scrobbling/now-playing is enabled. */
+  lastfm_enabled: boolean
+  /** When true, use Last.fm as the primary metadata source instead of augmenting Plex. */
+  lastfm_replace_metadata: boolean
+  /** Minimum Plex rating (0–10) that triggers a Last.fm love. Default 6 (= 3★). */
+  lastfm_love_threshold: number
 }
 
 // ---------------------------------------------------------------------------

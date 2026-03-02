@@ -2,6 +2,8 @@ import { useEffect, useState } from "react"
 import { usePlayerStore } from "../stores"
 import { getTrack } from "../lib/plex"
 import type { Track } from "../types/plex"
+import { useLastfmMetadataStore } from "../stores/lastfmMetadataStore"
+import type { LastfmTrackInfo } from "../lib/lastfm"
 
 function formatDuration(ms: number): string {
   const totalSec = Math.floor(ms / 1000)
@@ -29,6 +31,8 @@ interface Props {
 export default function TrackInfoPanel({ onClose }: Props) {
   const currentTrack = usePlayerStore(s => s.currentTrack)
   const [fullTrack, setFullTrack] = useState<Track | null>(null)
+  const getLastfmTrack = useLastfmMetadataStore(s => s.getTrack)
+  const [lastfmData, setLastfmData] = useState<LastfmTrackInfo | null>(null)
 
   // Fetch full metadata to get stream details (bit depth, sample rate, etc.)
   useEffect(() => {
@@ -39,6 +43,17 @@ export default function TrackInfoPanel({ onClose }: Props) {
     }).catch(() => {})
     return () => { cancelled = true }
   }, [currentTrack?.rating_key])
+
+  // Fetch LastFM metadata for the current track
+  useEffect(() => {
+    if (!currentTrack?.grandparent_title || !currentTrack?.title) return
+    let cancelled = false
+    setLastfmData(null)
+    void getLastfmTrack(currentTrack.grandparent_title, currentTrack.title).then(d => {
+      if (!cancelled && d) setLastfmData(d)
+    })
+    return () => { cancelled = true }
+  }, [currentTrack?.rating_key, getLastfmTrack])
 
   const track = fullTrack ?? currentTrack
   if (!track) return null
@@ -80,6 +95,13 @@ export default function TrackInfoPanel({ onClose }: Props) {
   if (audioStream?.album_gain != null) rows.push(["Album Gain", `${audioStream.album_gain.toFixed(1)} dB`])
   if (hasLoudness) rows.push(["Loudness", `${audioStream!.loudness!.toFixed(1)} LUFS`])
   if (audioStream?.peak != null) rows.push(["Peak", `${(audioStream.peak * 100).toFixed(1)}%`])
+
+  // Last.fm stats
+  if (lastfmData) {
+    if (lastfmData.listeners > 0) rows.push(["Listeners (Last.fm)", lastfmData.listeners.toLocaleString()])
+    if (lastfmData.play_count > 0) rows.push(["Scrobbles (Last.fm)", lastfmData.play_count.toLocaleString()])
+    if (lastfmData.tags.length > 0) rows.push(["Tags (Last.fm)", lastfmData.tags.slice(0, 5).join(", ")])
+  }
 
   return (
     <>

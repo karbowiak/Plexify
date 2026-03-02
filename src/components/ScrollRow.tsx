@@ -1,12 +1,14 @@
+import { Link } from "wouter"
 import { useScrollRestore } from "../hooks/useScrollRestore"
 
 interface ScrollRowProps {
   title: string
+  titleHref?: string
   children: React.ReactNode
   restoreKey?: string
 }
 
-export function ScrollRow({ title, children, restoreKey }: ScrollRowProps) {
+export function ScrollRow({ title, titleHref, children, restoreKey }: ScrollRowProps) {
   const scrollRef = useScrollRestore(restoreKey, "x")
 
   const scroll = (dir: "left" | "right") => {
@@ -16,7 +18,20 @@ export function ScrollRow({ title, children, restoreKey }: ScrollRowProps) {
   return (
     <div>
       <div className="mb-3 flex items-center gap-2">
-        <span className="grow text-2xl font-bold">{title}</span>
+        {titleHref ? (
+          <Link
+            href={titleHref}
+            className="grow text-2xl font-bold hover:underline decoration-white/40 underline-offset-4 flex items-center gap-2 group"
+          >
+            {title}
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"
+                 className="text-white/30 group-hover:text-white/60 transition-colors flex-shrink-0">
+              <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06z"/>
+            </svg>
+          </Link>
+        ) : (
+          <span className="grow text-2xl font-bold">{title}</span>
+        )}
         <button
           onClick={() => scroll("left")}
           aria-label="Scroll left"

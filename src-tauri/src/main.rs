@@ -3,6 +3,8 @@
 
 mod audio;
 mod commands;
+mod deezer;
+mod lastfm;
 mod mediasession;
 mod plex;
 mod plextv;
@@ -258,6 +260,22 @@ pub fn run() {
             // Now Playing / media controls
             commands::update_now_playing,
             commands::set_now_playing_state,
+            // Last.fm integration
+            commands::lastfm_save_credentials,
+            commands::lastfm_get_token,
+            commands::lastfm_complete_auth,
+            commands::lastfm_disconnect,
+            commands::lastfm_set_enabled,
+            commands::lastfm_set_replace_metadata,
+            commands::lastfm_set_love_threshold,
+            commands::lastfm_update_now_playing,
+            commands::lastfm_scrobble,
+            commands::lastfm_love_track,
+            commands::lastfm_get_artist_info,
+            commands::lastfm_get_track_info,
+            commands::lastfm_get_album_info,
+            commands::deezer_search_artist,
+            commands::deezer_search_album,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

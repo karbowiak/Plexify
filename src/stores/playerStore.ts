@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { lastfmScrobble, lastfmUpdateNowPlaying } from "../lib/lastfm"
 import {
   audioPlay,
   audioPause,
@@ -162,6 +163,17 @@ const _reportTimeline = (...args: Parameters<typeof reportTimeline>) =>
   void reportTimeline(...args).catch(() => {})
 const _markPlayed = (...args: Parameters<typeof markPlayed>) =>
   void markPlayed(...args).catch(() => {})
+
+// ---------------------------------------------------------------------------
+// Last.fm integration — module-level tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Unix timestamp (seconds) when the current track started playing.
+ * Set in _onTrackBecomesActive, used by the track-ended handler to pass
+ * `started_at_unix` to the Last.fm scrobble API.
+ */
+let _trackStartedAtUnix = 0
 
 // ---------------------------------------------------------------------------
 // Radio — module-level state
@@ -562,6 +574,17 @@ function _onTrackBecomesActive(track: Track, index: number, get: () => PlayerSta
     track.duration ?? 0,
   )
   void setNowPlayingState("playing", 0)
+
+  // Last.fm: record when this track started (for scrobble timestamp)
+  _trackStartedAtUnix = Math.floor(Date.now() / 1000)
+  // Last.fm now-playing update (fire-and-forget; no-op if disabled/not authed)
+  void lastfmUpdateNowPlaying(
+    track.grandparent_title ?? "",
+    track.title,
+    track.parent_title ?? "",
+    track.grandparent_title ?? "",
+    track.duration ?? 0,
+  ).catch(() => {})
 
   if (get().djMode) void insertDjTracks(get, set)
 }
@@ -1008,6 +1031,16 @@ export const usePlayerStore = create<PlayerState>()(
         _markPlayed(e.payload.rating_key)
         if (currentTrack) {
           _reportTimeline(currentTrack.rating_key, "stopped", currentTrack.duration, currentTrack.duration)
+          // Last.fm scrobble (fire-and-forget; Rust enforces scrobble rules + enabled check)
+          void lastfmScrobble(
+            currentTrack.grandparent_title ?? "",
+            currentTrack.title,
+            currentTrack.parent_title ?? "",
+            currentTrack.grandparent_title ?? "",
+            currentTrack.duration ?? 0,
+            _trackStartedAtUnix,
+            get().positionMs,
+          ).catch(() => {})
         }
 
         // Repeat-one: restart the current track immediately

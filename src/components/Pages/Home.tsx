@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { useLocation } from "wouter"
-import { useLibraryStore, useConnectionStore, buildPlexImageUrl } from "../../stores"
+import { useLibraryStore, useConnectionStore, usePlayerStore, buildPlexImageUrl } from "../../stores"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import type { PlexMedia, Playlist } from "../../types/plex"
-import { searchLibrary } from "../../lib/plex"
+import { searchLibrary, buildItemUri, getMixTracks } from "../../lib/plex"
 import { ScrollRow } from "../ScrollRow"
 import { MediaCard } from "../MediaCard"
 import { selectMix } from "./Mix"
@@ -28,7 +28,7 @@ function getItemYear(item: PlexMedia): number {
   return 0
 }
 
-function getMediaInfo(item: PlexMedia, baseUrl: string, token: string, opts?: { showYear?: boolean }) {
+export function getMediaInfo(item: PlexMedia, baseUrl: string, token: string, opts?: { showYear?: boolean }) {
   switch (item.type) {
     case "album":
       return {
@@ -91,7 +91,12 @@ export function Home() {
     recentlyAdded: s.recentlyAdded,
     hubs: s.hubs,
   })))
-  const { baseUrl, token, isConnected, isLoading: isConnecting, musicSectionId } = useConnectionStore()
+  const { baseUrl, token, isConnected, isLoading: isConnecting, musicSectionId, sectionUuid } = useConnectionStore()
+  const { playFromUri, playTrack, playPlaylist } = usePlayerStore(useShallow(s => ({
+    playFromUri: s.playFromUri,
+    playTrack:   s.playTrack,
+    playPlaylist: s.playPlaylist,
+  })))
   const [, navigate] = useLocation()
 
   // Seed from module-level cache so images are available immediately on remount.
@@ -164,10 +169,29 @@ export function Home() {
     return undefined
   }
 
+  function makeOnPlay(item: PlexMedia): ((e: React.MouseEvent) => void) | undefined {
+    if (item.type === "track") {
+      return () => void playTrack(item, [item], item.grandparent_title, null)
+    }
+    if (!sectionUuid) return undefined
+    if (item.type === "album") {
+      const uri = buildItemUri(sectionUuid, `/library/metadata/${item.rating_key}`)
+      return () => void playFromUri(uri, false, item.title, `/album/${item.rating_key}`)
+    }
+    if (item.type === "artist") {
+      const uri = buildItemUri(sectionUuid, `/library/metadata/${item.rating_key}`)
+      return () => void playFromUri(uri, false, item.title, `/artist/${item.rating_key}`)
+    }
+    if (item.type === "playlist") {
+      return () => void playPlaylist(item.rating_key, item.leaf_count, item.title, `/playlist/${item.rating_key}`)
+    }
+    return undefined
+  }
+
   return (
     <div className="space-y-8 pb-8">
       {mixesItems.length > 0 && (
-        <ScrollRow title={mixesTitle} restoreKey="home-mixes">
+        <ScrollRow title={mixesTitle} titleHref="/stations" restoreKey="home-mixes">
           {mixesItems.map((item, idx) => {
             if (item.type !== "playlist") return null
             const thumb = mixThumbs[item.title]
@@ -184,6 +208,15 @@ export function Home() {
                   selectMix(item as Playlist & { type: "playlist" })
                   navigate("/mix")
                 }}
+                onPlay={() => {
+                  getMixTracks(item.key)
+                    .then(tracks => {
+                      if (tracks.length === 0) return
+                      const shuffled = [...tracks].sort(() => Math.random() - 0.5)
+                      void playTrack(shuffled[0], shuffled, item.title, "/mix")
+                    })
+                    .catch(() => {})
+                }}
                 scrollItem
                 large
               />
@@ -193,7 +226,7 @@ export function Home() {
       )}
 
       {recentlyAdded.length > 0 && (
-        <ScrollRow title="Recently Added" restoreKey="home-recently-added">
+        <ScrollRow title="Recently Added" titleHref="/recently-added" restoreKey="home-recently-added">
           {recentlyAdded.slice(0, 30).map((item, idx) => {
             const info = getMediaInfo(item, baseUrl, token)
             if (!info) return null
@@ -206,6 +239,7 @@ export function Home() {
                 isArtist={info.isArtist}
                 href={info.href ?? undefined}
                 prefetch={makePrefetch(info)}
+                onPlay={makeOnPlay(item)}
                 scrollItem
               />
             )
@@ -217,13 +251,24 @@ export function Home() {
         if (hub.metadata.length === 0) return null
         // Skip mixes hubs — already rendered as the pinned top section
         if (hub.hub_identifier.startsWith("music.mixes")) return null
+        // Skip recently-added hubs — identifier-based + title fallback for server-variant identifiers
+        if (hub.hub_identifier.toLowerCase().includes("recently.added") ||
+            hub.hub_identifier.toLowerCase().includes("recentlyadded") ||
+            hub.title.toLowerCase().startsWith("recently added")) return null
+        // Skip station hubs — already shown on the /stations page
+        if (hub.hub_identifier.toLowerCase().includes("station")) return null
         const isAnniversary = hub.hub_identifier.includes("anniversary")
         // "On This Day" — sort oldest → newest and show the release year.
         const items = isAnniversary
           ? [...hub.metadata].sort((a, b) => getItemYear(a) - getItemYear(b))
           : hub.metadata
         return (
-          <ScrollRow key={hub.hub_identifier} title={hub.title} restoreKey={`home-hub-${hub.hub_identifier}`}>
+          <ScrollRow
+            key={hub.hub_identifier}
+            title={hub.title}
+            titleHref={"/hub/" + encodeURIComponent(hub.hub_identifier)}
+            restoreKey={`home-hub-${hub.hub_identifier}`}
+          >
             {items.slice(0, 30).map((item, idx) => {
               const info = getMediaInfo(item, baseUrl, token, { showYear: isAnniversary })
               if (!info) return null
@@ -236,6 +281,7 @@ export function Home() {
                   isArtist={info.isArtist}
                   href={info.href ?? undefined}
                   prefetch={makePrefetch(info)}
+                  onPlay={makeOnPlay(item)}
                   scrollItem
                 />
               )

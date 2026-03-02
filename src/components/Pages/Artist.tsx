@@ -19,6 +19,11 @@ import { MediaCard } from "../MediaCard"
 import { ScrollRow } from "../ScrollRow"
 import { UltraBlur } from "../UltraBlur"
 import { getCachedArtist, prefetchAlbum, prefetchArtist, setArtistCache } from "../../stores/metadataCache"
+import { useLastfmStore } from "../../stores/lastfmStore"
+import { useLastfmMetadataStore } from "../../stores/lastfmMetadataStore"
+import type { LastfmArtistInfo } from "../../lib/lastfm"
+import { useDeezerMetadataStore } from "../../stores/deezerMetadataStore"
+import type { DeezerArtistInfo } from "../../lib/deezer"
 
 function fmtDuration(ms: number) {
   const s = Math.floor(ms / 1000)
@@ -62,6 +67,29 @@ const SKIP_HUB_IDS = new Set([
   "artist.mostplayedtracks",
 ])
 
+/** Avatar for a LastFM similar artist — lazily fetches the image from Deezer. */
+function DeezerArtistAvatar({ name }: { name: string }) {
+  const getDeezerArtist = useDeezerMetadataStore(s => s.getArtist)
+  const [imageUrl, setImageUrl] = useState<string | null | undefined>(undefined)
+
+  useEffect(() => {
+    let cancelled = false
+    void getDeezerArtist(name).then(d => {
+      if (!cancelled) setImageUrl(d?.image_url ?? null)
+    })
+    return () => { cancelled = true }
+  }, [name, getDeezerArtist])
+
+  if (imageUrl) {
+    return <img src={imageUrl} alt={name} className="h-16 w-16 rounded-full object-cover" />
+  }
+  return (
+    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/10 text-xl font-bold text-white/30">
+      {name[0]}
+    </div>
+  )
+}
+
 export function ArtistPage({ artistId }: { artistId: number }) {
   const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore()
   const { playTrack, playFromUri, playRadio, addToQueue, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playFromUri: s.playFromUri, playRadio: s.playRadio, addToQueue: s.addToQueue, currentTrack: s.currentTrack })))
@@ -84,6 +112,15 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   const [showImageModal, setShowImageModal] = useState(false)
   const [showHeroModal, setShowHeroModal] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+
+  // LastFM metadata
+  const getLastfmArtist = useLastfmMetadataStore(s => s.getArtist)
+  const replaceMetadata = useLastfmStore(s => s.replaceMetadata)
+  const [lastfmData, setLastfmData] = useState<LastfmArtistInfo | null>(null)
+
+  // Deezer metadata
+  const getDeezerArtist = useDeezerMetadataStore(s => s.getArtist)
+  const [deezerData, setDeezerData] = useState<DeezerArtistInfo | null>(null)
 
   useEffect(() => {
     setError(null)
@@ -160,15 +197,35 @@ export function ArtistPage({ artistId }: { artistId: number }) {
       .finally(() => setIsLoading(false))
   }, [artistId, musicSectionId, pageRefreshKey])
 
+  // Fetch LastFM + Deezer metadata once we know the artist name
+  useEffect(() => {
+    if (!artist?.title) return
+    let cancelled = false
+    setLastfmData(null)
+    setDeezerData(null)
+    void getLastfmArtist(artist.title).then(d => {
+      if (!cancelled && d) setLastfmData(d)
+    })
+    void getDeezerArtist(artist.title).then(d => {
+      if (!cancelled && d) setDeezerData(d)
+    })
+    return () => { cancelled = true }
+  }, [artist?.title, getLastfmArtist, getDeezerArtist])
+
   // Compute artUrl before early returns so useFocalPoint can be called unconditionally.
-  const artUrl = artist?.art ? buildPlexImageUrl(baseUrl, token, artist.art) : null
+  // Fall back to Deezer artist image when Plex has no art/thumb.
+  const artUrl = artist?.art
+    ? buildPlexImageUrl(baseUrl, token, artist.art)
+    : (deezerData?.image_url ?? null)
   const heroBgPos = useFocalPoint(artUrl)
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading artist…</div>
   if (error) return <div className="p-8 text-sm text-red-400">{error}</div>
   if (!artist) return null
 
-  const thumbUrl = artist.thumb ? buildPlexImageUrl(baseUrl, token, artist.thumb) : null
+  const thumbUrl = artist.thumb
+    ? buildPlexImageUrl(baseUrl, token, artist.thumb)
+    : (deezerData?.image_url ?? null)
 
   const albumHubs = relatedHubs.filter(h =>
     !SKIP_HUB_IDS.has(h.hub_identifier) &&
@@ -191,6 +248,13 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   const artistUri = sectionUuid
     ? buildItemUri(sectionUuid, `/library/metadata/${artistId}`)
     : null
+
+  // LastFM computed values
+  // Always prefer LastFM bio when available — Plex bio is the fallback
+  const displayBio = lastfmData?.bio || artist.summary
+  // Merge LastFM tags + Plex genres (deduped by lowercase, LastFM tags first)
+  const mergedTags = [...(lastfmData?.tags ?? []), ...genres.filter(g => !lastfmData?.tags?.some(t => t.toLowerCase() === g.toLowerCase()))]
+  const heroTags = mergedTags.slice(0, 8)
 
   return (
     <div>
@@ -300,9 +364,9 @@ export function ArtistPage({ artistId }: { artistId: number }) {
             <div className="text-xs font-semibold uppercase tracking-widest text-gray-300">Artist</div>
             <h1 className="text-5xl font-black leading-none text-white">{artist.title}</h1>
 
-            {genres.slice(0, 5).length > 0 && (
+            {heroTags.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
-                {genres.slice(0, 5).map(g => (
+                {heroTags.map(g => (
                   <span key={g} className="rounded-full bg-white/10 px-3 py-0.5 text-xs text-gray-300">
                     {g}
                   </span>
@@ -311,7 +375,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
             )}
 
             {/* Expandable bio */}
-            {artist.summary && (
+            {displayBio && (
               <div
                 className="cursor-pointer select-none"
                 onClick={() => setBioExpanded(v => !v)}
@@ -321,7 +385,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                   className="overflow-hidden transition-all duration-500 ease-in-out"
                   style={{ maxHeight: bioExpanded ? "500px" : "2.8rem" }}
                 >
-                  <p className="text-sm leading-relaxed text-gray-300">{artist.summary}</p>
+                  <p className="text-sm leading-relaxed text-gray-300">{displayBio}</p>
                 </div>
                 <span className="mt-1 flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors">
                   <svg
@@ -335,6 +399,28 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                   </svg>
                   {bioExpanded ? "Less" : "More"}
                 </span>
+              </div>
+            )}
+
+            {/* Metadata stats row */}
+            {(lastfmData || deezerData) && (
+              <div className="mt-0.5 flex items-center gap-3 text-xs text-gray-500">
+                {lastfmData && lastfmData.listeners > 0 && (
+                  <span>{lastfmData.listeners.toLocaleString()} listeners</span>
+                )}
+                {lastfmData && lastfmData.play_count > 0 && (
+                  <span>{lastfmData.play_count.toLocaleString()} scrobbles</span>
+                )}
+                {lastfmData && (lastfmData.listeners > 0 || lastfmData.play_count > 0) && (
+                  <span className="text-gray-600">· Last.fm</span>
+                )}
+                {deezerData && deezerData.fans > 0 && (
+                  <>
+                    {lastfmData && <span className="text-gray-700">·</span>}
+                    <span>{deezerData.fans.toLocaleString()} fans</span>
+                    <span className="text-gray-600">· Deezer</span>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -465,6 +551,10 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                 thumb={album.thumb ? buildPlexImageUrl(baseUrl, token, album.thumb) : null}
                 href={`/album/${album.rating_key}`}
                 prefetch={() => prefetchAlbum(album.rating_key)}
+                onPlay={() => sectionUuid && void playFromUri(
+                  buildItemUri(sectionUuid, `/library/metadata/${album.rating_key}`),
+                  false, album.title, `/album/${album.rating_key}`
+                )}
                 scrollItem
               />
             ))}
@@ -481,6 +571,10 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                 thumb={album.thumb ? buildPlexImageUrl(baseUrl, token, album.thumb) : null}
                 href={`/album/${album.rating_key}`}
                 prefetch={() => prefetchAlbum(album.rating_key)}
+                onPlay={() => sectionUuid && void playFromUri(
+                  buildItemUri(sectionUuid, `/library/metadata/${album.rating_key}`),
+                  false, album.title, `/album/${album.rating_key}`
+                )}
                 scrollItem
               />
             ))}
@@ -506,6 +600,10 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                   thumb={a.thumb ? buildPlexImageUrl(baseUrl, token, a.thumb) : null}
                   href={`/album/${a.rating_key}`}
                   prefetch={() => prefetchAlbum(a.rating_key)}
+                  onPlay={() => sectionUuid && void playFromUri(
+                    buildItemUri(sectionUuid, `/library/metadata/${a.rating_key}`),
+                    false, a.title, `/album/${a.rating_key}`
+                  )}
                   scrollItem
                 />
               ))}
@@ -523,6 +621,10 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                 thumb={a.thumb ? buildPlexImageUrl(baseUrl, token, a.thumb) : null}
                 href={`/artist/${a.rating_key}`}
                 prefetch={() => prefetchArtist(a.rating_key, musicSectionId ?? 0)}
+                onPlay={() => sectionUuid && void playFromUri(
+                  buildItemUri(sectionUuid, `/library/metadata/${a.rating_key}`),
+                  false, a.title, `/artist/${a.rating_key}`
+                )}
                 isArtist
                 scrollItem
               />
@@ -530,7 +632,8 @@ export function ArtistPage({ artistId }: { artistId: number }) {
           </ScrollRow>
         )}
 
-        {sonicallySimilar.length > 0 && (
+        {/* In replace mode hide sonic similar; in augment mode keep it */}
+        {!replaceMetadata && sonicallySimilar.length > 0 && (
           <ScrollRow title="Sonically Similar Artists" restoreKey={`artist-${artistId}-sonic`}>
             {sonicallySimilar.map(a => {
               const matchPct = a.distance != null ? `${Math.round((1 - a.distance) * 100)}% match` : "Artist"
@@ -542,12 +645,34 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                   thumb={a.thumb ? buildPlexImageUrl(baseUrl, token, a.thumb) : null}
                   href={`/artist/${a.rating_key}`}
                   prefetch={() => prefetchArtist(a.rating_key, musicSectionId ?? 0)}
+                  onPlay={() => sectionUuid && void playFromUri(
+                    buildItemUri(sectionUuid, `/library/metadata/${a.rating_key}`),
+                    false, a.title, `/artist/${a.rating_key}`
+                  )}
                   isArtist
                   scrollItem
                 />
               )
             })}
           </ScrollRow>
+        )}
+
+        {/* ── Last.fm Similar Artists (images from Deezer) ── */}
+        {lastfmData && lastfmData.similar.length > 0 && (
+          <section>
+            <h2 className="mb-4 text-xl font-bold">
+              {replaceMetadata ? "Similar Artists" : "Fans Also Like"}
+              <span className="ml-2 text-xs font-normal text-gray-500">via Last.fm</span>
+            </h2>
+            <div className="flex flex-wrap gap-4">
+              {lastfmData.similar.map(a => (
+                <div key={a.name} className="flex w-20 flex-col items-center gap-1.5">
+                  <DeezerArtistAvatar name={a.name} />
+                  <span className="line-clamp-2 text-center text-xs leading-tight text-gray-300">{a.name}</span>
+                </div>
+              ))}
+            </div>
+          </section>
         )}
       </div>
 

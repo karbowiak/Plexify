@@ -3,6 +3,8 @@ import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, usePlayerStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
 import { rateItem } from "../../lib/plex"
+import { lastfmLoveTrack } from "../../lib/lastfm"
+import { useLastfmStore } from "../../stores/lastfmStore"
 import { prefetchTrackAudio } from "../../stores/playerStore"
 
 function formatMs(ms: number): string {
@@ -55,7 +57,13 @@ function SortTh({
 }
 
 /** Interactive star rating — always visible in the Rating column. */
-function StarRating({ ratingKey, userRating }: { ratingKey: number; userRating: number | null }) {
+function StarRating({ ratingKey, userRating, artist, track }: {
+  ratingKey: number
+  userRating: number | null
+  artist: string
+  track: string
+}) {
+  const loveThreshold = useLastfmStore(s => s.loveThreshold)
   const [local, setLocal] = useState<number | null | undefined>(undefined)
   const display = local !== undefined ? local : userRating
   const filled = Math.round((display ?? 0) / 2)
@@ -63,6 +71,10 @@ function StarRating({ ratingKey, userRating }: { ratingKey: number; userRating: 
   function rate(value: number | null) {
     setLocal(value)
     void rateItem(ratingKey, value).catch(() => setLocal(undefined))
+    // Sync love/unlove to Last.fm based on the configured threshold (fire-and-forget)
+    const plexRating = value ?? 0
+    const shouldLove = plexRating >= loveThreshold
+    void lastfmLoveTrack(artist, track, shouldLove).catch(() => {})
   }
 
   return (
@@ -338,7 +350,7 @@ export function Liked() {
 
                   {/* Rating — always visible, interactive */}
                   <td className="p-2">
-                    <StarRating ratingKey={track.rating_key} userRating={track.user_rating} />
+                    <StarRating ratingKey={track.rating_key} userRating={track.user_rating} artist={track.grandparent_title ?? ""} track={track.title} />
                   </td>
 
                   {/* Date Rated */}

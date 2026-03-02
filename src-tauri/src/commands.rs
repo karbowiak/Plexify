@@ -1277,3 +1277,308 @@ pub async fn clear_image_cache(app: tauri::AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Last.fm integration
+// ---------------------------------------------------------------------------
+
+/// Persist the user's Last.fm API key and secret to settings.
+///
+/// The secret stays on disk and is only ever read by Rust — it is never
+/// forwarded to the TypeScript frontend.
+#[tauri::command]
+pub async fn lastfm_save_credentials(
+    api_key: String,
+    api_secret: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.lastfm_api_key = api_key;
+    settings.lastfm_api_secret = api_secret;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Step 1 of Last.fm auth: request a temporary token.
+///
+/// Returns the token and the URL the user must open in their browser to grant access.
+/// The API key is loaded from saved settings.
+#[tauri::command]
+pub async fn lastfm_get_token(
+    app: tauri::AppHandle,
+) -> Result<crate::lastfm::LastfmAuthToken, String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    if settings.lastfm_api_key.is_empty() {
+        return Err("Last.fm API key is not configured".to_string());
+    }
+    crate::lastfm::get_token(&settings.lastfm_api_key)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Step 3 of Last.fm auth: exchange an authorized token for a permanent session key.
+///
+/// Saves the session key and username to settings on success.
+#[tauri::command]
+pub async fn lastfm_complete_auth(
+    token: String,
+    app: tauri::AppHandle,
+) -> Result<crate::lastfm::LastfmSession, String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+
+    if settings.lastfm_api_key.is_empty() || settings.lastfm_api_secret.is_empty() {
+        return Err("Last.fm credentials are not configured".to_string());
+    }
+
+    let session =
+        crate::lastfm::get_session(&settings.lastfm_api_key, &settings.lastfm_api_secret, &token)
+            .await
+            .map_err(|e| format!("{:#}", e))?;
+
+    settings.lastfm_session_key = session.session_key.clone();
+    settings.lastfm_username = session.username.clone();
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))?;
+
+    Ok(session)
+}
+
+/// Disconnect from Last.fm by clearing the session key and username from settings.
+#[tauri::command]
+pub async fn lastfm_disconnect(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.lastfm_session_key = String::new();
+    settings.lastfm_username = String::new();
+    settings.lastfm_enabled = false;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Enable or disable Last.fm scrobbling and now-playing updates.
+#[tauri::command]
+pub async fn lastfm_set_enabled(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.lastfm_enabled = enabled;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Set whether Last.fm metadata replaces (true) or augments (false) Plex data.
+#[tauri::command]
+pub async fn lastfm_set_replace_metadata(replace: bool, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.lastfm_replace_metadata = replace;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Set the minimum Plex rating (0–10) that triggers a Last.fm "love".
+/// Plex scale: 0=unrated, 2=1★, 4=2★, 6=3★, 8=4★, 10=5★.
+#[tauri::command]
+pub async fn lastfm_set_love_threshold(threshold: u8, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.lastfm_love_threshold = threshold;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Notify Last.fm that a track has started playing (now-playing update).
+///
+/// No-op if Last.fm is disabled or the user is not authenticated.
+/// Errors are mapped to Err strings but callers should treat them as non-fatal.
+#[tauri::command]
+pub async fn lastfm_update_now_playing(
+    artist: String,
+    track: String,
+    album: String,
+    album_artist: String,
+    duration_ms: u64,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+
+    if !settings.lastfm_enabled || settings.lastfm_session_key.is_empty() {
+        return Ok(());
+    }
+
+    let duration_secs = (duration_ms / 1000) as u32;
+    crate::lastfm::update_now_playing(
+        &settings.lastfm_api_key,
+        &settings.lastfm_api_secret,
+        &settings.lastfm_session_key,
+        &artist,
+        &track,
+        &album,
+        &album_artist,
+        duration_secs,
+    )
+    .await
+    .map_err(|e| format!("{:#}", e))
+}
+
+/// Scrobble a track to Last.fm.
+///
+/// `started_at_unix` is the Unix timestamp (seconds) when playback began.
+/// `listened_ms` is how many milliseconds the user actually listened.
+/// No-op if Last.fm is disabled or not authenticated. Scrobble rules are
+/// enforced in the `lastfm` module (>30s track, >50% listened or >4 min).
+#[tauri::command]
+pub async fn lastfm_scrobble(
+    artist: String,
+    track: String,
+    album: String,
+    album_artist: String,
+    duration_ms: u64,
+    started_at_unix: u64,
+    listened_ms: u64,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+
+    if !settings.lastfm_enabled || settings.lastfm_session_key.is_empty() {
+        return Ok(());
+    }
+
+    let duration_secs = (duration_ms / 1000) as u32;
+    let listened_secs = listened_ms / 1000;
+
+    crate::lastfm::scrobble(
+        &settings.lastfm_api_key,
+        &settings.lastfm_api_secret,
+        &settings.lastfm_session_key,
+        &artist,
+        &track,
+        &album,
+        &album_artist,
+        duration_secs,
+        started_at_unix,
+        listened_secs,
+    )
+    .await
+    .map_err(|e| format!("{:#}", e))
+}
+
+/// Love or unlove a track on Last.fm.
+///
+/// `love = true` → `track.love`, `love = false` → `track.unlove`.
+/// No-op if Last.fm is not authenticated (enabled check is intentionally skipped
+/// so ratings can sync even when scrobbling is temporarily disabled).
+#[tauri::command]
+pub async fn lastfm_love_track(
+    artist: String,
+    track: String,
+    love: bool,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+
+    if settings.lastfm_session_key.is_empty() {
+        return Ok(());
+    }
+
+    crate::lastfm::love_track(
+        &settings.lastfm_api_key,
+        &settings.lastfm_api_secret,
+        &settings.lastfm_session_key,
+        &artist,
+        &track,
+        love,
+    )
+    .await
+    .map_err(|e| format!("{:#}", e))
+}
+
+/// Fetch Last.fm artist metadata: biography, listeners, tags, similar artists.
+///
+/// Returns an error if the API key is not configured or the artist is not found.
+/// TypeScript layer should catch and treat as no-data (return null from store).
+#[tauri::command]
+pub async fn lastfm_get_artist_info(
+    artist: String,
+    app: tauri::AppHandle,
+) -> Result<crate::lastfm::LastfmArtistInfo, String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    if settings.lastfm_api_key.is_empty() {
+        return Err("Last.fm API key not configured".to_string());
+    }
+    crate::lastfm::get_artist_info(&settings.lastfm_api_key, &artist)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Fetch Last.fm track metadata: listeners, play count, tags, wiki summary.
+#[tauri::command]
+pub async fn lastfm_get_track_info(
+    artist: String,
+    track: String,
+    app: tauri::AppHandle,
+) -> Result<crate::lastfm::LastfmTrackInfo, String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    if settings.lastfm_api_key.is_empty() {
+        return Err("Last.fm API key not configured".to_string());
+    }
+    crate::lastfm::get_track_info(&settings.lastfm_api_key, &artist, &track)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Fetch Last.fm album metadata: tags and wiki summary.
+#[tauri::command]
+pub async fn lastfm_get_album_info(
+    artist: String,
+    album: String,
+    app: tauri::AppHandle,
+) -> Result<crate::lastfm::LastfmAlbumInfo, String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    if settings.lastfm_api_key.is_empty() {
+        return Err("Last.fm API key not configured".to_string());
+    }
+    crate::lastfm::get_album_info(&settings.lastfm_api_key, &artist, &album)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Deezer commands (no API key required — public endpoints)
+// ---------------------------------------------------------------------------
+
+/// Search Deezer for an artist and return image, fan count, and album count.
+#[tauri::command]
+pub async fn deezer_search_artist(
+    artist: String,
+) -> Result<Option<crate::deezer::DeezerArtistInfo>, String> {
+    crate::deezer::search_artist(&artist)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Search Deezer for an album and return cover art, genres, fans, label, and release date.
+#[tauri::command]
+pub async fn deezer_search_album(
+    artist: String,
+    album: String,
+) -> Result<Option<crate::deezer::DeezerAlbumInfo>, String> {
+    crate::deezer::search_album(&artist, &album)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}

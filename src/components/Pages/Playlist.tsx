@@ -3,6 +3,8 @@ import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, usePlayerStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
 import { buildItemUri, rateItem } from "../../lib/plex"
+import { lastfmLoveTrack } from "../../lib/lastfm"
+import { useLastfmStore } from "../../stores/lastfmStore"
 import { prefetchTrackAudio } from "../../stores/playerStore"
 import { RichText } from "../RichText"
 import { UltraBlur } from "../UltraBlur"
@@ -152,7 +154,13 @@ function ColumnPicker({ visible, toggle }: { visible: Set<ColId>; toggle: (id: C
 // Star rating
 // ---------------------------------------------------------------------------
 
-function TrackRating({ ratingKey, userRating }: { ratingKey: number; userRating: number | null }) {
+function TrackRating({ ratingKey, userRating, artist, track }: {
+  ratingKey: number
+  userRating: number | null
+  artist: string
+  track: string
+}) {
+  const loveThreshold = useLastfmStore(s => s.loveThreshold)
   // Optimistic local override — undefined means "use server value"
   const [local, setLocal] = useState<number | null | undefined>(undefined)
   const display = local !== undefined ? local : userRating
@@ -161,6 +169,10 @@ function TrackRating({ ratingKey, userRating }: { ratingKey: number; userRating:
   function rate(value: number | null) {
     setLocal(value)
     void rateItem(ratingKey, value).catch(() => setLocal(undefined))
+    // Sync love/unlove to Last.fm based on the configured threshold (fire-and-forget)
+    const plexRating = value ?? 0
+    const shouldLove = plexRating >= loveThreshold
+    void lastfmLoveTrack(artist, track, shouldLove).catch(() => {})
   }
 
   return (
@@ -534,7 +546,7 @@ export function Playlist({ playlistId }: { playlistId: number }) {
                               Radio
                             </button>
                             <span className="w-px h-3 bg-white/20 mx-0.5" />
-                            <TrackRating ratingKey={track.rating_key} userRating={track.user_rating} />
+                            <TrackRating ratingKey={track.rating_key} userRating={track.user_rating} artist={track.grandparent_title ?? ""} track={track.title} />
                           </div>
                         </div>
                       </div>

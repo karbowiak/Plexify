@@ -9,6 +9,11 @@ import { MediaCard } from "../MediaCard"
 import { ScrollRow } from "../ScrollRow"
 import { UltraBlur } from "../UltraBlur"
 import { getCachedAlbum, prefetchAlbum, prefetchArtist, setAlbumCache } from "../../stores/metadataCache"
+import { useLastfmStore } from "../../stores/lastfmStore"
+import { useLastfmMetadataStore } from "../../stores/lastfmMetadataStore"
+import type { LastfmAlbumInfo } from "../../lib/lastfm"
+import { useDeezerMetadataStore } from "../../stores/deezerMetadataStore"
+import type { DeezerAlbumInfo } from "../../lib/deezer"
 
 function formatMs(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -52,6 +57,15 @@ export function AlbumPage({ albumId }: { albumId: number }) {
   const [showImageModal, setShowImageModal] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
 
+  // LastFM metadata
+  const getLastfmAlbum = useLastfmMetadataStore(s => s.getAlbum)
+  const replaceMetadata = useLastfmStore(s => s.replaceMetadata)
+  const [lastfmData, setLastfmData] = useState<LastfmAlbumInfo | null>(null)
+
+  // Deezer metadata
+  const getDeezerAlbum = useDeezerMetadataStore(s => s.getAlbum)
+  const [deezerData, setDeezerData] = useState<DeezerAlbumInfo | null>(null)
+
   useEffect(() => {
     setError(null)
     setDescExpanded(false)
@@ -89,11 +103,28 @@ export function AlbumPage({ albumId }: { albumId: number }) {
       .finally(() => setIsLoading(false))
   }, [albumId, pageRefreshKey])
 
+  // Fetch LastFM + Deezer metadata once we know the album / artist names
+  useEffect(() => {
+    if (!album?.title || !album?.parent_title) return
+    let cancelled = false
+    setLastfmData(null)
+    setDeezerData(null)
+    void getLastfmAlbum(album.parent_title, album.title).then(d => {
+      if (!cancelled && d) setLastfmData(d)
+    })
+    void getDeezerAlbum(album.parent_title, album.title).then(d => {
+      if (!cancelled && d) setDeezerData(d)
+    })
+    return () => { cancelled = true }
+  }, [album?.title, album?.parent_title, getLastfmAlbum, getDeezerAlbum])
+
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading album…</div>
   if (error) return <div className="p-8 text-sm text-red-400">{error}</div>
   if (!album) return null
 
-  const thumbUrl = album.thumb ? buildPlexImageUrl(baseUrl, token, album.thumb) : null
+  const thumbUrl = album.thumb
+    ? buildPlexImageUrl(baseUrl, token, album.thumb)
+    : (deezerData?.cover_url ?? null)
   const parentThumbUrl = album.parent_thumb
     ? buildPlexImageUrl(baseUrl, token, album.parent_thumb)
     : null
@@ -102,11 +133,32 @@ export function AlbumPage({ albumId }: { albumId: number }) {
     ? album.subformat.map(f => f.tag).join(" · ")
     : "Album"
 
-  const allTags = [
+  const plexTags = [
     ...album.genre,
     ...album.style,
     ...album.mood,
   ]
+
+  // Metadata computed values
+  // Always prefer LastFM wiki/summary when available, fall back to Plex summary
+  const displayWiki = lastfmData?.wiki || album.summary
+  // Merge all tag sources: Plex first, then unique LastFM tags, then unique Deezer genres
+  const lastfmOnlyTags = lastfmData?.tags.filter(t =>
+    !plexTags.some(pt => pt.tag.toLowerCase() === t.toLowerCase())
+  ) ?? []
+  const deezerOnlyGenres = deezerData?.genres.filter(g =>
+    !plexTags.some(pt => pt.tag.toLowerCase() === g.toLowerCase()) &&
+    !lastfmOnlyTags.some(t => t.toLowerCase() === g.toLowerCase())
+  ) ?? []
+  const allTags = [
+    ...plexTags,
+    ...lastfmOnlyTags.map(t => ({ tag: t, id: null, filter: null })),
+    ...deezerOnlyGenres.map(g => ({ tag: g, id: null, filter: null })),
+  ]
+  // Use Deezer label as fallback when Plex has none
+  const displayLabel = album.label.length > 0
+    ? album.label.map(l => l.tag).join(", ")
+    : (deezerData?.label || null)
 
   // Show all non-empty hubs (sonically similar, more by artist, etc.)
   const nonEmptyHubs = relatedHubs.filter(h => h.metadata.length > 0)
@@ -224,10 +276,16 @@ export function AlbumPage({ albumId }: { albumId: number }) {
                   <span className="text-gray-400">{album.studio}</span>
                 </>
               )}
-              {album.label.length > 0 && (
+              {displayLabel && (
                 <>
                   <span className="text-gray-500">·</span>
-                  <span className="text-gray-400">{album.label.map(l => l.tag).join(", ")}</span>
+                  <span className="text-gray-400">{displayLabel}</span>
+                </>
+              )}
+              {deezerData && deezerData.fans > 0 && (
+                <>
+                  <span className="text-gray-500">·</span>
+                  <span className="text-gray-400">{deezerData.fans.toLocaleString()} fans</span>
                 </>
               )}
             </div>
@@ -239,7 +297,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
             )}
 
             {/* Expandable description */}
-            {album.summary && (
+            {displayWiki && (
               <div
                 className="cursor-pointer select-none max-w-xl"
                 onClick={() => setDescExpanded(v => !v)}
@@ -248,7 +306,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
                   className="overflow-hidden transition-all duration-500 ease-in-out"
                   style={{ maxHeight: descExpanded ? "500px" : "2.8rem" }}
                 >
-                  <p className="text-sm leading-relaxed text-gray-300">{album.summary}</p>
+                  <p className="text-sm leading-relaxed text-gray-300">{displayWiki}</p>
                 </div>
                 <span className="mt-0.5 flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors">
                   <svg

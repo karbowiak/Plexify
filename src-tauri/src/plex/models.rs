@@ -1188,6 +1188,44 @@ pub struct PlexSettings {
     /// Used as fallbacks when the primary `base_url` is unreachable.
     #[serde(default)]
     pub all_urls: Vec<String>,
+
+    // -----------------------------------------------------------------------
+    // Last.fm integration
+    // -----------------------------------------------------------------------
+
+    /// User's registered Last.fm API key (from last.fm/api/account/create).
+    #[serde(default)]
+    pub lastfm_api_key: String,
+
+    /// User's Last.fm API secret. NEVER forwarded to the frontend — stays in Rust for signing.
+    #[serde(default)]
+    pub lastfm_api_secret: String,
+
+    /// Permanent Last.fm session key obtained after OAuth. Empty = not authenticated.
+    #[serde(default)]
+    pub lastfm_session_key: String,
+
+    /// Last.fm username, cached after successful auth for display purposes.
+    #[serde(default)]
+    pub lastfm_username: String,
+
+    /// Whether Last.fm scrobbling / now-playing updates are enabled. Defaults false (opt-in).
+    #[serde(default)]
+    pub lastfm_enabled: bool,
+
+    /// When true, use Last.fm metadata as the primary source for artist/album info,
+    /// only using Plex for track title and audio file. When false (default), augment Plex data.
+    #[serde(default)]
+    pub lastfm_replace_metadata: bool,
+
+    /// Minimum Plex rating (0–10 scale) that triggers a Last.fm "love".
+    /// Default 6 = 3 stars. Rating below threshold → unlove. 0 (unrated) → unlove.
+    #[serde(default = "default_lastfm_love_threshold")]
+    pub lastfm_love_threshold: u8,
+}
+
+fn default_lastfm_love_threshold() -> u8 {
+    6
 }
 
 // ---------------------------------------------------------------------------
