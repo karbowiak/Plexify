@@ -512,19 +512,21 @@ async function preloadNextTrack(queue: Track[], queueIndex: number, repeat: 0 | 
 
 const PLAYLIST_PAGE_SIZE = 100
 
+// ---------------------------------------------------------------------------
+// Shared playback ceremony — every track transition funnels through here
+// ---------------------------------------------------------------------------
+
 /**
- * Play the track at `index` in the current queue without clearing the playlist
- * or radio context. Used by next(), prev(), and jumpToQueueItem() so progressive
- * loading continues working. (playTrack() is for explicit user selection only.)
+ * Update all UI/metadata/scrobble/DJ state for a newly active track.
+ * Called by both user-initiated plays (via _startPlayback) and gapless
+ * transitions (audio already playing, no engine call needed).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function playAtIndex(index: number, get: () => PlayerState, set: any): Promise<void> {
-  const track = get().queue[index]
-  if (!track) return
-  set({ currentTrack: track, queueIndex: index, isPlaying: true, positionMs: 0, waveformLevels: null, lyricsLines: null })
+function _onTrackBecomesActive(track: Track, index: number, get: () => PlayerState, set: any): void {
+  set({ currentTrack: track, queueIndex: index, isPlaying: true, positionMs: 0,
+        waveformLevels: null, lyricsLines: null })
   _lastTimelineReportMs = 0
 
-  // Fetch waveform data — falls back to a metadata call when track lacks inline stream data
   void fetchAudioStreamId(track).then(streamId => {
     if (!streamId) return
     return getStreamLevels(streamId, 128)
@@ -541,15 +543,34 @@ async function playAtIndex(index: number, get: () => PlayerState, set: any): Pro
     track.duration ?? 0,
   )
   void setNowPlayingState("playing", 0)
+
+  if (get().djMode) void insertDjTracks(get, set)
+}
+
+/**
+ * Send a track to the audio engine and update all playback state.
+ * Used by all user-initiated play actions and within-queue navigation.
+ * NOT used for gapless transitions (audio is already playing there).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function _startPlayback(track: Track, index: number, get: () => PlayerState, set: any): Promise<void> {
+  _onTrackBecomesActive(track, index, get, set)
+  await sendToAudioEngine(track)
+}
+
+/**
+ * Play the track at `index` in the current queue without clearing the playlist
+ * or radio context. Used by next(), prev(), and jumpToQueueItem() so progressive
+ * loading continues working. (playTrack() is for explicit user selection only.)
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function playAtIndex(index: number, get: () => PlayerState, set: any): Promise<void> {
+  const track = get().queue[index]
+  if (!track) return
   try {
-    await sendToAudioEngine(track)
+    await _startPlayback(track, index, get, set)
   } catch (err) {
     console.error("playAtIndex failed:", err)
-  }
-
-  // DJ: insert curated tracks for the new current track
-  if (get().djMode) {
-    void insertDjTracks(get, set)
   }
 }
 
@@ -608,41 +629,21 @@ export const usePlayerStore = create<PlayerState>()(
     const uri = sectionUuid ? buildItemUri(sectionUuid, itemKey) : itemKey
     const { shuffle, repeat } = get()
 
-    // Update UI immediately — never block the player display on network calls
     const queue = context ?? [track]
     const queueIndex = Math.max(0, context ? context.findIndex(t => t.rating_key === track.rating_key) : 0)
     // Explicit track selection: clear progressive playlist and radio context.
-    set({ currentTrack: track, queue, queueIndex, isPlaying: true, positionMs: 0,
-      waveformLevels: null, lyricsLines: null,
+    set({ queue,
       playlistKey: null, playlistTotalCount: 0, playlistLoadedCount: 0,
       isRadioMode: false, radioSeedKey: null, radioType: null,
       contextName: contextName ?? null, contextHref: contextHref ?? null })
-    _lastTimelineReportMs = 0
-    void fetchAudioStreamId(track).then(streamId => {
-      if (!streamId) return
-      return getStreamLevels(streamId, 128)
-        .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
-        .catch(() => {})
-    })
-    fetchLyricsForTrack(track.rating_key, get, set)
-    _reportTimeline(track.rating_key, "playing", 0, track.duration)
-    void updateNowPlaying(
-      track.title,
-      track.grandparent_title ?? "",
-      track.parent_title ?? "",
-      track.thumb || track.parent_thumb || null,
-      track.duration ?? 0,
-    )
-    void setNowPlayingState("playing", 0)
 
     try {
       // Start audio + register server-side queue in parallel
       const [playQueue] = await Promise.all([
         createPlayQueue(uri, shuffle, repeat),
-        sendToAudioEngine(track),
+        _startPlayback(track, queueIndex, get, set),
       ])
       set({ queueId: playQueue.id })
-      if (get().djMode) void insertDjTracks(get, set as never)
     } catch (err) {
       console.error("playTrack failed:", err)
     }
@@ -658,52 +659,18 @@ export const usePlayerStore = create<PlayerState>()(
         setTimeout(() => set({ playerError: null }), 5000)
         return
       }
-      const firstTrack = playQueue.items[0]
 
-      // Update UI as soon as we know what track is first — before the audio fetch.
-      // Server-side play queue: clear all radio/DJ context (Plex owns the queue now).
       _djGeneratedKeys.clear()
       _radioGeneratedKeys.clear()
       _radioRefillInProgress = false
       set({
-        currentTrack: firstTrack,
-        queue: playQueue.items,
-        queueIndex: 0,
-        queueId: playQueue.id,
-        isPlaying: true,
-        positionMs: 0,
-        waveformLevels: null,
-        lyricsLines: null,
-        shuffle: shouldShuffle,
-        playlistKey: null,
-        playlistTotalCount: 0,
-        playlistLoadedCount: 0,
-        isRadioMode: false,
-        radioSeedKey: null,
-        radioType: null,
-        contextName: contextName ?? null,
-        contextHref: contextHref ?? null,
+        queue: playQueue.items, queueId: playQueue.id, shuffle: shouldShuffle,
+        playlistKey: null, playlistTotalCount: 0, playlistLoadedCount: 0,
+        isRadioMode: false, radioSeedKey: null, radioType: null,
+        contextName: contextName ?? null, contextHref: contextHref ?? null,
       })
-      _lastTimelineReportMs = 0
-      void fetchAudioStreamId(firstTrack).then(streamId => {
-        if (!streamId) return
-        return getStreamLevels(streamId, 128)
-          .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
-          .catch(() => {})
-      })
-      fetchLyricsForTrack(firstTrack.rating_key, get, set)
-      _reportTimeline(firstTrack.rating_key, "playing", 0, firstTrack.duration)
-      void updateNowPlaying(
-        firstTrack.title,
-        firstTrack.grandparent_title ?? "",
-        firstTrack.parent_title ?? "",
-        firstTrack.thumb || firstTrack.parent_thumb || null,
-        firstTrack.duration ?? 0,
-      )
-      void setNowPlayingState("playing", 0)
 
-      await sendToAudioEngine(firstTrack)
-      if (get().djMode) void insertDjTracks(get, set as never)
+      await _startPlayback(playQueue.items[0], 0, get, set)
     } catch (err) {
       console.error("playFromUri failed:", err)
       const msg = err instanceof Error ? err.message : String(err)
@@ -715,43 +682,16 @@ export const usePlayerStore = create<PlayerState>()(
   playPlaylist: async (playlistId: number, totalCount: number, title: string, href: string) => {
     const tracks = await getPlaylistItems(playlistId, PLAYLIST_PAGE_SIZE, 0)
     if (tracks.length === 0) return
-    const firstTrack = tracks[0]
 
     set({
-      currentTrack: firstTrack,
-      queue: tracks,
-      queueIndex: 0,
-      queueId: null,
-      isPlaying: true,
-      positionMs: 0,
-      waveformLevels: null,
-      lyricsLines: null,
-      playlistKey: playlistId,
-      playlistTotalCount: totalCount,
-      playlistLoadedCount: tracks.length,
-      isLoadingMoreTracks: false,
-      contextName: title,
-      contextHref: href,
+      queue: tracks, queueId: null,
+      playlistKey: playlistId, playlistTotalCount: totalCount,
+      playlistLoadedCount: tracks.length, isLoadingMoreTracks: false,
+      isRadioMode: false, radioSeedKey: null, radioType: null,
+      contextName: title, contextHref: href,
     })
-    void fetchAudioStreamId(firstTrack).then(streamId => {
-      if (!streamId) return
-      return getStreamLevels(streamId, 128)
-        .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
-        .catch(() => {})
-    })
-    fetchLyricsForTrack(firstTrack.rating_key, get, set)
-    _reportTimeline(firstTrack.rating_key, "playing", 0, firstTrack.duration)
-    void updateNowPlaying(
-      firstTrack.title,
-      firstTrack.grandparent_title ?? "",
-      firstTrack.parent_title ?? "",
-      firstTrack.thumb || firstTrack.parent_thumb || null,
-      firstTrack.duration ?? 0,
-    )
-    void setNowPlayingState("playing", 0)
-    set({ isRadioMode: false, radioSeedKey: null, radioType: null })
-    await sendToAudioEngine(firstTrack)
-    if (get().djMode) void insertDjTracks(get, set as never)
+
+    await _startPlayback(tracks[0], 0, get, set)
   },
 
   playRadio: async (ratingKey: number, radioType: RadioType, seedName?: string) => {
@@ -762,10 +702,7 @@ export const usePlayerStore = create<PlayerState>()(
     try {
       const playQueue = await createRadioQueue(ratingKey, radioType)
 
-      // Filter to playable tracks (skip artist/album metadata that Plex may include
-      // as the first item in a station play queue), then deduplicate by rating_key.
-      // Plex sonic radio often returns the seed track as both the pivot (index 0)
-      // and again as the top sonically-similar result (index 1).
+      // Filter to playable tracks then deduplicate by rating_key.
       const playable = filterPlayable(playQueue.items)
       const seenKeys = new Set<number>()
       const tracks = playable.filter(t => seenKeys.has(t.rating_key) ? false : (seenKeys.add(t.rating_key), true))
@@ -775,14 +712,11 @@ export const usePlayerStore = create<PlayerState>()(
         setTimeout(() => set({ playerError: null }), 5000)
         return
       }
-      const firstTrack = tracks[0]
 
-      // Mark all tracks except the seed (index 0) as radio-generated so the queue
-      // panel shows the radio indicator on the full initial batch, not just refill tracks.
+      // Mark all tracks except the seed (index 0) as radio-generated.
       tracks.slice(1).forEach(t => _radioGeneratedKeys.add(t.rating_key))
 
       // Only update context label when a seedName was explicitly supplied.
-      // Re-seeds triggered by next() / setDjMode() omit seedName to preserve the label.
       const radioHref = radioType === 'artist' ? `/artist/${ratingKey}`
         : radioType === 'album' ? `/album/${ratingKey}`
         : radioType === 'playlist' ? `/playlist/${ratingKey}`
@@ -792,42 +726,14 @@ export const usePlayerStore = create<PlayerState>()(
         : {}
 
       set({
-        currentTrack: firstTrack,
-        queue: tracks,
-        queueIndex: 0,
-        queueId: playQueue.id,
-        isPlaying: true,
-        positionMs: 0,
-        waveformLevels: null,
-        lyricsLines: null,
-        isRadioMode: true,
-        radioSeedKey: ratingKey,
-        radioType,
-        playlistKey: null,
-        playlistTotalCount: 0,
-        playlistLoadedCount: 0,
+        queue: tracks, queueId: playQueue.id,
+        isRadioMode: true, radioSeedKey: ratingKey, radioType,
+        playlistKey: null, playlistTotalCount: 0, playlistLoadedCount: 0,
         playerError: null,
         ...contextUpdate,
       })
-      void fetchAudioStreamId(firstTrack).then(streamId => {
-        if (!streamId) return
-        return getStreamLevels(streamId, 128)
-          .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
-          .catch(() => {})
-      })
-      fetchLyricsForTrack(firstTrack.rating_key, get, set)
-      _reportTimeline(firstTrack.rating_key, "playing", 0, firstTrack.duration)
-      void updateNowPlaying(
-        firstTrack.title,
-        firstTrack.grandparent_title ?? "",
-        firstTrack.parent_title ?? "",
-        firstTrack.thumb || firstTrack.parent_thumb || null,
-        firstTrack.duration ?? 0,
-      )
-      void setNowPlayingState("playing", 0)
 
-      await sendToAudioEngine(firstTrack)
-      if (get().djMode) void insertDjTracks(get, set as never)
+      await _startPlayback(tracks[0], 0, get, set)
     } catch (err) {
       console.error("playRadio failed:", err)
       const msg = err instanceof Error ? err.message : String(err)
@@ -902,7 +808,7 @@ export const usePlayerStore = create<PlayerState>()(
         return
       } else {
         void setNowPlayingState("stopped")
-        set({ isPlaying: false })
+        set({ isPlaying: false, currentTrack: null, positionMs: 0, waveformLevels: null, lyricsLines: null })
         return
       }
     }
@@ -1092,26 +998,7 @@ export const usePlayerStore = create<PlayerState>()(
         if (!track) return
 
         // Advance queue state — audio is already playing, do NOT call audioPlay()
-        set({ currentTrack: track, queueIndex: nextIndex, positionMs: 0, isPlaying: true, waveformLevels: null, lyricsLines: null })
-        _lastTimelineReportMs = 0
-        _reportTimeline(track.rating_key, "playing", 0, track.duration)
-
-        // Fetch waveform data — falls back to a metadata call when track lacks inline stream data
-        void fetchAudioStreamId(track).then(streamId => {
-          if (!streamId) return
-          return getStreamLevels(streamId, 128)
-            .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
-            .catch(() => {/* waveform unavailable */})
-        })
-        fetchLyricsForTrack(track.rating_key, get, set)
-        void updateNowPlaying(
-          track.title,
-          track.grandparent_title ?? "",
-          track.parent_title ?? "",
-          track.thumb || track.parent_thumb || null,
-          track.duration ?? 0,
-        )
-        void setNowPlayingState("playing", 0)
+        _onTrackBecomesActive(track, nextIndex, get, set)
 
         // Pre-buffer the track after this one for the next gapless transition
         void preloadNextTrack(get().queue, nextIndex, repeat)
@@ -1124,11 +1011,6 @@ export const usePlayerStore = create<PlayerState>()(
         // Radio: refill queue if running low
         if (isRadioMode && queue.length - nextIndex <= 5) {
           void appendRadioTracks(get, set as never)
-        }
-
-        // DJ: insert curated tracks based on active DJ mode
-        if (djMode) {
-          void insertDjTracks(get, set as never)
         }
       }),
     )
