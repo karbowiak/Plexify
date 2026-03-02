@@ -195,7 +195,8 @@ async function appendRadioTracks(
 ) {
   const { isRadioMode, radioSeedKey, radioType, queue, queueIndex, radioDegreesOfSeparation, radioMinQueue } = get()
   if (!isRadioMode || radioSeedKey === null || radioType === null || _radioRefillInProgress) return
-  if (queue.length - queueIndex > radioMinQueue) return  // plenty of tracks ahead
+  // `queue.length - queueIndex - 1` = tracks strictly after current position
+  if (queue.length - queueIndex - 1 >= radioMinQueue) return  // plenty of tracks ahead
 
   _radioRefillInProgress = true
   try {
@@ -204,15 +205,22 @@ async function appendRadioTracks(
 
     // Append only tracks not already in the queue to avoid duplicates
     const existingKeys = new Set(get().queue.map(t => t.rating_key))
-    const dedupedTracks = newTracks.filter(t => {
+    const candidates = newTracks.filter(t => {
       if (existingKeys.has(t.rating_key)) return false
       existingKeys.add(t.rating_key)  // deduplicate within batch too
       return true
     })
-    if (dedupedTracks.length === 0) return
 
-    dedupedTracks.forEach(t => _radioGeneratedKeys.add(t.rating_key))
-    set(s => ({ queue: [...s.queue, ...dedupedTracks] }))
+    // Cap the batch: only add enough to bring the queue to radioMinQueue + 1 ahead.
+    // This prevents 3+ tracks popping in at once — at most 1–2 appear at a time.
+    const { queue: latestQueue, queueIndex: latestIdx } = get()
+    const tracksAhead = latestQueue.length - latestIdx - 1
+    const needed = Math.max(0, radioMinQueue + 1 - tracksAhead)
+    const capped = candidates.slice(0, needed)
+    if (capped.length === 0) return
+
+    capped.forEach(t => _radioGeneratedKeys.add(t.rating_key))
+    set(s => ({ queue: [...s.queue, ...capped] }))
   } catch (err) {
     console.error("Radio queue refill failed:", err)
   } finally {
@@ -731,16 +739,18 @@ export const usePlayerStore = create<PlayerState>()(
         return
       }
 
-      // Pre-fill to radioMinQueue *before* setting queue state so the user never
-      // sees the queue grow after opening the panel.
-      if (tracks.length - 1 <= radioMinQueue) {
+      // Pre-fill to exactly radioMinQueue tracks after seed before setting queue state.
+      // Only fetch a second batch if the initial one is short, and take only what's needed.
+      const neededAfterSeed = radioMinQueue - (tracks.length - 1)
+      if (neededAfterSeed > 0) {
         try {
           const pq2 = await createRadioQueue(ratingKey, radioType, radioDegreesOfSeparation)
+          let added = 0
           filterPlayable(pq2.items).forEach(t => {
-            if (!seenKeys.has(t.rating_key)) {
-              seenKeys.add(t.rating_key)
-              tracks = [...tracks, t]
-            }
+            if (added >= neededAfterSeed || seenKeys.has(t.rating_key)) return
+            seenKeys.add(t.rating_key)
+            tracks = [...tracks, t]
+            added++
           })
         } catch { /* non-critical — start with fewer tracks if this fails */ }
       }
@@ -861,6 +871,8 @@ export const usePlayerStore = create<PlayerState>()(
     }
     // Use playAtIndex to preserve playlist/radio context (playTrack would clear it)
     void playAtIndex(nextIndex, get, set)
+    // Radio: trigger refill immediately on skip rather than waiting for the next position event
+    if (get().isRadioMode) void appendRadioTracks(get, set as never)
   },
 
   prev: () => {
@@ -930,6 +942,8 @@ export const usePlayerStore = create<PlayerState>()(
     const { queue } = get()
     if (index < 0 || index >= queue.length) return
     void playAtIndex(index, get, set)
+    // Radio: trigger refill immediately on jump rather than waiting for the next position event
+    if (get().isRadioMode) void appendRadioTracks(get, set as never)
   },
 
   initAudioEvents: async () => {
@@ -952,8 +966,8 @@ export const usePlayerStore = create<PlayerState>()(
           }
         }
 
-        // Proactively refill the queue when tracks ahead fall below the configured minimum
-        if (isRadioMode && queue.length - queueIndex <= radioMinQueue) {
+        // Proactively refill the queue when tracks strictly ahead fall below the configured minimum
+        if (isRadioMode && queue.length - queueIndex - 1 < radioMinQueue) {
           void appendRadioTracks(get, set as never)
         }
 
@@ -1056,7 +1070,7 @@ export const usePlayerStore = create<PlayerState>()(
         }
 
         // Radio: refill queue if running low
-        if (isRadioMode && queue.length - nextIndex <= radioMinQueue) {
+        if (isRadioMode && queue.length - nextIndex - 1 < radioMinQueue) {
           void appendRadioTracks(get, set as never)
         }
       }),
