@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { useSleepTimerStore } from "../stores/sleepTimerStore"
 
 const PRESETS = [15, 30, 45, 60, 90]
@@ -11,10 +11,14 @@ function formatRemaining(endsAt: number): string {
   return `${min}:${sec.toString().padStart(2, "0")}`
 }
 
-export default function SleepTimerPanel() {
+interface Props {
+  onClose: () => void
+}
+
+export default function SleepTimerPanel({ onClose }: Props) {
   const { endsAt, start, cancel } = useSleepTimerStore()
-  const panelRef = useRef<HTMLDivElement>(null)
   const [, forceUpdate] = useState(0)
+  const [customMinutes, setCustomMinutes] = useState("")
 
   // Tick every second to update countdown
   useEffect(() => {
@@ -23,23 +27,21 @@ export default function SleepTimerPanel() {
     return () => clearInterval(id)
   }, [endsAt])
 
-  // Close on outside click
-  useEffect(() => {
-    function onMouseDown(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        // Dispatch a custom event so the parent button can close us
-        document.dispatchEvent(new CustomEvent("sleep-timer-outside-click"))
-      }
-    }
-    document.addEventListener("mousedown", onMouseDown)
-    return () => document.removeEventListener("mousedown", onMouseDown)
-  }, [])
+  function handlePreset(min: number) {
+    start(min)
+    onClose()
+  }
+
+  function handleCustom() {
+    const m = parseInt(customMinutes, 10)
+    if (!m || m <= 0) return
+    start(m)
+    setCustomMinutes("")
+    onClose()
+  }
 
   return (
-    <div
-      ref={panelRef}
-      className="absolute bottom-full right-0 mb-2 z-50 w-56 rounded-xl bg-app-card border border-[var(--border)] shadow-2xl select-none"
-    >
+    <>
       {/* Header */}
       <div className="px-4 py-3 border-b border-[var(--border)]">
         <span className="text-sm font-semibold text-white tracking-wide">Sleep Timer</span>
@@ -53,26 +55,47 @@ export default function SleepTimerPanel() {
           </div>
           <p className="text-xs text-white/50 text-center">Pausing after timer ends</p>
           <button
-            onClick={cancel}
+            onClick={() => { cancel(); onClose() }}
             className="w-full rounded-full bg-white/10 py-1.5 text-sm text-white/70 hover:bg-white/20 hover:text-white transition-colors"
           >
             Cancel
           </button>
         </div>
       ) : (
-        /* Inactive state — preset pills */
-        <div className="px-4 py-3 flex flex-wrap gap-2">
-          {PRESETS.map(min => (
+        /* Inactive state — preset pills + custom input */
+        <div className="px-4 py-3 flex flex-col gap-3">
+          <div className="flex flex-wrap gap-2">
+            {PRESETS.map(min => (
+              <button
+                key={min}
+                onClick={() => handlePreset(min)}
+                className="rounded-full bg-white/10 px-3 py-1 text-sm text-white/70 hover:bg-white/20 hover:text-white transition-colors"
+              >
+                {min} min
+              </button>
+            ))}
+          </div>
+          {/* Custom duration input */}
+          <div className="flex gap-2">
+            <input
+              type="number"
+              min={1}
+              max={999}
+              placeholder="Custom (min)"
+              value={customMinutes}
+              onChange={e => setCustomMinutes(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") handleCustom() }}
+              className="flex-1 min-w-0 rounded-full bg-white/10 px-3 py-1 text-sm text-white placeholder-white/30 outline-none focus:bg-white/15 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            />
             <button
-              key={min}
-              onClick={() => start(min)}
+              onClick={handleCustom}
               className="rounded-full bg-white/10 px-3 py-1 text-sm text-white/70 hover:bg-white/20 hover:text-white transition-colors"
             >
-              {min} min
+              Set
             </button>
-          ))}
+          </div>
         </div>
       )}
-    </div>
+    </>
   )
 }

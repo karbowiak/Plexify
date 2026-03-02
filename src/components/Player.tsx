@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore, useConnectionStore, buildPlexImageUrl } from "../stores"
-import { DJ_MODES, type DjMode } from "../stores/playerStore"
+import { DJ_MODES } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
 import { useEqStore } from "../stores/eqStore"
 import { useAudioSettingsStore } from "../stores/audioSettingsStore"
@@ -11,6 +11,8 @@ import { reportTimeline, audioSetCacheMaxBytes, audioSetVisualizerEnabled } from
 import EqPanel from "./EqPanel"
 import SleepTimerPanel from "./SleepTimerPanel"
 import TrackInfoPanel from "./TrackInfoPanel"
+import DjPanel from "./DjPanel"
+import PlayerPopover from "./PlayerPopover"
 import VisualizerCanvas from "./VisualizerCanvas"
 import VisualizerFullscreen from "./VisualizerFullscreen"
 import { useSleepTimerStore } from "../stores/sleepTimerStore"
@@ -26,10 +28,7 @@ function formatMs(ms: number): string {
 export function Player() {
   const positionRef = useRef(0)
   const volumeAreaRef = useRef<HTMLDivElement>(null)
-  const djButtonRef = useRef<HTMLButtonElement>(null)
-  const [djMenuPos, setDjMenuPos] = useState<{ bottom: number; right: number } | null>(null)
   const [seekHoverPct, setSeekHoverPct] = useState<number | null>(null)
-  const [trackInfoOpen, setTrackInfoOpen] = useState(false)
 
   const {
     currentTrack,
@@ -53,7 +52,6 @@ export function Player() {
     setVolume,
     toggleShuffle,
     cycleRepeat,
-    setDjMode,
     stopRadio,
     initAudioEvents,
   } = usePlayerStore()
@@ -67,8 +65,6 @@ export function Player() {
     }))
   )
 
-  const [djMenuOpen, setDjMenuOpen] = useState(false)
-  const [sleepTimerOpen, setSleepTimerOpen] = useState(false)
   const [sleepRemaining, setSleepRemaining] = useState<string | null>(null)
   const { endsAt: sleepEndsAt, hydrate: hydrateSleepTimer } = useSleepTimerStore(useShallow(s => ({ endsAt: s.endsAt, hydrate: s.hydrate })))
 
@@ -86,7 +82,7 @@ export function Player() {
     isLyricsOpen: s.isLyricsOpen,
     setLyricsOpen: s.setLyricsOpen,
   })))
-  const { isEqOpen, setEqOpen, enabled: eqEnabled, syncToEngine } = useEqStore(useShallow(s => ({ isEqOpen: s.isEqOpen, setEqOpen: s.setEqOpen, enabled: s.enabled, syncToEngine: s.syncToEngine })))
+  const { enabled: eqEnabled, syncToEngine } = useEqStore(useShallow(s => ({ enabled: s.enabled, syncToEngine: s.syncToEngine })))
   const syncAudioSettings = useAudioSettingsStore(s => s.syncToEngine)
 
   // Keep positionRef in sync for the timeline reporting interval
@@ -183,13 +179,6 @@ export function Player() {
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [currentTrack, isPlaying])
 
-  // Close sleep timer panel on outside click (SleepTimerPanel dispatches a custom event)
-  useEffect(() => {
-    const handler = () => setSleepTimerOpen(false)
-    document.addEventListener("sleep-timer-outside-click", handler)
-    return () => document.removeEventListener("sleep-timer-outside-click", handler)
-  }, [])
-
   // Live countdown for sleep timer
   useEffect(() => {
     if (!sleepEndsAt) {
@@ -246,10 +235,6 @@ export function Player() {
           {playerError}
         </div>
       )}
-      {/* Panels — float above the player bar; rendered here so they escape overflow-clip */}
-      {isEqOpen && <EqPanel />}
-      {sleepTimerOpen && <SleepTimerPanel />}
-      {trackInfoOpen && currentTrack && <TrackInfoPanel onClose={() => setTrackInfoOpen(false)} />}
       {fullscreenOpen && <VisualizerFullscreen />}
       <div className="flex h-fit w-screen min-w-[620px] flex-col overflow-clip rounded-b-lg bg-app-card">
         <div className="h-24">
@@ -427,101 +412,49 @@ export function Player() {
               )}
 
               {/* Track info */}
-              <button
-                onClick={() => currentTrack && setTrackInfoOpen(v => !v)}
-                title="Track info"
-                className={`flex-shrink-0 flex h-8 w-8 items-center justify-center transition-colors ${trackInfoOpen ? "text-accent" : "text-white/40 hover:text-white/70"}`}
-                aria-label="Track info"
+              <PlayerPopover
+                icon={
+                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+                    <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                    <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/>
+                  </svg>
+                }
+                label="Track info"
+                disabled={!currentTrack}
+                width={320}
               >
-                <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                  <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
-                  <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/>
-                </svg>
-              </button>
+                {(close) => <TrackInfoPanel onClose={close} />}
+              </PlayerPopover>
 
-              {/* Guest DJ menu — click headphones to open DJ personality picker */}
-              <div className="relative flex flex-col items-center flex-shrink-0">
-                <button
-                  ref={djButtonRef}
-                  onClick={() => {
-                    const rect = djButtonRef.current?.getBoundingClientRect()
-                    if (rect) setDjMenuPos({ bottom: window.innerHeight - rect.top + 8, right: window.innerWidth - rect.right })
-                    setDjMenuOpen(v => !v)
-                  }}
-                  title="Guest DJ"
-                  className={`flex h-8 w-8 items-center justify-center transition-colors ${djMode ? "text-accent" : "text-white/40 hover:text-white/70"}`}
-                  aria-label="Guest DJ"
-                >
+              {/* Guest DJ menu */}
+              <PlayerPopover
+                icon={
                   <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
                     <path d="M8 1a6 6 0 0 0-6 6v2.5a2.5 2.5 0 0 0 2.5 2.5H5a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1H3.05A5 5 0 0 1 13 7H11a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h.5A2.5 2.5 0 0 0 14 9.5V7a6 6 0 0 0-6-6z" />
                   </svg>
-                </button>
-                {djMode && (
-                  <span className="absolute top-full mt-0.5 text-[0.5625rem] leading-none font-medium text-accent whitespace-nowrap pointer-events-none">
-                    {DJ_MODES.find(d => d.key === djMode)?.name.replace('DJ ', '')}
-                  </span>
-                )}
+                }
+                label="Guest DJ"
+                active={!!djMode}
+                subtitle={djMode ? DJ_MODES.find(d => d.key === djMode)?.name.replace("DJ ", "") : null}
+                width={288}
+              >
+                {(close) => <DjPanel onClose={close} />}
+              </PlayerPopover>
 
-                {djMenuOpen && djMenuPos && (
-                  <>
-                    <div className="fixed inset-0 z-[200]" onClick={() => setDjMenuOpen(false)} />
-                    <div
-                      className="fixed z-[201] w-72 rounded-xl bg-app-card border border-[var(--border)] shadow-2xl py-2"
-                      style={{ bottom: djMenuPos.bottom, right: djMenuPos.right }}
-                    >
-                      <div className="px-3 pb-1.5 text-[0.625rem] font-semibold uppercase tracking-widest text-gray-500">Guest DJ</div>
-                      {DJ_MODES.map(dj => (
-                        <button
-                          key={dj.key}
-                          onClick={() => { setDjMode(djMode === dj.key ? null : dj.key as DjMode); setDjMenuOpen(false) }}
-                          className={`w-full text-left px-3 py-2 hover:bg-app-surface-hover transition-colors ${djMode === dj.key ? "bg-app-surface" : ""}`}
-                        >
-                          <div className={`flex items-center gap-2 text-sm font-medium ${djMode === dj.key ? "text-accent" : "text-white"}`}>
-                            {djMode === dj.key ? (
-                              <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor" className="flex-shrink-0">
-                                <path d="M13.78 3.22a.75.75 0 0 1 0 1.06l-8 8a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 1 1 1.06-1.06L5.25 10.69l7.47-7.47a.75.75 0 0 1 1.06 0z"/>
-                              </svg>
-                            ) : (
-                              <span className="w-[10px] flex-shrink-0" />
-                            )}
-                            {dj.name}
-                          </div>
-                          <div className="text-xs text-gray-500 pl-[18px] mt-0.5">{dj.desc}</div>
-                        </button>
-                      ))}
-                      {djMode && (
-                        <div className="border-t border-[var(--border)] mt-1 pt-1">
-                          <button
-                            onClick={() => { setDjMode(null); setDjMenuOpen(false) }}
-                            className="w-full text-left px-3 py-1.5 text-xs text-gray-500 hover:text-white transition-colors"
-                          >
-                            Turn off Guest DJ
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Sleep timer toggle */}
-              <div className="relative flex flex-col items-center flex-shrink-0">
-                <button
-                  onClick={() => setSleepTimerOpen(v => !v)}
-                  title="Sleep Timer"
-                  className={`flex h-8 w-8 items-center justify-center transition-colors ${sleepEndsAt ? "text-accent" : "text-white/40 hover:text-white/70"}`}
-                  aria-label="Sleep Timer"
-                >
+              {/* Sleep timer */}
+              <PlayerPopover
+                icon={
                   <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
                     <path d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278z"/>
                   </svg>
-                </button>
-                {sleepRemaining && (
-                  <span className="absolute top-full mt-0.5 text-[0.5625rem] leading-none font-medium text-accent whitespace-nowrap pointer-events-none">
-                    {sleepRemaining}
-                  </span>
-                )}
-              </div>
+                }
+                label="Sleep Timer"
+                active={!!sleepEndsAt}
+                subtitle={sleepRemaining}
+                width={224}
+              >
+                {(close) => <SleepTimerPanel onClose={close} />}
+              </PlayerPopover>
 
               {/* Lyrics toggle */}
               <button
@@ -595,21 +528,23 @@ export function Player() {
                 </svg>
               </button>
 
-              {/* EQ toggle */}
-              <button
-                onClick={() => setEqOpen(!isEqOpen)}
-                title="Equalizer"
-                className={`flex-shrink-0 flex h-8 w-8 items-center justify-center transition-colors ${isEqOpen || eqEnabled ? "text-accent" : "text-white/40 hover:text-white/70"}`}
-                aria-label="Equalizer"
+              {/* EQ */}
+              <PlayerPopover
+                icon={
+                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+                    <rect x="1"  y="6" width="2" height="8" rx="1"/>
+                    <rect x="4"  y="3" width="2" height="11" rx="1"/>
+                    <rect x="7"  y="1" width="2" height="13" rx="1"/>
+                    <rect x="10" y="4" width="2" height="10" rx="1"/>
+                    <rect x="13" y="7" width="2" height="7" rx="1"/>
+                  </svg>
+                }
+                label="Equalizer"
+                active={eqEnabled}
+                width={460}
               >
-                <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                  <rect x="1"  y="6" width="2" height="8" rx="1"/>
-                  <rect x="4"  y="3" width="2" height="11" rx="1"/>
-                  <rect x="7"  y="1" width="2" height="13" rx="1"/>
-                  <rect x="10" y="4" width="2" height="10" rx="1"/>
-                  <rect x="13" y="7" width="2" height="7" rx="1"/>
-                </svg>
-              </button>
+                {(close) => <EqPanel onClose={close} />}
+              </PlayerPopover>
 
               {/* Queue toggle */}
               <button

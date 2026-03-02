@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react"
 import { useEqStore, EQ_LABELS, EQ_PRESETS } from "../stores/eqStore"
 
 const MIN_DB = -12
@@ -15,35 +14,15 @@ const SLIDER_HEIGHT = 120 // px — visual height of the vertical slider track
 const SLIDER_LEFT = -((SLIDER_HEIGHT - 20) / 2)
 const SLIDER_TOP  =   (SLIDER_HEIGHT - 20) / 2
 
-export default function EqPanel() {
-  const { gains, enabled, setEnabled, setBand, applyPreset, setEqOpen } = useEqStore()
-  const panelRef = useRef<HTMLDivElement>(null)
+interface Props {
+  onClose: () => void
+}
 
-  // Close on outside click
-  useEffect(() => {
-    function onMouseDown(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        setEqOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", onMouseDown)
-    return () => document.removeEventListener("mousedown", onMouseDown)
-  }, [setEqOpen])
-
-  // Close on Escape
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setEqOpen(false)
-    }
-    document.addEventListener("keydown", onKeyDown)
-    return () => document.removeEventListener("keydown", onKeyDown)
-  }, [setEqOpen])
+export default function EqPanel({ onClose }: Props) {
+  const { gains, enabled, setEnabled, setBand, applyPreset } = useEqStore()
 
   return (
-    <div
-      ref={panelRef}
-      className="absolute bottom-full right-0 mb-2 z-50 w-[460px] rounded-xl bg-app-card border border-[var(--border)] shadow-2xl select-none"
-    >
+    <>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
         <span className="text-sm font-semibold text-white tracking-wide">Equalizer</span>
@@ -59,7 +38,7 @@ export default function EqPanel() {
             {enabled ? "ON" : "OFF"}
           </button>
           <button
-            onClick={() => setEqOpen(false)}
+            onClick={onClose}
             className="text-white/40 hover:text-white transition-colors"
             aria-label="Close EQ"
           >
@@ -132,6 +111,6 @@ export default function EqPanel() {
           ))}
         </div>
       </div>
-    </div>
+    </>
   )
 }

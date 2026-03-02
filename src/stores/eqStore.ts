@@ -29,11 +29,9 @@ export const EQ_PRESETS: { name: string; gains: EqGains }[] = [
 interface EqState {
   gains: EqGains
   enabled: boolean
-  isEqOpen: boolean
   setBand: (index: number, db: number) => void
   setEnabled: (enabled: boolean) => void
   applyPreset: (preset: EqGains) => void
-  setEqOpen: (open: boolean) => void
   syncToEngine: () => void
 }
 
@@ -42,7 +40,6 @@ export const useEqStore = create<EqState>()(
     (set, get) => ({
       gains: [...FLAT] as EqGains,
       enabled: false,
-      isEqOpen: false,
 
       setBand: (index, db) => {
         const next = [...get().gains] as EqGains
@@ -67,8 +64,6 @@ export const useEqStore = create<EqState>()(
           void audioSetEq(preset)
         }
       },
-
-      setEqOpen: (open) => set({ isEqOpen: open }),
 
       syncToEngine: () => {
         const { gains, enabled } = get()

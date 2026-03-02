@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { usePlayerStore } from "../stores"
 import { getTrack } from "../lib/plex"
 import type { Track } from "../types/plex"
@@ -28,7 +28,6 @@ interface Props {
 
 export default function TrackInfoPanel({ onClose }: Props) {
   const currentTrack = usePlayerStore(s => s.currentTrack)
-  const panelRef = useRef<HTMLDivElement>(null)
   const [fullTrack, setFullTrack] = useState<Track | null>(null)
 
   // Fetch full metadata to get stream details (bit depth, sample rate, etc.)
@@ -40,26 +39,6 @@ export default function TrackInfoPanel({ onClose }: Props) {
     }).catch(() => {})
     return () => { cancelled = true }
   }, [currentTrack?.rating_key])
-
-  // Close on outside click
-  useEffect(() => {
-    function onMouseDown(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    document.addEventListener("mousedown", onMouseDown)
-    return () => document.removeEventListener("mousedown", onMouseDown)
-  }, [onClose])
-
-  // Close on Escape
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose()
-    }
-    document.addEventListener("keydown", onKeyDown)
-    return () => document.removeEventListener("keydown", onKeyDown)
-  }, [onClose])
 
   const track = fullTrack ?? currentTrack
   if (!track) return null
@@ -103,10 +82,7 @@ export default function TrackInfoPanel({ onClose }: Props) {
   if (audioStream?.peak != null) rows.push(["Peak", `${(audioStream.peak * 100).toFixed(1)}%`])
 
   return (
-    <div
-      ref={panelRef}
-      className="absolute bottom-full right-4 mb-2 z-50 w-80 rounded-xl bg-app-card border border-[var(--border)] shadow-2xl select-none"
-    >
+    <>
       <div className="px-4 pt-3 pb-1 flex items-center justify-between">
         <h3 className="text-xs font-semibold uppercase tracking-widest text-white/50">Track Info</h3>
         <button onClick={onClose} className="text-white/30 hover:text-white/60 transition-colors">
@@ -130,6 +106,6 @@ export default function TrackInfoPanel({ onClose }: Props) {
           </tbody>
         </table>
       </div>
-    </div>
+    </>
   )
 }
