@@ -222,6 +222,12 @@ export type PlexMedia =
 /** PlexMedia narrowed to only known variants (excludes the `{ type: "unknown" }` fallback). */
 export type KnownPlexMedia = Exclude<PlexMedia, { type: "unknown" }>
 
+/** Paginated response from `get_items_by_tag`. */
+export interface PagedMediaItems {
+  items: PlexMedia[]
+  total: number
+}
+
 export interface Hub {
   title: string
   hub_identifier: string

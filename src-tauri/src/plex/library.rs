@@ -491,9 +491,10 @@ impl PlexClient {
     /// * `tag_name` - Name of the tag (e.g., "Rock", "Chill")
     /// * `libtype` - Optional media type: "track", "album", or "artist"
     /// * `limit` - Optional limit on number of results
+    /// * `offset` - Optional start offset for pagination
     ///
     /// # Returns
-    /// * `Result<Vec<PlexMedia>>` - List of media items with the tag
+    /// * `Result<(Vec<PlexMedia>, i64)>` - (page of items, total matching count)
     #[instrument(skip(self))]
     pub async fn get_by_tag(
         &self,
@@ -502,7 +503,8 @@ impl PlexClient {
         tag_name: &str,
         libtype: Option<&str>,
         limit: Option<i32>,
-    ) -> Result<Vec<PlexMedia>> {
+        offset: Option<i32>,
+    ) -> Result<(Vec<PlexMedia>, i64)> {
         let mut params = vec![
             (tag_type.to_string(), tag_name.to_string()),
         ];
@@ -512,7 +514,11 @@ impl PlexClient {
         }
 
         if let Some(limit) = limit {
-            params.push(("limit".to_string(), limit.to_string()));
+            params.push(("X-Plex-Container-Size".to_string(), limit.to_string()));
+        }
+
+        if let Some(offset) = offset {
+            params.push(("X-Plex-Container-Start".to_string(), offset.to_string()));
         }
 
         let path = format!("/library/sections/{}/all", section_id);
@@ -533,7 +539,8 @@ impl PlexClient {
                 )
             })?;
 
-        Ok(container.metadata)
+        let total = container.total_size.unwrap_or(container.metadata.len() as i64);
+        Ok((container.metadata, total))
     }
 
     /// Get On Deck items (continue listening)

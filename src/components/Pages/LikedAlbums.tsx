@@ -1,14 +1,13 @@
 import { useEffect } from "react"
 import { Link } from "wouter"
+import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
 import { prefetchAlbum } from "../../stores/metadataCache"
 import { useAlbumImage } from "../../hooks/useMediaImage"
-import { useContextMenuStore } from "../../stores/contextMenuStore"
+import { starsFromRating } from "../../lib/formatters"
+import { MediaGrid } from "../shared/MediaGrid"
+import { useContextMenu } from "../../hooks/useContextMenu"
 
-function starsFromRating(rating: number | null): number {
-  if (!rating) return 0
-  return Math.round(rating / 2)
-}
 
 function AlbumThumb({ artist, title, thumb }: { artist: string; title: string; thumb: string | null }) {
   const resolved = useAlbumImage(artist, title, thumb)
@@ -17,6 +16,7 @@ function AlbumThumb({ artist, title, thumb }: { artist: string; title: string; t
       <img
         src={resolved}
         alt={title}
+        loading="lazy"
         className="h-full w-full object-cover transition-transform group-hover:scale-105"
       />
     )
@@ -31,10 +31,10 @@ function AlbumThumb({ artist, title, thumb }: { artist: string; title: string; t
 }
 
 export function LikedAlbums() {
-  const { likedAlbums, fetchLikedAlbums } = useLibraryStore()
-  const { baseUrl, token, musicSectionId } = useConnectionStore()
-  const { pageRefreshKey } = useUIStore()
-  const showContextMenu = useContextMenuStore(s => s.show)
+  const { likedAlbums, fetchLikedAlbums } = useLibraryStore(useShallow(s => ({ likedAlbums: s.likedAlbums, fetchLikedAlbums: s.fetchLikedAlbums })))
+  const { baseUrl, token, musicSectionId } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId })))
+  const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
+  const { handler: ctxMenu } = useContextMenu()
 
   useEffect(() => {
     if (musicSectionId !== null) void fetchLikedAlbums(musicSectionId)
@@ -74,7 +74,7 @@ export function LikedAlbums() {
             No rated albums yet. Rate an album in Plex to see it here.
           </div>
         ) : (
-          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}>
+          <MediaGrid>
             {likedAlbums.map(album => {
               const thumbUrl = album.thumb
                 ? buildPlexImageUrl(baseUrl, token, album.thumb)
@@ -85,8 +85,8 @@ export function LikedAlbums() {
                   key={album.rating_key}
                   href={`/album/${album.rating_key}`}
                   onMouseEnter={() => prefetchAlbum(album.rating_key)}
-                  onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "album", album) }}
-                  className="group flex flex-col gap-2 rounded-md p-3 no-underline transition-colors hover:bg-white/10"
+                  onContextMenu={ctxMenu("album", album)}
+                  className="group flex flex-col gap-2 rounded-md p-3 no-underline transition-colors hover:bg-accent/[0.06]"
                 >
                   <div className="relative w-full aspect-square overflow-hidden rounded-md bg-app-surface shadow-lg">
                     <AlbumThumb artist={album.parent_title} title={album.title} thumb={thumbUrl} />
@@ -118,7 +118,7 @@ export function LikedAlbums() {
                 </Link>
               )
             })}
-          </div>
+          </MediaGrid>
         )}
       </div>
     </div>

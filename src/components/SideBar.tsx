@@ -8,7 +8,7 @@ import { useResizable } from "../hooks/useResizable"
 export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) {
   const [location] = useLocation()
   const playlists = useLibraryStore(s => s.playlists)
-  const { baseUrl, token } = useConnectionStore()
+  const { baseUrl, token } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token })))
   const playPlaylist = usePlayerStore(useShallow(s => s.playPlaylist))
   const { width, onMouseDown } = useResizable({
     key: "plex-sidebar-width",

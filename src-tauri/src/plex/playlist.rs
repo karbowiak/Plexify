@@ -180,18 +180,15 @@ impl PlexClient {
         item_ids: &[i64],
     ) -> Result<Playlist> {
         // Plex requires all params as query parameters (not a JSON body).
-        // URI format: {baseUrl}/library/metadata/{id1},{id2},...
-        // An empty ids string creates an empty regular playlist.
-        let ids = item_ids
+        // URI format: server://{machineIdentifier}/com.plexapp.plugins.library/library/metadata/{id}
+        let uri = item_ids
             .iter()
-            .map(|id| id.to_string())
+            .map(|id| format!(
+                "server://{}/com.plexapp.plugins.library/library/metadata/{}",
+                self.machine_identifier, id
+            ))
             .collect::<Vec<_>>()
             .join(",");
-        let uri = format!(
-            "{}/library/metadata/{}",
-            self.build_url("").trim_end_matches('/'),
-            ids
-        );
 
         let container: MediaContainer<Playlist> = self
             .post_params("/playlists", &[
@@ -331,16 +328,14 @@ impl PlexClient {
     pub async fn add_items(&self, playlist_id: i64, item_ids: &[i64]) -> Result<()> {
         let path = format!("/playlists/{}/items", playlist_id);
 
-        let ids = item_ids
+        let uri = item_ids
             .iter()
-            .map(|id| id.to_string())
+            .map(|id| format!(
+                "server://{}/com.plexapp.plugins.library/library/metadata/{}",
+                self.machine_identifier, id
+            ))
             .collect::<Vec<_>>()
             .join(",");
-        let uri = format!(
-            "{}/library/metadata/{}",
-            self.build_url("").trim_end_matches('/'),
-            ids
-        );
 
         self.put_params_ok(&path, &[("uri", &uri)])
             .await

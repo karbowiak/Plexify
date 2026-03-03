@@ -1,16 +1,20 @@
 import { Link, useLocation } from "wouter"
 import { useEffect, useRef, useState } from "react"
+import { useShallow } from "zustand/react/shallow"
 import { useSearchStore, useConnectionStore, useUIStore, useLibraryStore } from "../stores"
+import { useDeezerMetadataStore } from "../stores/deezerMetadataStore"
+import { useItunesMetadataStore } from "../stores/itunesMetadataStore"
+import { useLastfmMetadataStore } from "../stores/lastfmMetadataStore"
 import { clearImageCache } from "../lib/plex"
 import { ActivityIndicator } from "./ActivityIndicator"
 import { SearchDropdown } from "./SearchDropdown"
 
 export function TopBar() {
   const [location, navigate] = useLocation()
-  const { search, clear, setQuery, query } = useSearchStore()
-  const { musicSectionId, isConnected } = useConnectionStore()
-  const { isRefreshing, setIsRefreshing, incrementPageRefreshKey } = useUIStore()
-  const { refreshAll, invalidateCache } = useLibraryStore()
+  const { search, clear, setQuery, query } = useSearchStore(useShallow(s => ({ search: s.search, clear: s.clear, setQuery: s.setQuery, query: s.query })))
+  const { musicSectionId, isConnected } = useConnectionStore(useShallow(s => ({ musicSectionId: s.musicSectionId, isConnected: s.isConnected })))
+  const { isRefreshing, setIsRefreshing, incrementPageRefreshKey } = useUIStore(useShallow(s => ({ isRefreshing: s.isRefreshing, setIsRefreshing: s.setIsRefreshing, incrementPageRefreshKey: s.incrementPageRefreshKey })))
+  const { refreshAll, invalidateCache } = useLibraryStore(useShallow(s => ({ refreshAll: s.refreshAll, invalidateCache: s.invalidateCache })))
   const [localQuery, setLocalQuery] = useState(query)
   const [showDropdown, setShowDropdown] = useState(false)
   const [activeIndex, setActiveIndex] = useState(-1)
@@ -61,6 +65,10 @@ export function TopBar() {
     try {
       invalidateCache()
       incrementPageRefreshKey()
+      // Clear external metadata caches so they re-fetch fresh
+      useDeezerMetadataStore.getState().clearCache()
+      useItunesMetadataStore.getState().clearCache()
+      useLastfmMetadataStore.getState().clearCache()
       await Promise.all([
         clearImageCache(),
         refreshAll(musicSectionId),

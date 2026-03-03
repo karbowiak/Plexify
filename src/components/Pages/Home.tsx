@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { useLocation } from "wouter"
 import { useLibraryStore, useConnectionStore, usePlayerStore, buildPlexImageUrl } from "../../stores"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import type { PlexMedia, Playlist } from "../../types/plex"
-import { useContextMenuStore } from "../../stores/contextMenuStore"
-import { searchLibrary, buildItemUri, getMixTracks } from "../../lib/plex"
+import { useContextMenu } from "../../hooks/useContextMenu"
+import { searchLibrary, getMixTracks } from "../../lib/plex"
+import { makeOnPlay } from "../../lib/mediaPlay"
 import { ScrollRow } from "../ScrollRow"
 import { MediaCard } from "../MediaCard"
 import { PriorityMediaCard } from "../PriorityMediaCard"
@@ -97,19 +98,19 @@ export function Home() {
     recentlyAdded: s.recentlyAdded,
     hubs: s.hubs,
   })))
-  const { baseUrl, token, isConnected, isLoading: isConnecting, musicSectionId, sectionUuid } = useConnectionStore()
+  const { baseUrl, token, isConnected, isLoading: isConnecting, musicSectionId, sectionUuid } = useConnectionStore(
+    useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, isConnected: s.isConnected, isLoading: s.isLoading, musicSectionId: s.musicSectionId, sectionUuid: s.sectionUuid }))
+  )
   const { playFromUri, playTrack, playPlaylist } = usePlayerStore(useShallow(s => ({
     playFromUri: s.playFromUri,
     playTrack:   s.playTrack,
     playPlaylist: s.playPlaylist,
   })))
   const [, navigate] = useLocation()
-  const showContextMenu = useContextMenuStore(s => s.show)
+  const { handler: ctxMenu } = useContextMenu()
 
   function makeOnContextMenu(item: PlexMedia) {
-    if (item.type === "album") return (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "album", item) }
-    if (item.type === "artist") return (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "artist", item) }
-    if (item.type === "track") return (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "track", item) }
+    if (item.type === "album" || item.type === "artist" || item.type === "track") return ctxMenu(item.type, item)
     return undefined
   }
 
@@ -122,9 +123,10 @@ export function Home() {
 
   const sectionId = musicSectionId ?? 0
 
-  const mixesHubs = hubs.filter(h => h.hub_identifier.startsWith("music.mixes"))
-  const mixesItems = mixesHubs.flatMap(h => h.metadata)
-  const mixesTitle = mixesHubs[0]?.title ?? "Mixes for You"
+  const { mixesHubs, mixesItems, mixesTitle } = useMemo(() => {
+    const mh = hubs.filter(h => h.hub_identifier.startsWith("music.mixes"))
+    return { mixesHubs: mh, mixesItems: mh.flatMap(h => h.metadata), mixesTitle: mh[0]?.title ?? "Mixes for You" }
+  }, [hubs])
 
   // For each mix, search the library for the artist named in the title and
   // cache their thumbnail. Already-cached titles are skipped.
@@ -133,26 +135,37 @@ export function Home() {
     const controller = new AbortController()
 
     const run = async () => {
+      // Filter to playlist items that need resolution
+      const pending = mixesItems.filter(
+        (item): item is Extract<typeof item, { type: "playlist" }> =>
+          item.type === "playlist" && !mixThumbCache.has(item.title) && !!mixTitleToArtistName(item.title)
+      )
+      if (pending.length === 0) return
+
+      const BATCH = 5
       const updates: Record<string, string> = {}
-      for (const item of mixesItems) {
+
+      for (let i = 0; i < pending.length; i += BATCH) {
         if (controller.signal.aborted) break
-        if (item.type !== "playlist") continue
-        if (mixThumbCache.has(item.title)) continue  // already resolved
-        const artistName = mixTitleToArtistName(item.title)
-        if (!artistName) continue
-        try {
-          const results = await searchLibrary(sectionId, artistName, "artist")
-          const artist = results.find(
-            r => r.type === "artist" && r.title.toLowerCase() === artistName.toLowerCase()
-          ) ?? results.find(r => r.type === "artist")
-          if (artist && artist.type === "artist" && artist.thumb) {
-            const url = buildPlexImageUrl(baseUrl, token, artist.thumb)
-            mixThumbCache.set(item.title, url)
-            updates[item.title] = url
-          }
-        } catch {
-          // search failure for one mix shouldn't abort the rest
-        }
+        await Promise.all(
+          pending.slice(i, i + BATCH).map(async (item) => {
+            const artistName = mixTitleToArtistName(item.title)
+            if (!artistName) return
+            try {
+              const results = await searchLibrary(sectionId, artistName, "artist")
+              const artist = results.find(
+                r => r.type === "artist" && r.title.toLowerCase() === artistName.toLowerCase()
+              ) ?? results.find(r => r.type === "artist")
+              if (artist && artist.type === "artist" && artist.thumb) {
+                const url = buildPlexImageUrl(baseUrl, token, artist.thumb)
+                mixThumbCache.set(item.title, url)
+                updates[item.title] = url
+              }
+            } catch {
+              // search failure for one mix shouldn't abort the rest
+            }
+          })
+        )
       }
       if (!controller.signal.aborted && Object.keys(updates).length > 0) {
         setMixThumbs(prev => ({ ...prev, ...updates }))
@@ -183,25 +196,6 @@ export function Home() {
     return undefined
   }
 
-  function makeOnPlay(item: PlexMedia): ((e: React.MouseEvent) => void) | undefined {
-    if (item.type === "track") {
-      return () => void playTrack(item, [item], item.grandparent_title, null)
-    }
-    if (!sectionUuid) return undefined
-    if (item.type === "album") {
-      const uri = buildItemUri(sectionUuid, `/library/metadata/${item.rating_key}`)
-      return () => void playFromUri(uri, false, item.title, `/album/${item.rating_key}`)
-    }
-    if (item.type === "artist") {
-      const uri = buildItemUri(sectionUuid, `/library/metadata/${item.rating_key}`)
-      return () => void playFromUri(uri, false, item.title, `/artist/${item.rating_key}`)
-    }
-    if (item.type === "playlist") {
-      return () => void playPlaylist(item.rating_key, item.leaf_count, item.title, `/playlist/${item.rating_key}`)
-    }
-    return undefined
-  }
-
   return (
     <div className="space-y-8 pb-8">
       {mixesItems.length > 0 && (
@@ -213,7 +207,7 @@ export function Home() {
               ?? (item.composite ? buildPlexImageUrl(baseUrl, token, item.composite) : null)
             return (
               <MediaCard
-                key={idx}
+                key={item.rating_key || `mix-${idx}`}
                 title={item.title}
                 desc="Mix for You"
                 thumb={thumb}
@@ -248,14 +242,14 @@ export function Home() {
             const Card = usePriority ? PriorityMediaCard : MediaCard
             return (
               <Card
-                key={idx}
+                key={"rating_key" in item ? (item.rating_key || `ra-${idx}`) : idx}
                 title={info.title}
                 desc={info.desc}
                 thumb={info.thumb}
                 isArtist={info.isArtist}
                 href={info.href ?? undefined}
                 prefetch={makePrefetch(info)}
-                onPlay={makeOnPlay(item)}
+                onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, sectionUuid })}
                 onContextMenu={makeOnContextMenu(item)}
                 artistName={"artistName" in info ? info.artistName : undefined}
                 albumName={"albumName" in info ? info.albumName : undefined}
@@ -295,14 +289,14 @@ export function Home() {
               const Card = usePriority ? PriorityMediaCard : MediaCard
               return (
                 <Card
-                  key={idx}
+                  key={"rating_key" in item ? (item.rating_key || `hub-${idx}`) : idx}
                   title={info.title}
                   desc={info.desc}
                   thumb={info.thumb}
                   isArtist={info.isArtist}
                   href={info.href ?? undefined}
                   prefetch={makePrefetch(info)}
-                  onPlay={makeOnPlay(item)}
+                  onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, sectionUuid })}
                   onContextMenu={makeOnContextMenu(item)}
                   artistName={"artistName" in info ? info.artistName : undefined}
                   albumName={"albumName" in info ? info.albumName : undefined}

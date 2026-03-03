@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
@@ -10,14 +10,39 @@ export function LyricsContent() {
     useShallow(s => ({ lyricsLines: s.lyricsLines, positionMs: s.positionMs }))
   )
   const activeRef = useRef<HTMLParagraphElement>(null)
+  const lastIndexRef = useRef(0)
 
-  const activeIndex = lyricsLines
-    ? lyricsLines.findIndex(
-        (line, i) =>
-          positionMs >= line.start_ms &&
-          (positionMs < line.end_ms || i === lyricsLines.length - 1)
-      )
-    : -1
+  // Reset scan position when the lyrics data changes (new track)
+  useEffect(() => { lastIndexRef.current = 0 }, [lyricsLines])
+
+  const activeIndex = useMemo(() => {
+    if (!lyricsLines || lyricsLines.length === 0) return -1
+
+    // Forward scan from last known position — O(1) amortized during normal playback
+    let i = Math.max(0, lastIndexRef.current)
+    while (i < lyricsLines.length) {
+      const line = lyricsLines[i]
+      if (positionMs >= line.start_ms && (positionMs < line.end_ms || i === lyricsLines.length - 1)) {
+        lastIndexRef.current = i
+        return i
+      }
+      if (positionMs < line.start_ms) break
+      i++
+    }
+
+    // Binary search fallback for backward seeks
+    let lo = 0, hi = lyricsLines.length - 1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (positionMs >= lyricsLines[mid].start_ms) lo = mid + 1
+      else hi = mid - 1
+    }
+    if (hi >= 0) {
+      lastIndexRef.current = hi
+      return hi
+    }
+    return -1
+  }, [lyricsLines, positionMs])
 
   useEffect(() => {
     if (activeRef.current) {

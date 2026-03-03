@@ -2,25 +2,40 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use cpal::traits::DeviceTrait;
+use cpal::Stream;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use ringbuf::traits::Split;
 use ringbuf::HeapRb;
 use tauri::{AppHandle, Emitter};
-use tracing::info;
+use tracing::{info, warn};
 
-use super::decoder::{decoder_thread, DecoderShared};
+use super::decoder::decoder_thread;
+use super::state::DecoderShared;
 use super::output::{start_output, RING_BUFFER_SIZE};
 use super::types::{AudioCommand, AudioEvent, PlaybackState};
+
+/// Wrapper for cpal::Stream that is !Send+!Sync on macOS due to PhantomData<*mut ()>.
+/// The stream is only ever accessed behind a Mutex so concurrent access is safe.
+struct StreamHandle(Stream);
+
+// SAFETY: The Stream is accessed only through a Mutex, so only one thread
+// accesses it at a time. On macOS, cpal marks Stream as !Send due to
+// PropertyListenerCallbackWrapper containing a Box<dyn FnMut()>, but our
+// callbacks capture only Send+Sync state (Arc<DecoderShared>).
+unsafe impl Send for StreamHandle {}
+unsafe impl Sync for StreamHandle {}
 
 /// The audio engine state managed by Tauri
 pub struct AudioEngine {
     cmd_tx: Sender<AudioCommand>,
     shared: Arc<DecoderShared>,
     app_handle: AppHandle,
+    /// The cpal output stream — stored so it can be dropped and recreated on device switch.
+    _stream: Mutex<Option<StreamHandle>>,
 }
 
 impl AudioEngine {
@@ -38,21 +53,16 @@ impl AudioEngine {
 
         // Start cpal output
         let shared_for_output = Arc::clone(&shared);
-        let (_stream, device_sample_rate) = start_output(consumer, shared_for_output)?;
+        let (_stream, device_sample_rate, device_name) = start_output(consumer, shared_for_output)?;
 
-        // Store device sample rate so the decoder can resample to match
         shared
             .device_sample_rate
             .store(device_sample_rate as i64, Ordering::Relaxed);
-
-        // We need to keep the stream alive — leak it into a static.
-        // cpal drops the stream (and stops audio) when the Stream is dropped.
-        // This is fine because the audio engine lives for the app lifetime.
-        let stream = Box::new(_stream);
-        std::mem::forget(stream);
+        *shared.current_device_name.lock().unwrap() = device_name.clone();
 
         info!(
             device_sample_rate = device_sample_rate,
+            device_name = %device_name,
             "Audio output started"
         );
 
@@ -69,7 +79,51 @@ impl AudioEngine {
         let shared_for_events = Arc::clone(&shared);
         Self::spawn_event_emitter(app_handle.clone(), event_rx, shared_for_events);
 
-        Ok(Self { cmd_tx, shared, app_handle })
+        // Spawn device monitor thread — polls for OS default device changes every 2s
+        {
+            let shared_mon = Arc::clone(&shared);
+            let app_mon = app_handle.clone();
+            thread::Builder::new()
+                .name("device-monitor".into())
+                .spawn(move || {
+                    use cpal::traits::HostTrait;
+                    let host = cpal::default_host();
+                    let mut last_name = host.default_output_device()
+                        .and_then(|d| d.name().ok())
+                        .unwrap_or_default();
+
+                    loop {
+                        thread::sleep(std::time::Duration::from_secs(2));
+
+                        let current = host.default_output_device()
+                            .and_then(|d| d.name().ok())
+                            .unwrap_or_default();
+
+                        if current != last_name && !current.is_empty() {
+                            info!(old = %last_name, new = %current, "Default audio device changed");
+                            last_name = current.clone();
+
+                            // Only auto-switch if user is on "System Default" (no explicit preference)
+                            let is_system_default = shared_mon.preferred_device_name.lock()
+                                .map(|g| g.is_none())
+                                .unwrap_or(false);
+
+                            if is_system_default {
+                                *shared_mon.current_device_name.lock().unwrap() = current.clone();
+                                let _ = app_mon.emit("audio-device-changed", serde_json::json!({ "name": current }));
+                            }
+                        }
+                    }
+                })
+                .ok();
+        }
+
+        Ok(Self {
+            cmd_tx,
+            shared,
+            app_handle,
+            _stream: Mutex::new(Some(StreamHandle(_stream))),
+        })
     }
 
     /// Send a command to the audio engine
@@ -86,17 +140,17 @@ impl AudioEngine {
 
     /// Check if playback is paused
     pub fn is_paused(&self) -> bool {
-        self.shared.paused.load(Ordering::Relaxed)
+        self.shared.paused.load(Ordering::Acquire)
     }
 
     /// Check if current track has finished
     pub fn is_finished(&self) -> bool {
-        self.shared.finished.load(Ordering::Relaxed)
+        self.shared.finished.load(Ordering::Acquire)
     }
 
     /// Warm the audio disk cache for a URL in the background.
     pub fn prefetch_url(&self, url: String) {
-        super::decoder::prefetch_url_bg(url, Arc::clone(&self.shared));
+        super::cache::prefetch_url_bg(url, Arc::clone(&self.shared));
     }
 
     /// Set the crossfade window duration in milliseconds. Pass 0 to disable crossfade.
@@ -122,6 +176,23 @@ impl AudioEngine {
     /// Set pre-amp gain in dB (−12..+3). Applied before EQ in the output callback.
     pub fn set_preamp_gain(&self, db: f32) {
         let _ = self.cmd_tx.send(AudioCommand::SetPreampGain(db));
+    }
+
+    /// Set the post-EQ makeup gain in dB. Restores volume lost to pregain.
+    pub fn set_eq_postgain(&self, db: f32) {
+        let _ = self.cmd_tx.send(AudioCommand::SetEqPostgain(db));
+    }
+
+    /// Enable or disable auto postgain mode. When enabled, postgain = 1/pregain.
+    pub fn set_eq_postgain_auto(&self, auto: bool) {
+        let _ = self.cmd_tx.send(AudioCommand::SetEqPostgainAuto(auto));
+    }
+
+    /// Get the name of the actual OS audio device currently in use.
+    pub fn get_current_device(&self) -> String {
+        self.shared.current_device_name.lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// Enable or disable crossfade for consecutive same-album tracks.
@@ -166,9 +237,44 @@ impl AudioEngine {
 
     /// Set the preferred CPAL output device by name.
     /// Pass `None` to revert to the system default.
-    /// The new device takes effect on the next `Play` command (stream restart).
+    /// Takes effect immediately by creating a new output stream.
     pub fn set_preferred_device(&self, name: Option<String>) {
-        let _ = self.cmd_tx.send(AudioCommand::SetPreferredDevice(name));
+        // Update the preference first
+        *self.shared.preferred_device_name.lock().unwrap() = name.clone();
+
+        // Create new ring buffer + output stream for the new device
+        let rb = HeapRb::<f32>::new(RING_BUFFER_SIZE);
+        let (new_producer, new_consumer) = rb.split();
+
+        let shared_for_output = Arc::clone(&self.shared);
+        match start_output(new_consumer, shared_for_output) {
+            Ok((new_stream, new_sample_rate, new_device_name)) => {
+                self.shared
+                    .device_sample_rate
+                    .store(new_sample_rate as i64, Ordering::Relaxed);
+                *self.shared.current_device_name.lock().unwrap() = new_device_name.clone();
+
+                // Send the new producer to the decoder thread
+                let _ = self.cmd_tx.send(AudioCommand::SwapProducer(new_producer));
+
+                // Replace old stream — dropping it stops the old callback
+                if let Ok(mut guard) = self._stream.lock() {
+                    *guard = Some(StreamHandle(new_stream));
+                }
+
+                // Emit device change event so frontend can load matching EQ profile
+                let _ = self.app_handle.emit("audio-device-changed", serde_json::json!({ "name": new_device_name }));
+
+                info!(
+                    device = %new_device_name,
+                    sample_rate = new_sample_rate,
+                    "Audio device switched"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to switch audio device — keeping current");
+            }
+        }
     }
 
     /// List available CPAL output device names for the default host.

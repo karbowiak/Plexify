@@ -8,6 +8,7 @@ import { useEqStore } from "../stores/eqStore"
 import { useAudioSettingsStore } from "../stores/audioSettingsStore"
 import { useVisualizerStore } from "../stores/visualizerStore"
 import { reportTimeline, audioSetCacheMaxBytes, audioSetVisualizerEnabled } from "../lib/plex"
+import { formatMs } from "../lib/formatters"
 import EqPanel from "./EqPanel"
 import SleepTimerPanel from "./SleepTimerPanel"
 import TrackInfoPanel from "./TrackInfoPanel"
@@ -20,12 +21,6 @@ import { useSleepTimerStore } from "../stores/sleepTimerStore"
 
 const CACHE_SIZE_KEY = "plexify-audio-cache-max-bytes"
 
-function formatMs(ms: number): string {
-  if (!ms || isNaN(ms)) return "0:00"
-  const s = Math.floor(ms / 1000)
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`
-}
-
 export function Player() {
   const positionRef = useRef(0)
   const volumeSliderRef = useRef<HTMLDivElement>(null)
@@ -33,10 +28,13 @@ export function Player() {
   const [seekHoverPct, setSeekHoverPct] = useState<number | null>(null)
   const [volumeTooltipVisible, setVolumeTooltipVisible] = useState(false)
 
+  // positionMs updates at ~4 Hz — isolate it as a primitive selector so only
+  // the progress bar re-renders on each tick, not the entire Player subtree.
+  const positionMs = usePlayerStore(s => s.positionMs)
+
   const {
     currentTrack,
     isPlaying,
-    positionMs,
     volume,
     shuffle,
     repeat,
@@ -57,7 +55,30 @@ export function Player() {
     cycleRepeat,
     stopRadio,
     initAudioEvents,
-  } = usePlayerStore()
+  } = usePlayerStore(useShallow(s => ({
+    currentTrack: s.currentTrack,
+    isPlaying: s.isPlaying,
+    volume: s.volume,
+    shuffle: s.shuffle,
+    repeat: s.repeat,
+    isRadioMode: s.isRadioMode,
+    djMode: s.djMode,
+    playerError: s.playerError,
+    contextName: s.contextName,
+    contextHref: s.contextHref,
+    waveformLevels: s.waveformLevels,
+    lyricsLines: s.lyricsLines,
+    pause: s.pause,
+    resume: s.resume,
+    next: s.next,
+    prev: s.prev,
+    seekTo: s.seekTo,
+    setVolume: s.setVolume,
+    toggleShuffle: s.toggleShuffle,
+    cycleRepeat: s.cycleRepeat,
+    stopRadio: s.stopRadio,
+    initAudioEvents: s.initAudioEvents,
+  })))
 
   const { compactMode, cycleCompactMode, openFullscreen, fullscreenOpen } = useVisualizerStore(
     useShallow(s => ({
@@ -71,7 +92,7 @@ export function Player() {
   const [sleepRemaining, setSleepRemaining] = useState<string | null>(null)
   const { endsAt: sleepEndsAt, hydrate: hydrateSleepTimer } = useSleepTimerStore(useShallow(s => ({ endsAt: s.endsAt, hydrate: s.hydrate })))
 
-  const { baseUrl, token } = useConnectionStore()
+  const { baseUrl, token } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token })))
   const {
     isQueueOpen, setQueueOpen,
     isQueuePinned, queueActiveTab, setQueueActiveTab,
@@ -409,11 +430,18 @@ export function Player() {
                 {/* Repeat */}
                 <button
                   onClick={cycleRepeat}
-                  className={`flex h-8 w-8 items-center justify-center transition-colors ${repeatActive ? "text-accent" : "text-white text-opacity-70 hover:text-opacity-100"}`}
+                  title={repeat === 0 ? "Repeat off" : repeat === 1 ? "Repeat one" : "Repeat all"}
+                  className={`relative flex h-8 w-8 items-center justify-center transition-colors ${repeatActive ? "text-accent" : "text-white text-opacity-70 hover:text-opacity-100"}`}
                 >
                   <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
                     <path d="M0 4.75A3.75 3.75 0 0 1 3.75 1h8.5A3.75 3.75 0 0 1 16 4.75v5a3.75 3.75 0 0 1-3.75 3.75H9.81l1.018 1.018a.75.75 0 1 1-1.06 1.06L6.939 12.75l2.829-2.828a.75.75 0 1 1 1.06 1.06L9.811 12h2.439a2.25 2.25 0 0 0 2.25-2.25v-5a2.25 2.25 0 0 0-2.25-2.25h-8.5A2.25 2.25 0 0 0 1.5 4.75v5A2.25 2.25 0 0 0 3.75 12H5v1.5H3.75A3.75 3.75 0 0 1 0 9.75v-5z" />
                   </svg>
+                  {repeat === 1 && (
+                    <span className="absolute -top-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-accent text-[8px] font-bold text-black">1</span>
+                  )}
+                  {repeat === 2 && (
+                    <span className="absolute -top-0.5 -right-1.5 flex h-3.5 w-auto min-w-[14px] px-0.5 items-center justify-center rounded-full bg-accent text-[7px] font-bold text-black">ALL</span>
+                  )}
                 </button>
 
                 {/* Media info chip — shows codec + bitrate, opens track info panel */}

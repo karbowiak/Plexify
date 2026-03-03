@@ -30,9 +30,14 @@ use tauri_plugin_window_state::{StateFlags, WindowExt};
 // ---------------------------------------------------------------------------
 
 /// Dedicated Tokio runtime for image fetching — isolated from Tauri's runtime.
+/// Uses up to 8 workers so many concurrent cache-miss images can be fetched
+/// without blocking each other or Tauri's main thread pool.
 static IMGCACHE_RT: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get().min(8))
+        .unwrap_or(4);
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        .worker_threads(threads)
         .thread_name("pleximg-cache")
         .enable_all()
         .build()
@@ -120,133 +125,169 @@ pub fn run() {
 
             Ok(())
         })
-        // ---- Custom image-caching protocol ----
-        .register_uri_scheme_protocol("pleximg", |app, request| {
-            // Extract and decode the `src` query param (the full Plex URL).
-            let query = request.uri().query().unwrap_or("");
-            let src = url::form_urlencoded::parse(query.as_bytes())
-                .find(|(k, _)| k == "src")
-                .map(|(_, v)| v.into_owned())
-                .unwrap_or_default();
+        // ---- Custom image-caching protocol (async — does not block Tauri's handler threads) ----
+        .register_asynchronous_uri_scheme_protocol("pleximg", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let query = request.uri().query().unwrap_or("").to_string();
 
-            if src.is_empty() {
-                return tauri::http::Response::builder()
-                    .status(400)
-                    .body(vec![])
-                    .unwrap();
-            }
+            IMGCACHE_RT.spawn(async move {
+                let src = url::form_urlencoded::parse(query.as_bytes())
+                    .find(|(k, _)| k == "src")
+                    .map(|(_, v)| v.into_owned())
+                    .unwrap_or_default();
 
-            // Locate the cache file.
-            let cache_key = plex_img_cache_key(&src);
-            let cache_dir: Option<std::path::PathBuf> = app
-                .app_handle()
-                .path()
-                .app_cache_dir()
-                .ok()
-                .map(|d| d.join("pleximg"));
+                if src.is_empty() {
+                    responder.respond(
+                        tauri::http::Response::builder().status(400).body(vec![]).unwrap(),
+                    );
+                    return;
+                }
 
-            if let Some(ref dir) = cache_dir {
-                let _ = std::fs::create_dir_all(dir);
-                let file_path = dir.join(&cache_key);
-                if file_path.exists() {
-                    if let Ok(bytes) = std::fs::read(&file_path) {
-                        return tauri::http::Response::builder()
-                            .header("Content-Type", "image/jpeg")
-                            .header("Cache-Control", "max-age=86400")
-                            .header("Access-Control-Allow-Origin", "*")
-                            .body(bytes)
-                            .unwrap();
+                let cache_key = plex_img_cache_key(&src);
+                let cache_dir: Option<std::path::PathBuf> = app
+                    .path()
+                    .app_cache_dir()
+                    .ok()
+                    .map(|d| d.join("pleximg"));
+
+                // Disk cache hit
+                if let Some(ref dir) = cache_dir {
+                    let _ = std::fs::create_dir_all(dir);
+                    let file_path = dir.join(&cache_key);
+                    if file_path.exists() {
+                        if let Ok(bytes) = std::fs::read(&file_path) {
+                            responder.respond(
+                                tauri::http::Response::builder()
+                                    .header("Content-Type", "image/jpeg")
+                                    .header("Cache-Control", "max-age=86400")
+                                    .header("Access-Control-Allow-Origin", "*")
+                                    .body(bytes)
+                                    .unwrap(),
+                            );
+                            return;
+                        }
                     }
                 }
-            }
 
-            // Cache miss — fetch from Plex.
-            let result = IMGCACHE_RT.block_on(async {
-                IMG_HTTP.get(&src).send().await?.bytes().await
+                // Cache miss — async fetch from Plex
+                match IMG_HTTP.get(&src).send().await {
+                    Ok(resp) => match resp.bytes().await {
+                        Ok(bytes) => {
+                            if let Some(ref dir) = cache_dir {
+                                let _ = std::fs::write(dir.join(&cache_key), &bytes);
+                            }
+                            responder.respond(
+                                tauri::http::Response::builder()
+                                    .header("Content-Type", "image/jpeg")
+                                    .header("Cache-Control", "max-age=86400")
+                                    .header("Access-Control-Allow-Origin", "*")
+                                    .body(bytes.to_vec())
+                                    .unwrap(),
+                            );
+                        }
+                        Err(_) => {
+                            responder.respond(
+                                tauri::http::Response::builder()
+                                    .status(404)
+                                    .header("Access-Control-Allow-Origin", "*")
+                                    .body(vec![])
+                                    .unwrap(),
+                            );
+                        }
+                    },
+                    Err(_) => {
+                        responder.respond(
+                            tauri::http::Response::builder()
+                                .status(404)
+                                .header("Access-Control-Allow-Origin", "*")
+                                .body(vec![])
+                                .unwrap(),
+                        );
+                    }
+                }
             });
-
-            match result {
-                Ok(bytes) => {
-                    if let Some(ref dir) = cache_dir {
-                        let _ = std::fs::write(dir.join(&cache_key), &bytes);
-                    }
-                    tauri::http::Response::builder()
-                        .header("Content-Type", "image/jpeg")
-                        .header("Cache-Control", "max-age=86400")
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(bytes.to_vec())
-                        .unwrap()
-                }
-                Err(_) => tauri::http::Response::builder()
-                    .status(404)
-                    .header("Access-Control-Allow-Origin", "*")
-                    .body(vec![])
-                    .unwrap(),
-            }
         })
-        // ---- External metadata image-caching protocol ----
-        .register_uri_scheme_protocol("metaimg", |app, request| {
-            // Extract and decode the `src` query param (the full external image URL).
-            let query = request.uri().query().unwrap_or("");
-            let src = url::form_urlencoded::parse(query.as_bytes())
-                .find(|(k, _)| k == "src")
-                .map(|(_, v)| v.into_owned())
-                .unwrap_or_default();
+        // ---- External metadata image-caching protocol (async) ----
+        .register_asynchronous_uri_scheme_protocol("metaimg", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let query = request.uri().query().unwrap_or("").to_string();
 
-            if src.is_empty() {
-                return tauri::http::Response::builder()
-                    .status(400)
-                    .body(vec![])
-                    .unwrap();
-            }
+            IMGCACHE_RT.spawn(async move {
+                let src = url::form_urlencoded::parse(query.as_bytes())
+                    .find(|(k, _)| k == "src")
+                    .map(|(_, v)| v.into_owned())
+                    .unwrap_or_default();
 
-            // Locate the cache file.
-            let cache_key = meta_img_cache_key(&src);
-            let cache_dir: Option<std::path::PathBuf> = app
-                .app_handle()
-                .path()
-                .app_cache_dir()
-                .ok()
-                .map(|d| d.join("metaimg"));
+                if src.is_empty() {
+                    responder.respond(
+                        tauri::http::Response::builder().status(400).body(vec![]).unwrap(),
+                    );
+                    return;
+                }
 
-            if let Some(ref dir) = cache_dir {
-                let _ = std::fs::create_dir_all(dir);
-                let file_path = dir.join(&cache_key);
-                if file_path.exists() {
-                    if let Ok(bytes) = std::fs::read(&file_path) {
-                        return tauri::http::Response::builder()
-                            .header("Content-Type", "image/jpeg")
-                            .header("Cache-Control", "max-age=604800")
-                            .header("Access-Control-Allow-Origin", "*")
-                            .body(bytes)
-                            .unwrap();
+                let cache_key = meta_img_cache_key(&src);
+                let cache_dir: Option<std::path::PathBuf> = app
+                    .path()
+                    .app_cache_dir()
+                    .ok()
+                    .map(|d| d.join("metaimg"));
+
+                // Disk cache hit
+                if let Some(ref dir) = cache_dir {
+                    let _ = std::fs::create_dir_all(dir);
+                    let file_path = dir.join(&cache_key);
+                    if file_path.exists() {
+                        if let Ok(bytes) = std::fs::read(&file_path) {
+                            responder.respond(
+                                tauri::http::Response::builder()
+                                    .header("Content-Type", "image/jpeg")
+                                    .header("Cache-Control", "max-age=604800")
+                                    .header("Access-Control-Allow-Origin", "*")
+                                    .body(bytes)
+                                    .unwrap(),
+                            );
+                            return;
+                        }
                     }
                 }
-            }
 
-            // Cache miss — fetch from external CDN.
-            let result = IMGCACHE_RT.block_on(async {
-                IMG_HTTP.get(&src).send().await?.bytes().await
+                // Cache miss — async fetch from external CDN
+                match IMG_HTTP.get(&src).send().await {
+                    Ok(resp) => match resp.bytes().await {
+                        Ok(bytes) => {
+                            if let Some(ref dir) = cache_dir {
+                                let _ = std::fs::write(dir.join(&cache_key), &bytes);
+                            }
+                            responder.respond(
+                                tauri::http::Response::builder()
+                                    .header("Content-Type", "image/jpeg")
+                                    .header("Cache-Control", "max-age=604800")
+                                    .header("Access-Control-Allow-Origin", "*")
+                                    .body(bytes.to_vec())
+                                    .unwrap(),
+                            );
+                        }
+                        Err(_) => {
+                            responder.respond(
+                                tauri::http::Response::builder()
+                                    .status(404)
+                                    .header("Access-Control-Allow-Origin", "*")
+                                    .body(vec![])
+                                    .unwrap(),
+                            );
+                        }
+                    },
+                    Err(_) => {
+                        responder.respond(
+                            tauri::http::Response::builder()
+                                .status(404)
+                                .header("Access-Control-Allow-Origin", "*")
+                                .body(vec![])
+                                .unwrap(),
+                        );
+                    }
+                }
             });
-
-            match result {
-                Ok(bytes) => {
-                    if let Some(ref dir) = cache_dir {
-                        let _ = std::fs::write(dir.join(&cache_key), &bytes);
-                    }
-                    tauri::http::Response::builder()
-                        .header("Content-Type", "image/jpeg")
-                        .header("Cache-Control", "max-age=604800")
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(bytes.to_vec())
-                        .unwrap()
-                }
-                Err(_) => tauri::http::Response::builder()
-                    .status(404)
-                    .header("Access-Control-Allow-Origin", "*")
-                    .body(vec![])
-                    .unwrap(),
-            }
         })
         .invoke_handler(tauri::generate_handler![
             // Connection
@@ -338,6 +379,9 @@ pub fn run() {
             commands::audio_set_eq,
             commands::audio_set_eq_enabled,
             commands::audio_set_preamp_gain,
+            commands::audio_set_eq_postgain,
+            commands::audio_set_eq_postgain_auto,
+            commands::audio_get_current_device,
             commands::audio_set_same_album_crossfade,
             commands::get_lyrics,
             commands::audio_get_output_devices,

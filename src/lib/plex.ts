@@ -18,6 +18,7 @@ import type {
   LibrarySection,
   LibraryTag,
   LyricLine,
+  PagedMediaItems,
   PlayQueue,
   Playlist,
   PlexAuthPin,
@@ -95,8 +96,10 @@ export function getItemsByTag(
   tagType: "genre" | "mood" | "style",
   tagName: string,
   libtype?: string,
-): Promise<PlexMedia[]> {
-  return invoke("get_items_by_tag", { sectionId, tagType, tagName, libtype })
+  limit = 100,
+  offset = 0,
+): Promise<PagedMediaItems> {
+  return invoke("get_items_by_tag", { sectionId, tagType, tagName, libtype, limit, offset })
 }
 
 // ---------------------------------------------------------------------------
@@ -711,6 +714,21 @@ export function audioSetEqEnabled(enabled: boolean): Promise<void> {
  */
 export function audioSetPreampGain(db: number): Promise<void> {
   return invoke("audio_set_preamp_gain", { db })
+}
+
+/** Set post-EQ makeup gain in dB (0..+18). Restores volume lost to pregain. */
+export function audioSetEqPostgain(db: number): Promise<void> {
+  return invoke("audio_set_eq_postgain", { db })
+}
+
+/** Enable or disable automatic post-EQ makeup gain (postgain = 1/pregain). */
+export function audioSetEqPostgainAuto(autoMode: boolean): Promise<void> {
+  return invoke("audio_set_eq_postgain_auto", { autoMode })
+}
+
+/** Get the name of the actual OS audio device currently in use. */
+export function audioGetCurrentDevice(): Promise<string> {
+  return invoke("audio_get_current_device")
 }
 
 /**

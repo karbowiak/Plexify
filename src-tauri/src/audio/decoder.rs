@@ -1,826 +1,22 @@
 #![allow(dead_code)]
 
 use std::f32::consts::FRAC_PI_2;
-use std::fs::File;
-use std::io::Cursor;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
-use once_cell::sync::Lazy;
-use symphonia::core::codecs::CodecRegistry;
-use ringbuf::traits::Producer;
+use ringbuf::traits::{Observer, Producer};
 use ringbuf::HeapProd;
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CodecType, DecoderOptions, CODEC_TYPE_NULL, CODEC_TYPE_OPUS};
-use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::{Limit, MetadataOptions, StandardTagKey, Value};
-use symphonia::core::probe::Hint;
 use tracing::{debug, error, info, warn};
 
-use super::bpm;
-use super::eq::{BiquadCoeffs, compute_eq_coeffs};
-use super::types::{AudioCommand, AudioEvent, PlaybackState, TrackMeta};
-
-// ---------------------------------------------------------------------------
-// Statics
-// ---------------------------------------------------------------------------
-
-/// Dedicated HTTP client for audio fetching (accepts self-signed certs)
-static AUDIO_HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
-    reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .expect("failed to build audio HTTP client")
-});
-
-/// Limit concurrent audio prefetch downloads to avoid overwhelming the Plex server.
-/// `try_acquire` is used so excess hover events are silently skipped rather than queued.
-static PREFETCH_SEMAPHORE: Lazy<tokio::sync::Semaphore> = Lazy::new(|| tokio::sync::Semaphore::new(2));
-
-/// Extended codec registry that adds Opus on top of symphonia's built-in defaults.
-/// The main `symphonia` crate does not include Opus as a built-in feature, so we
-/// register it separately here and fall back to this registry when the default one
-/// returns an "unsupported codec" error.
-static OPUS_REGISTRY: Lazy<CodecRegistry> = Lazy::new(|| {
-    let mut r = CodecRegistry::new();
-    r.register_all::<symphonia_adapter_libopus::OpusDecoder>();
-    r
-});
-
-/// Dedicated tokio runtime for async HTTP I/O in the decoder thread
-static DECODER_RT: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .thread_name("audio-http")
-        .enable_all()
-        .build()
-        .expect("failed to build decoder tokio runtime")
-});
-
-// ---------------------------------------------------------------------------
-// DecoderShared
-// ---------------------------------------------------------------------------
-
-/// Shared state between decoder thread and output callback
-pub struct DecoderShared {
-    /// Current playback position in samples (across all channels)
-    pub position_samples: AtomicI64,
-    /// Sample rate of current track
-    pub sample_rate: AtomicI64,
-    /// Number of channels
-    pub channels: AtomicI64,
-    /// Whether the decoder is paused
-    pub paused: AtomicBool,
-    /// Whether the decoder has finished the current track
-    pub finished: AtomicBool,
-    /// Volume (stored as fixed-point: value * 1000)
-    pub volume_millths: AtomicI64,
-    /// Output device sample rate (set once at startup by output.rs)
-    pub device_sample_rate: AtomicI64,
-    /// Directory for audio file cache (None = caching disabled)
-    pub cache_dir: Option<PathBuf>,
-    /// Maximum audio cache size in bytes (0 = unlimited)
-    pub max_cache_bytes: AtomicU64,
-    /// Set to true when a new Play command is received so the output callback
-    /// can instantly drain stale samples from the previous track.
-    pub flush_pending: AtomicBool,
-    /// Set to true when a Seek command completes so the output callback drains
-    /// the ring buffer of pre-seek audio. Unlike flush_pending, this is NOT
-    /// checked in the push loop — the decoder continues pushing from the new
-    /// position immediately while the output thread drains the stale samples.
-    pub seek_flush_pending: AtomicBool,
-    /// Crossfade window in milliseconds. 0 = disabled, default = 8000 ms.
-    pub crossfade_window_ms: AtomicU64,
-    /// BPM of the currently playing track (* 100 fixed-point; 0 = unknown)
-    pub current_bpm: AtomicU64,
-    /// BPM of the queued next track (* 100 fixed-point; 0 = unknown)
-    pub next_bpm: AtomicU64,
-    /// ReplayGain normalization gain for the current track (× 1000; 1000 = 1.0 linear)
-    pub normalization_gain_millths: AtomicI64,
-    /// ReplayGain normalization gain for the queued next track (× 1000)
-    pub next_norm_gain_millths: AtomicI64,
-    /// Whether ReplayGain normalization is applied (default: true)
-    pub normalization_enabled: AtomicBool,
-    /// Whether the EQ is active (default: false)
-    pub eq_enabled: AtomicBool,
-    /// Current EQ biquad coefficients — recomputed on SetEq, read once per output callback.
-    /// Mutex is locked only when bands change (rare) and once per callback (short hold).
-    pub eq_coeffs: Mutex<[BiquadCoeffs; 10]>,
-    /// Last-set gains in fixed-point (×1000) for potential future recompute.
-    pub eq_gains_millths: Mutex<[i32; 10]>,
-    /// Sample rate used for the last coefficient computation.
-    pub eq_sample_rate: AtomicI64,
-    /// Pre-amp gain applied in the output callback before EQ (× 1000; 1000 = 1.0 = 0 dB).
-    pub preamp_gain_millths: AtomicI64,
-    /// Automatic gain reduction to compensate for EQ boost (× 1000; 1000 = 1.0 = 0 dB).
-    /// Set to the inverse of the maximum EQ gain whenever EQ coefficients change.
-    pub eq_pregain_millths: AtomicI64,
-    /// When false (default), crossfade is suppressed for consecutive same-album tracks
-    /// so gapless classical/live recordings are not interrupted by a fade.
-    pub same_album_crossfade: AtomicBool,
-    /// Gates the PCM IPC bridge — only emit audio://vis-frame when true.
-    pub vis_enabled: AtomicBool,
-    /// Channel sender for PCM data to the visualizer relay thread. None when disabled.
-    pub vis_sender: Mutex<Option<crossbeam_channel::Sender<Vec<f32>>>>,
-    /// Preferred CPAL output device name. Applied on next stream open (next Play command).
-    pub preferred_device_name: Mutex<Option<String>>,
-}
-
-impl DecoderShared {
-    pub fn new(cache_dir: Option<PathBuf>) -> Self {
-        Self {
-            position_samples: AtomicI64::new(0),
-            sample_rate: AtomicI64::new(44100),
-            channels: AtomicI64::new(2),
-            paused: AtomicBool::new(false),
-            finished: AtomicBool::new(false),
-            volume_millths: AtomicI64::new(800), // 0.8 default
-            device_sample_rate: AtomicI64::new(44100),
-            cache_dir,
-            max_cache_bytes: AtomicU64::new(1_073_741_824), // 1 GB default
-            flush_pending: AtomicBool::new(false),
-            seek_flush_pending: AtomicBool::new(false),
-            crossfade_window_ms: AtomicU64::new(8_000), // 8 s default
-            current_bpm: AtomicU64::new(0),
-            next_bpm: AtomicU64::new(0),
-            normalization_gain_millths: AtomicI64::new(1_000), // 1.0 linear
-            next_norm_gain_millths: AtomicI64::new(1_000),
-            normalization_enabled: AtomicBool::new(true),
-            eq_enabled: AtomicBool::new(false),
-            eq_coeffs: Mutex::new([BiquadCoeffs::identity(); 10]),
-            eq_gains_millths: Mutex::new([0i32; 10]),
-            eq_sample_rate: AtomicI64::new(44100),
-            preamp_gain_millths: AtomicI64::new(1_000), // 1.0 linear = 0 dB
-            eq_pregain_millths: AtomicI64::new(1_000), // 1.0 linear = 0 dB (no compensation)
-            same_album_crossfade: AtomicBool::new(false), // suppress same-album crossfade by default
-            vis_enabled: AtomicBool::new(false),
-            vis_sender: Mutex::new(None),
-            preferred_device_name: Mutex::new(None),
-        }
-    }
-
-    pub fn position_ms(&self) -> i64 {
-        let samples = self.position_samples.load(Ordering::Relaxed);
-        let rate = self.sample_rate.load(Ordering::Relaxed);
-        let channels = self.channels.load(Ordering::Relaxed);
-        if rate == 0 || channels == 0 {
-            return 0;
-        }
-        // samples is total interleaved samples, so frames = samples / channels
-        (samples / channels) * 1000 / rate
-    }
-
-    pub fn set_volume(&self, volume: f32) {
-        let v = (volume.clamp(0.0, 1.0) * 1000.0) as i64;
-        self.volume_millths.store(v, Ordering::Relaxed);
-    }
-
-    pub fn volume(&self) -> f32 {
-        self.volume_millths.load(Ordering::Relaxed) as f32 / 1000.0
-    }
-
-    pub fn normalization_gain(&self) -> f32 {
-        self.normalization_gain_millths.load(Ordering::Relaxed) as f32 / 1_000.0
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CrossfadeState
-// ---------------------------------------------------------------------------
-
-/// Holds the decoder for the *next* track while it is being mixed in during a
-/// crossfade transition. Stored as a local variable in `decoder_thread`.
-struct CrossfadeState {
-    format_reader: Box<dyn FormatReader>,
-    decoder: Box<dyn symphonia::core::codecs::Decoder>,
-    track_id: u32,
-    sample_rate: u32,
-    channels: u32,
-    meta: TrackMeta,
-    sample_buf: Option<SampleBuffer<f32>>,
-    /// How many output frames have been mixed so far
-    elapsed_frames: usize,
-    /// Total frames to crossfade over (in *device-rate* frames)
-    total_frames: usize,
-    /// Decoded + resampled (to device rate) samples not yet consumed by the mixing loop.
-    /// This decouples the next track's codec packet size from the current track's chunk size.
-    pending: Vec<f32>,
-    /// ReplayGain linear gain for the next track (1.0 = no change)
-    norm_gain: f32,
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Simple linear interpolation resampler for interleaved f32 audio.
-fn resample_linear(input: &[f32], in_rate: u32, out_rate: u32, channels: u32) -> Vec<f32> {
-    if in_rate == out_rate || input.is_empty() || channels == 0 {
-        return input.to_vec();
-    }
-
-    let ch = channels as usize;
-    let in_frames = input.len() / ch;
-    let ratio = in_rate as f64 / out_rate as f64;
-    let out_frames = ((in_frames as f64) / ratio).ceil() as usize;
-    let mut output = Vec::with_capacity(out_frames * ch);
-
-    for i in 0..out_frames {
-        let src_pos = i as f64 * ratio;
-        let src_idx = src_pos.floor() as usize;
-        let frac = (src_pos - src_idx as f64) as f32;
-
-        for c in 0..ch {
-            let s0 = input.get(src_idx * ch + c).copied().unwrap_or(0.0);
-            let s1 = input
-                .get((src_idx + 1) * ch + c)
-                .copied()
-                .unwrap_or(s0);
-            output.push(s0 + (s1 - s0) * frac);
-        }
-    }
-
-    output
-}
-
-/// Parse a ReplayGain gain string like "-3.14 dB" or "+1.20 dB" → linear gain.
-fn parse_rg_gain(s: &str) -> Option<f32> {
-    let db: f32 = s.trim().trim_end_matches("dB").trim().parse().ok()?;
-    Some(10f32.powf(db / 20.0).clamp(0.1, 4.0))
-}
-
-/// Extract REPLAYGAIN_TRACK_GAIN from the format reader's embedded metadata.
-/// Returns a linear gain factor (1.0 = no change) if the tag is absent or unparseable.
-fn try_extract_replaygain(fmt: &mut Box<dyn FormatReader>) -> f32 {
-    let meta = fmt.metadata();
-    let Some(rev) = meta.current() else { return 1.0 };
-
-    for tag in rev.tags() {
-        let is_rg = matches!(tag.std_key, Some(StandardTagKey::ReplayGainTrackGain))
-            || tag.key.eq_ignore_ascii_case("REPLAYGAIN_TRACK_GAIN");
-
-        if is_rg {
-            if let Value::String(ref s) = tag.value {
-                if let Some(g) = parse_rg_gain(s) {
-                    return g;
-                }
-            }
-        }
-    }
-
-    1.0
-}
-
-/// Target RMS level in dBFS for fallback normalization. -18 dBFS RMS gives
-/// enough headroom for EQ boosts while keeping loudness roughly consistent
-/// with Plex-normalized tracks (~-14 LUFS after K-weighting offset).
-const FALLBACK_TARGET_DBFS: f32 = -18.0;
-
-/// Fade-in duration in milliseconds applied at every Play command to prevent
-/// audible pops from the silence → audio waveform discontinuity after a flush.
-const FADE_IN_MS: u32 = 5;
-
-/// Calculate the number of interleaved samples for the fade-in ramp.
-fn fade_in_sample_count(device_rate: u32, channels: u32) -> usize {
-    (FADE_IN_MS as usize * device_rate as usize * channels.max(1) as usize) / 1000
-}
-
-/// Compute a fallback normalization gain by scanning the first ~15 seconds of
-/// a cached audio file. Returns a linear gain clamped to [0.1, 4.0].
-///
-/// Invoked ONLY when both Plex server-side gain and embedded ReplayGain tags
-/// are unavailable. Opens a second decoder instance from the on-disk cache
-/// (fast, no network), so latency is typically 5–30 ms.
-fn compute_fallback_loudness(url: &str, shared: &Arc<DecoderShared>) -> f32 {
-    let Some(ref cache_dir) = shared.cache_dir else {
-        warn!("Fallback loudness: no cache dir available");
-        return 1.0;
-    };
-    let cache_path = cache_dir.join(audio_cache_key(url));
-    if !cache_path.exists() {
-        warn!(url = %url, "Fallback loudness: cache file not found");
-        return 1.0;
-    }
-
-    let file = match File::open(&cache_path) {
-        Ok(f) => f,
-        Err(e) => {
-            warn!(error = %e, "Fallback loudness: failed to open cache file");
-            return 1.0;
-        }
-    };
-
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let (mut fmt, mut dec, tid, sr, _ch, _codec) = match probe_audio(mss, url) {
-        Ok(t) => t,
-        Err(e) => {
-            warn!(error = %e, "Fallback loudness: failed to probe audio");
-            return 1.0;
-        }
-    };
-
-    let max_samples = sr as usize * 15; // 15 seconds worth of frames
-    let mut sum_sq: f64 = 0.0;
-    let mut peak: f32 = 0.0;
-    let mut total_samples: usize = 0;
-    let mut sb: Option<SampleBuffer<f32>> = None;
-
-    loop {
-        let packet = match fmt.next_packet() {
-            Ok(p) if p.track_id() == tid => p,
-            Ok(_) => continue,
-            Err(_) => break,
-        };
-        match dec.decode(&packet) {
-            Ok(audio_buf) => {
-                let spec = *audio_buf.spec();
-                let frames = audio_buf.frames();
-                let num_samples = frames * spec.channels.count();
-                if sb.as_ref().map_or(true, |s| s.capacity() < num_samples) {
-                    sb = Some(SampleBuffer::new(frames as u64, spec));
-                }
-                let s = sb.as_mut().unwrap();
-                s.copy_interleaved_ref(audio_buf);
-                for &sample in s.samples() {
-                    let abs = sample.abs();
-                    sum_sq += (sample as f64) * (sample as f64);
-                    if abs > peak {
-                        peak = abs;
-                    }
-                    total_samples += 1;
-                }
-                if total_samples >= max_samples {
-                    break;
-                }
-            }
-            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(_) => break,
-        }
-    }
-
-    if total_samples < 4410 {
-        warn!(
-            total_samples = total_samples,
-            "Fallback loudness: too few samples, using unity gain"
-        );
-        return 1.0;
-    }
-
-    let rms = (sum_sq / total_samples as f64).sqrt() as f32;
-    if rms < 1e-10 {
-        warn!("Fallback loudness: track is near-silent, using unity gain");
-        return 1.0;
-    }
-
-    let rms_dbfs = 20.0 * rms.log10();
-    let mut gain_db = FALLBACK_TARGET_DBFS - rms_dbfs;
-
-    // Peak safety: don't push peaks above -1 dBFS
-    if peak > 1e-10 {
-        let peak_after_db = 20.0 * peak.log10() + gain_db;
-        let headroom_db = -1.0;
-        if peak_after_db > headroom_db {
-            gain_db -= peak_after_db - headroom_db;
-        }
-    }
-
-    let linear = 10f32.powf(gain_db / 20.0).clamp(0.1, 4.0);
-    warn!(
-        rms_dbfs = format!("{:.1}", rms_dbfs),
-        gain_db = format!("{:.2}", gain_db),
-        linear_gain = format!("{:.3}", linear),
-        peak = format!("{:.4}", peak),
-        samples_scanned = total_samples,
-        "Fallback loudness normalization computed"
-    );
-
-    linear
-}
-
-/// Resolve the normalization gain for a track. Priority:
-/// 1. Plex API `gain_db` (server-side loudness analysis) — skipped for Opus
-///    because libopus applies the Opus header output gain during decode,
-///    making Plex's pre-decode analysis inaccurate.
-/// 2. Embedded ReplayGain tags in file metadata
-/// 3. RMS-based loudness pre-scan of first 15 seconds
-fn resolve_normalization_gain(
-    meta: &TrackMeta,
-    fmt: &mut Box<dyn FormatReader>,
-    shared: &Arc<DecoderShared>,
-    codec: CodecType,
-) -> f32 {
-    if let Some(db) = meta.gain_db {
-        if codec == CODEC_TYPE_OPUS {
-            warn!(
-                rating_key = meta.rating_key,
-                gain_db = db,
-                "Normalization: skipping Plex API gain for Opus (libopus applies header output gain)"
-            );
-        } else {
-            let gain = 10f32.powf(db / 20.0).clamp(0.1, 4.0);
-            warn!(
-                rating_key = meta.rating_key,
-                gain_db = db,
-                linear = format!("{:.3}", gain),
-                "Normalization: using Plex API gain"
-            );
-            return gain;
-        }
-    }
-
-    let rg = try_extract_replaygain(fmt);
-    if (rg - 1.0).abs() > f32::EPSILON {
-        warn!(
-            rating_key = meta.rating_key,
-            linear = format!("{:.3}", rg),
-            "Normalization: using embedded ReplayGain tag"
-        );
-        return rg;
-    }
-
-    warn!(
-        rating_key = meta.rating_key,
-        "Normalization: no Plex gain or ReplayGain tag, running fallback RMS scan"
-    );
-    compute_fallback_loudness(&meta.url, shared)
-}
-
-/// Fetch audio bytes from a URL
-fn fetch_audio(url: &str) -> Result<Vec<u8>, String> {
-    info!(url = url, "Fetching audio data");
-    DECODER_RT.block_on(async {
-        let resp = AUDIO_HTTP
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| format!("HTTP fetch failed: {e}"))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {} for audio URL", resp.status()));
-        }
-
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("Failed to read audio bytes: {e}"))?;
-
-        info!(size = bytes.len(), "Audio data fetched");
-        Ok(bytes.to_vec())
-    })
-}
-
-/// Derive a deterministic cache filename from a URL.
-fn audio_cache_key(url: &str) -> String {
-    let without_query = url.split('?').next().unwrap_or(url);
-    let path = without_query
-        .split("://")
-        .nth(1)
-        .and_then(|rest| rest.splitn(2, '/').nth(1))
-        .unwrap_or(without_query);
-    format!("{}.audio", path.replace('/', "_"))
-}
-
-/// Open a URL for streaming decode (cache hit → File::open; miss → fetch + save).
-fn open_for_decode(
-    url: &str,
-    shared: &Arc<DecoderShared>,
-) -> Result<(MediaSourceStream, String), String> {
-    if let Some(ref cache_dir) = shared.cache_dir {
-        let _ = std::fs::create_dir_all(cache_dir);
-        let cache_path = cache_dir.join(audio_cache_key(url));
-        if cache_path.exists() {
-            info!(url = url, "Audio cache hit — streaming from disk");
-            let file = File::open(&cache_path)
-                .map_err(|e| format!("Failed to open cached audio: {e}"))?;
-            let mss = MediaSourceStream::new(Box::new(file), Default::default());
-            return Ok((mss, url.to_string()));
-        }
-    }
-
-    // Cache miss — fetch from network
-    let bytes = fetch_audio(url)?;
-
-    if let Some(ref cache_dir) = shared.cache_dir {
-        let cache_path = cache_dir.join(audio_cache_key(url));
-        if std::fs::write(&cache_path, &bytes).is_ok() {
-            let max_bytes = shared.max_cache_bytes.load(Ordering::Relaxed);
-            if max_bytes > 0 {
-                evict_cache_if_needed(cache_dir, max_bytes);
-            }
-            if let Ok(file) = File::open(&cache_path) {
-                let mss = MediaSourceStream::new(Box::new(file), Default::default());
-                return Ok((mss, url.to_string()));
-            }
-        }
-    }
-
-    // Fallback: in-memory cursor
-    let cursor = Cursor::new(bytes);
-    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
-    Ok((mss, url.to_string()))
-}
-
-/// Delete oldest `.audio` cache files until total size is within `max_bytes`.
-fn evict_cache_if_needed(cache_dir: &std::path::Path, max_bytes: u64) {
-    let mut entries: Vec<(std::path::PathBuf, u64, std::time::SystemTime)> =
-        match std::fs::read_dir(cache_dir) {
-            Ok(rd) => rd
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().extension().and_then(|x| x.to_str()) == Some("audio")
-                })
-                .filter_map(|e| {
-                    let meta = e.metadata().ok()?;
-                    let mtime = meta.modified().ok()?;
-                    Some((e.path(), meta.len(), mtime))
-                })
-                .collect(),
-            Err(_) => return,
-        };
-
-    let total: u64 = entries.iter().map(|(_, size, _)| size).sum();
-    if total <= max_bytes {
-        return;
-    }
-
-    entries.sort_by_key(|(_, _, mtime)| *mtime);
-
-    let mut remaining = total;
-    for (path, size, _) in entries {
-        if remaining <= max_bytes {
-            break;
-        }
-        if std::fs::remove_file(&path).is_ok() {
-            remaining = remaining.saturating_sub(size);
-            debug!(path = ?path, "Evicted audio cache entry");
-        }
-    }
-}
-
-/// Warm the audio disk cache for `url` in the background.
-pub fn prefetch_url_bg(url: String, shared: Arc<DecoderShared>) {
-    DECODER_RT.spawn(async move {
-        let Some(ref cache_dir) = shared.cache_dir else { return };
-        let cache_path = cache_dir.join(audio_cache_key(&url));
-        if cache_path.exists() {
-            debug!(url = %url, "Audio prefetch: already cached");
-            return;
-        }
-        let _ = std::fs::create_dir_all(cache_dir);
-
-        // Skip if both slots are occupied — hover fires many events; don't queue them all.
-        let _permit = match PREFETCH_SEMAPHORE.try_acquire() {
-            Ok(p) => p,
-            Err(_) => {
-                debug!(url = %url, "Audio prefetch: skipped (concurrency limit)");
-                return;
-            }
-        };
-
-        // Re-check after acquiring permit (another task may have written it).
-        if cache_path.exists() {
-            return;
-        }
-
-        let resp = match AUDIO_HTTP.get(&url).send().await {
-            Ok(r) if r.status().is_success() => r,
-            Ok(r) => { warn!(url = %url, status = %r.status(), "Audio prefetch: bad status"); return; }
-            Err(e) => { warn!(url = %url, error = %e, "Audio prefetch: request failed"); return; }
-        };
-
-        // Stream to a .part temp file so large audio files don't buffer entirely in RAM
-        // and a partial write never leaves a corrupt cache entry.
-        let tmp_path = cache_path.with_extension("part");
-        match prefetch_stream_to_file(resp, &tmp_path).await {
-            Ok(total) => {
-                match tokio::fs::rename(&tmp_path, &cache_path).await {
-                    Ok(_) => {
-                        let max_bytes = shared.max_cache_bytes.load(Ordering::Relaxed);
-                        if max_bytes > 0 { evict_cache_if_needed(cache_dir, max_bytes); }
-                        info!(url = %url, size = total, "Audio prefetch complete");
-                    }
-                    Err(e) => {
-                        warn!(url = %url, error = %e, "Audio prefetch: rename failed");
-                        let _ = tokio::fs::remove_file(&tmp_path).await;
-                    }
-                }
-            }
-            Err(e) => {
-                debug!(url = %url, error = %e, "Audio prefetch: stream failed (non-critical)");
-                let _ = tokio::fs::remove_file(&tmp_path).await;
-            }
-        }
-    });
-}
-
-/// Stream a reqwest response body to `path`, returning the total bytes written.
-async fn prefetch_stream_to_file(resp: reqwest::Response, path: &std::path::Path) -> anyhow::Result<usize> {
-    use futures::TryStreamExt;
-    use tokio::io::AsyncWriteExt;
-
-    let mut file = tokio::fs::File::create(path).await?;
-    let mut stream = resp.bytes_stream();
-    let mut total = 0usize;
-    while let Some(chunk) = stream.try_next().await? {
-        file.write_all(&chunk).await?;
-        total += chunk.len();
-    }
-    file.flush().await?;
-    Ok(total)
-}
-
-/// Probe a `MediaSourceStream` and return a format reader + decoder + track info.
-fn probe_audio(
-    mss: MediaSourceStream,
-    url: &str,
-) -> Result<
-    (
-        Box<dyn FormatReader>,
-        Box<dyn symphonia::core::codecs::Decoder>,
-        u32,       // track_id
-        u32,       // sample_rate
-        u32,       // channels
-        CodecType, // codec
-    ),
-    String,
-> {
-    let mut hint = Hint::new();
-    if let Some(ext) = url.rsplit('.').next() {
-        let ext_lower = ext.split('?').next().unwrap_or(ext).to_lowercase();
-        hint.with_extension(&ext_lower);
-    }
-
-    let format_opts = FormatOptions {
-        enable_gapless: true,
-        ..Default::default()
-    };
-    let metadata_opts = MetadataOptions {
-        limit_metadata_bytes: Limit::Maximum(16 * 1024),
-        limit_visual_bytes: Limit::Maximum(0),
-    };
-
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &metadata_opts)
-        .map_err(|e| format!("Failed to probe audio format: {e}"))?;
-
-    let format = probed.format;
-
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or("No audio track found")?;
-
-    let track_id = track.id;
-    let sample_rate = track
-        .codec_params
-        .sample_rate
-        .ok_or("Unknown sample rate")?;
-    let channels = track
-        .codec_params
-        .channels
-        .map(|c| c.count() as u32)
-        .unwrap_or(2);
-
-    let decoder_opts = DecoderOptions::default();
-    let decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &decoder_opts)
-        .or_else(|_| OPUS_REGISTRY.make(&track.codec_params, &decoder_opts))
-        .map_err(|e| format!("Failed to create decoder: {e}"))?;
-
-    info!(
-        sample_rate = sample_rate,
-        channels = channels,
-        codec = ?track.codec_params.codec,
-        "Audio probed successfully"
-    );
-
-    let codec = track.codec_params.codec;
-    Ok((format, decoder, track_id, sample_rate, channels, codec))
-}
-
-/// Decode and resample from the crossfade track until `cf.pending` contains at
-/// least `needed` interleaved samples (at device rate). Pads with silence on EOF.
-fn refill_crossfade_pending(cf: &mut CrossfadeState, needed: usize, dev_rate: u32) {
-    while cf.pending.len() < needed {
-        let packet = match cf.format_reader.next_packet() {
-            Ok(p) if p.track_id() == cf.track_id => p,
-            Ok(_) => continue, // wrong track ID — skip
-            Err(_) => {
-                // EOF or read error — pad the rest with silence
-                cf.pending.resize(needed, 0.0);
-                return;
-            }
-        };
-
-        match cf.decoder.decode(&packet) {
-            Ok(audio_buf) => {
-                let spec = *audio_buf.spec();
-                let num_frames = audio_buf.frames();
-                let num_samples = num_frames * spec.channels.count();
-                if cf
-                    .sample_buf
-                    .as_ref()
-                    .map_or(true, |sb| sb.capacity() < num_samples)
-                {
-                    cf.sample_buf = Some(SampleBuffer::new(num_frames as u64, spec));
-                }
-                let sb = cf.sample_buf.as_mut().unwrap();
-                sb.copy_interleaved_ref(audio_buf);
-
-                // Resample to device rate so the mixed output is always at dev_rate
-                let chunk = if cf.sample_rate != dev_rate && dev_rate > 0 {
-                    resample_linear(sb.samples(), cf.sample_rate, dev_rate, cf.channels)
-                } else {
-                    sb.samples().to_vec()
-                };
-                cf.pending.extend_from_slice(&chunk);
-            }
-            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(_) => {
-                cf.pending.resize(needed, 0.0);
-                return;
-            }
-        }
-    }
-}
-
-/// Background BPM detection: decode the first 30 s of the cached audio file
-/// and store the result in `shared.next_bpm` (BPM * 100 fixed-point).
-fn detect_bpm_bg(url: &str, shared: &Arc<DecoderShared>) {
-    let Some(ref cache_dir) = shared.cache_dir else { return };
-    let cache_path = cache_dir.join(audio_cache_key(url));
-
-    // Wait up to 10 s for the prefetch to write the cache file
-    let mut waited_ms = 0u64;
-    while !cache_path.exists() && waited_ms < 10_000 {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        waited_ms += 500;
-    }
-    if !cache_path.exists() {
-        return;
-    }
-
-    let file = match File::open(&cache_path) {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let Ok((mut fmt, mut dec, tid, sr, _ch, _codec)) = probe_audio(mss, url) else { return };
-
-    // Decode first 30 s of mono samples for BPM analysis
-    let max_frames = sr as usize * 30;
-    let mut mono_samples: Vec<f32> = Vec::with_capacity(max_frames);
-    let mut sb: Option<SampleBuffer<f32>> = None;
-
-    'outer: loop {
-        let packet = match fmt.next_packet() {
-            Ok(p) if p.track_id() == tid => p,
-            Ok(_) => continue,
-            Err(_) => break,
-        };
-        match dec.decode(&packet) {
-            Ok(audio_buf) => {
-                let spec = *audio_buf.spec();
-                let frames = audio_buf.frames();
-                let num_samples = frames * spec.channels.count();
-                if sb.as_ref().map_or(true, |s| s.capacity() < num_samples) {
-                    sb = Some(SampleBuffer::new(frames as u64, spec));
-                }
-                let s = sb.as_mut().unwrap();
-                s.copy_interleaved_ref(audio_buf);
-                let ch = spec.channels.count().max(1);
-                for frame_samples in s.samples().chunks(ch) {
-                    let mono = frame_samples.iter().sum::<f32>() / ch as f32;
-                    mono_samples.push(mono);
-                    if mono_samples.len() >= max_frames {
-                        break 'outer;
-                    }
-                }
-            }
-            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(_) => break,
-        }
-    }
-
-    if mono_samples.is_empty() {
-        return;
-    }
-
-    let detected = bpm::detect(&mono_samples, sr);
-    let bpm_fixed = (detected * 100.0) as u64;
-    shared.next_bpm.store(bpm_fixed, Ordering::Relaxed);
-    info!(bpm = detected, "BPM detected for next track");
-}
-
-// ---------------------------------------------------------------------------
-// Decoder thread
-// ---------------------------------------------------------------------------
+use super::cache::{audio_cache_key, open_for_decode, probe_audio};
+use super::commands::handle_command;
+use super::crossfade::{promote_crossfade, refill_crossfade_pending};
+use super::normalization::resolve_normalization_gain;
+use super::resampler::{remix_channels, resample};
+use super::state::{CrossfadeState, DecoderShared, DecoderState};
+use super::types::{AudioCommand, AudioEvent, PlaybackState};
 
 /// The main decoder thread loop
 pub fn decoder_thread(
@@ -831,23 +27,11 @@ pub fn decoder_thread(
 ) {
     info!("Decoder thread started");
 
-    let mut current_track: Option<TrackMeta> = None;
-    let mut format_reader: Option<Box<dyn FormatReader>> = None;
-    let mut decoder: Option<Box<dyn symphonia::core::codecs::Decoder>> = None;
-    let mut current_track_id: u32 = 0;
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
-
-    // Gapless / crossfade state
-    let mut next_meta: Option<TrackMeta> = None;
-    let mut crossfade: Option<CrossfadeState> = None;
-
-    // Micro fade-in to prevent silence→audio pop after flush
-    let mut fade_in_remaining: usize = 0;
-    let mut fade_in_total: usize = 0;
+    let mut state = DecoderState::new();
 
     loop {
         // If paused or no track, block on command channel
-        if shared.paused.load(Ordering::Relaxed) || format_reader.is_none() {
+        if shared.paused.load(Ordering::Acquire) || state.format_reader.is_none() {
             match cmd_rx.recv() {
                 Ok(cmd) => {
                     if handle_command(
@@ -856,15 +40,7 @@ pub fn decoder_thread(
                         &event_tx,
                         &mut producer,
                         &shared,
-                        &mut current_track,
-                        &mut format_reader,
-                        &mut decoder,
-                        &mut current_track_id,
-                        &mut sample_buf,
-                        &mut next_meta,
-                        &mut crossfade,
-                        &mut fade_in_remaining,
-                        &mut fade_in_total,
+                        &mut state,
                     ) {
                         return;
                     }
@@ -885,89 +61,30 @@ pub fn decoder_thread(
                 &event_tx,
                 &mut producer,
                 &shared,
-                &mut current_track,
-                &mut format_reader,
-                &mut decoder,
-                &mut current_track_id,
-                &mut sample_buf,
-                &mut next_meta,
-                &mut crossfade,
-                &mut fade_in_remaining,
-                &mut fade_in_total,
+                &mut state,
             ) {
                 return;
             }
         }
 
         // Early crossfade completion: if the fade window has fully elapsed, promote the next
-        // track now rather than waiting for the old HTTP stream to send EOF. Without this, the
-        // UI stays frozen on the old track when the server holds the connection open after the
-        // last audio packet, or when the actual audio is slightly longer than its metadata duration.
-        if crossfade.as_ref().map_or(false, |cf| cf.elapsed_frames >= cf.total_frames) {
-            if let Some(cf) = crossfade.take() {
+        // track now rather than waiting for the old HTTP stream to send EOF.
+        if state.crossfade.as_ref().map_or(false, |cf| cf.elapsed_frames >= cf.total_frames) {
+            if let Some(cf) = state.crossfade.take() {
                 info!(
                     rating_key = cf.meta.rating_key,
                     "Crossfade window elapsed — promoting next track without waiting for EOF"
                 );
-                // Extract pending samples before moving other fields
-                let pending_samples = cf.pending;
-                let cf_meta = cf.meta;
-
-                if let Some(ref old) = current_track {
-                    let _ = event_tx.send(AudioEvent::TrackEnded {
-                        rating_key: old.rating_key,
-                    });
-                }
-                let ch = cf.channels as i64;
-                shared.position_samples.store(
-                    (cf.elapsed_frames as i64).saturating_mul(ch),
-                    Ordering::Relaxed,
-                );
-                let nb = shared.next_bpm.swap(0, Ordering::Relaxed);
-                shared.current_bpm.store(nb, Ordering::Relaxed);
-                shared.normalization_gain_millths.store(
-                    (cf.norm_gain * 1_000.0) as i64,
-                    Ordering::Relaxed,
-                );
-                shared.next_norm_gain_millths.store(1_000, Ordering::Relaxed);
-                format_reader    = Some(cf.format_reader);
-                decoder          = Some(cf.decoder);
-                current_track_id = cf.track_id;
-                sample_buf       = cf.sample_buf;
-                shared.sample_rate.store(cf.sample_rate as i64, Ordering::Relaxed);
-                shared.channels.store(cf.channels as i64, Ordering::Relaxed);
-                shared.finished.store(false, Ordering::Relaxed);
-                current_track = Some(cf_meta.clone());
-
-                // Push any remaining decoded+resampled samples that were buffered
-                // during crossfade mixing but not yet consumed.
-                if !pending_samples.is_empty() {
-                    let mut written = 0;
-                    while written < pending_samples.len() {
-                        let n = producer.push_slice(&pending_samples[written..]);
-                        written += n;
-                        if n == 0 {
-                            std::thread::sleep(std::time::Duration::from_millis(2));
-                        }
-                    }
-                }
-
-                let _ = event_tx.send(AudioEvent::TrackStarted {
-                    rating_key:  cf_meta.rating_key,
-                    duration_ms: cf_meta.duration_ms,
-                });
-                let _ = event_tx.send(AudioEvent::State {
-                    state: PlaybackState::Playing,
-                });
+                promote_crossfade(cf, &event_tx, &mut producer, &shared, &mut state);
             }
             continue;
         }
 
         // Decode next packet
-        if let (Some(ref mut fmt), Some(ref mut dec)) = (&mut format_reader, &mut decoder) {
+        if let (Some(ref mut fmt), Some(ref mut dec)) = (&mut state.format_reader, &mut state.decoder) {
             match fmt.next_packet() {
                 Ok(packet) => {
-                    if packet.track_id() != current_track_id {
+                    if packet.track_id() != state.current_track_id {
                         continue;
                     }
 
@@ -977,17 +94,18 @@ pub fn decoder_thread(
                             let num_frames = audio_buf.frames();
                             let num_samples = num_frames * spec.channels.count();
 
-                            if sample_buf
+                            // First-packet diagnostic: log once per track when sample_buf is unset
+                            let is_first_packet = state.sample_buf.is_none();
+
+                            if state.sample_buf
                                 .as_ref()
                                 .map_or(true, |sb| sb.capacity() < num_samples)
                             {
-                                sample_buf = Some(SampleBuffer::new(num_frames as u64, spec));
+                                state.sample_buf = Some(SampleBuffer::new(num_frames as u64, spec));
                             }
 
-                            let sb = sample_buf.as_mut().unwrap();
+                            let sb = state.sample_buf.as_mut().unwrap();
                             sb.copy_interleaved_ref(audio_buf);
-                            // audio_buf consumed here — dec borrow released (NLL).
-                            // fmt borrow was released after next_packet() returned.
 
                             let raw_samples: Vec<f32> = sb.samples().to_vec();
                             let raw_sample_count = raw_samples.len();
@@ -999,8 +117,22 @@ pub fn decoder_thread(
                                 shared.device_sample_rate.load(Ordering::Relaxed) as u32;
                             let ch_val = shared.channels.load(Ordering::Relaxed) as u32;
 
+                            if is_first_packet {
+                                let resampling = src_rate != dev_rate && dev_rate > 0;
+                                info!(
+                                    decoded_rate = spec.rate,
+                                    decoded_channels = spec.channels.count(),
+                                    shared_rate = src_rate,
+                                    shared_channels = ch_val,
+                                    device_rate = dev_rate,
+                                    frames = num_frames,
+                                    resampling,
+                                    "First packet decoded for track"
+                                );
+                            }
+
                             let resampled = if src_rate != dev_rate && dev_rate > 0 {
-                                resample_linear(&raw_samples, src_rate, dev_rate, ch_val)
+                                resample(&raw_samples, src_rate, dev_rate, ch_val, &mut state.resampler)
                             } else {
                                 raw_samples
                             };
@@ -1012,18 +144,15 @@ pub fn decoder_thread(
                                 .crossfade_window_ms
                                 .load(Ordering::Relaxed) as i64;
 
-                            // Suppress crossfade when current and next track share the
-                            // same album (parent_key), unless the user has explicitly
-                            // enabled same-album crossfade in settings.
-                            let same_album = current_track.as_ref()
-                                .zip(next_meta.as_ref())
+                            let same_album = state.current_track.as_ref()
+                                .zip(state.next_meta.as_ref())
                                 .map(|(c, n)| !c.parent_key.is_empty() && c.parent_key == n.parent_key)
                                 .unwrap_or(false);
                             let suppress_xfade = same_album
                                 && !shared.same_album_crossfade.load(Ordering::Relaxed);
 
-                            if cfade_ms > 0 && !suppress_xfade && crossfade.is_none() && next_meta.is_some() {
-                                let duration_ms = current_track
+                            if cfade_ms > 0 && !suppress_xfade && state.crossfade.is_none() && state.next_meta.is_some() {
+                                let duration_ms = state.current_track
                                     .as_ref()
                                     .map(|m| m.duration_ms)
                                     .unwrap_or(0);
@@ -1047,9 +176,7 @@ pub fn decoder_thread(
 
                                 if pos_ms >= crossfade_start {
                                     let next_url =
-                                        next_meta.as_ref().unwrap().url.clone();
-                                    // Only start if next track is already cached
-                                    // so open_for_decode is guaranteed fast (~1 ms).
+                                        state.next_meta.as_ref().unwrap().url.clone();
                                     let is_cached = shared
                                         .cache_dir
                                         .as_ref()
@@ -1059,13 +186,13 @@ pub fn decoder_thread(
                                         .unwrap_or(false);
 
                                     if is_cached {
-                                        info!(url = %next_url, "Starting crossfade");
+                                        info!(url = %next_url, pos_ms = pos_ms, crossfade_start = crossfade_start, "Starting crossfade");
                                         match open_for_decode(&next_url, &shared)
                                             .and_then(|(mss, u)| probe_audio(mss, &u))
                                         {
                                             Ok((mut nfmt, ndec, ntid, nsr, nch, ncodec)) => {
                                                 let next_meta_ref =
-                                                    next_meta.as_ref().unwrap();
+                                                    state.next_meta.as_ref().unwrap();
                                                 let next_norm = resolve_normalization_gain(
                                                     next_meta_ref, &mut nfmt, &shared, ncodec,
                                                 );
@@ -1073,16 +200,24 @@ pub fn decoder_thread(
                                                     (next_norm * 1_000.0) as i64,
                                                     Ordering::Relaxed,
                                                 );
-                                                // total_frames must be in device-rate
-                                                // units because elapsed_frames counts
-                                                // output (device-rate) frames.
+                                                let cur_norm = shared.normalization_gain();
                                                 let out_rate =
                                                     if dev_rate > 0 { dev_rate } else { src_rate };
                                                 let total_frames = cfade_ms as usize
                                                     * out_rate as usize
                                                     / 1000;
-                                                let meta = next_meta.take().unwrap();
-                                                crossfade = Some(CrossfadeState {
+                                                info!(
+                                                    cfade_ms = cfade_ms,
+                                                    total_frames = total_frames,
+                                                    out_rate = out_rate,
+                                                    next_sample_rate = nsr,
+                                                    next_channels = nch,
+                                                    cur_norm_gain = format!("{:.4}", cur_norm),
+                                                    next_norm_gain = format!("{:.4}", next_norm),
+                                                    "Crossfade initialized"
+                                                );
+                                                let meta = state.next_meta.take().unwrap();
+                                                state.crossfade = Some(CrossfadeState {
                                                     format_reader: nfmt,
                                                     decoder: ndec,
                                                     track_id: ntid,
@@ -1113,23 +248,55 @@ pub fn decoder_thread(
                             let norm_enabled =
                                 shared.normalization_enabled.load(Ordering::Relaxed);
 
-                            let mut samples_to_push = if let Some(ref mut cf) = crossfade {
-                                let needed = resampled.len();
+                            let mut samples_to_push = if let Some(ref mut cf) = state.crossfade {
+                                // Use device output channel count as common mix target
+                                let mix_ch = ch_val.max(1);
 
-                                // Fill pending with enough decoded+resampled samples
-                                // from the next track. This decouples packet sizes and
-                                // ensures the next track is always at device rate.
-                                refill_crossfade_pending(cf, needed, dev_rate);
+                                // Remix next track's pending to common channel count if needed
+                                let cf_ch = cf.channels;
+                                let needed_cf_samples = if cf_ch != mix_ch {
+                                    // We need enough cf source frames to produce the same
+                                    // number of output frames as `resampled`
+                                    let mix_frames = resampled.len() / mix_ch as usize;
+                                    mix_frames * cf_ch as usize
+                                } else {
+                                    resampled.len()
+                                };
 
-                                let ch = ch_val.max(1) as usize;
-                                let frames = needed / ch;
-                                let mut mixed = Vec::with_capacity(needed);
+                                refill_crossfade_pending(cf, needed_cf_samples, dev_rate);
 
-                                // Per-track normalization gains applied during mixing so
-                                // each track is levelled before the fade curves run.
+                                // Remix cf.pending to match mix_ch if channel counts differ
+                                let cf_remixed = if cf_ch != mix_ch {
+                                    let consumed = needed_cf_samples.min(cf.pending.len());
+                                    let slice = &cf.pending[..consumed];
+                                    let remixed = remix_channels(slice, cf_ch, mix_ch);
+                                    cf.pending.drain(..consumed);
+                                    remixed
+                                } else {
+                                    let consumed = resampled.len().min(cf.pending.len());
+                                    let drained: Vec<f32> = cf.pending.drain(..consumed).collect();
+                                    drained
+                                };
+
+                                let ch = mix_ch as usize;
+                                let frames = resampled.len() / ch;
+                                let mut mixed = Vec::with_capacity(resampled.len());
+
                                 let cur_gain =
                                     if norm_enabled { shared.normalization_gain() } else { 1.0 };
                                 let next_gain = if norm_enabled { cf.norm_gain } else { 1.0 };
+
+                                // Log at crossfade start (first mixing batch)
+                                if cf.elapsed_frames == 0 {
+                                    info!(
+                                        cur_gain = format!("{:.4}", cur_gain),
+                                        next_gain = format!("{:.4}", next_gain),
+                                        frames = frames,
+                                        total_frames = cf.total_frames,
+                                        norm_enabled = norm_enabled,
+                                        "Crossfade mixing: first batch"
+                                    );
+                                }
 
                                 for frame in 0..frames {
                                     let t = ((cf.elapsed_frames + frame) as f32
@@ -1142,8 +309,7 @@ pub fn decoder_thread(
                                             .get(frame * ch + c)
                                             .copied()
                                             .unwrap_or(0.0);
-                                        let new_s = cf
-                                            .pending
+                                        let new_s = cf_remixed
                                             .get(frame * ch + c)
                                             .copied()
                                             .unwrap_or(0.0);
@@ -1153,13 +319,46 @@ pub fn decoder_thread(
                                         );
                                     }
                                 }
+
+                                // Log boundary values at the end of this mixing batch
+                                let t_end = ((cf.elapsed_frames + frames) as f32
+                                    / cf.total_frames as f32)
+                                    .min(1.0);
+                                let will_promote = cf.elapsed_frames + frames >= cf.total_frames;
+                                if will_promote {
+                                    let last_4: Vec<f32> = mixed.iter().rev().take(4).rev().copied().collect();
+                                    info!(
+                                        elapsed = cf.elapsed_frames + frames,
+                                        total = cf.total_frames,
+                                        t_end = format!("{:.6}", t_end),
+                                        fade_out_end = format!("{:.6}", (t_end * FRAC_PI_2).cos()),
+                                        fade_in_end = format!("{:.6}", (t_end * FRAC_PI_2).sin()),
+                                        cur_gain = format!("{:.4}", cur_gain),
+                                        next_gain = format!("{:.4}", next_gain),
+                                        last_mixed_samples = ?last_4,
+                                        pending_remaining = cf.pending.len(),
+                                        "Crossfade mixing: FINAL batch (will promote)"
+                                    );
+                                } else {
+                                    // Periodic progress log (every ~1 second)
+                                    let progress_pct = ((cf.elapsed_frames + frames) as f32
+                                        / cf.total_frames as f32 * 100.0) as u32;
+                                    let prev_pct = (cf.elapsed_frames as f32
+                                        / cf.total_frames as f32 * 100.0) as u32;
+                                    if progress_pct / 10 != prev_pct / 10 {
+                                        debug!(
+                                            progress = format!("{}%", progress_pct),
+                                            elapsed = cf.elapsed_frames + frames,
+                                            total = cf.total_frames,
+                                            t = format!("{:.4}", t_end),
+                                            "Crossfade mixing progress"
+                                        );
+                                    }
+                                }
+
                                 cf.elapsed_frames += frames;
-                                // Consume the samples we just mixed
-                                cf.pending.drain(..needed.min(cf.pending.len()));
                                 mixed
                             } else {
-                                // Non-crossfade path: apply normalization in-place so the
-                                // ring buffer always holds normalized samples.
                                 let mut s = resampled;
                                 if norm_enabled {
                                     let gain = shared.normalization_gain();
@@ -1169,16 +368,16 @@ pub fn decoder_thread(
                             };
 
                             // Apply micro fade-in ramp to prevent silence→audio pop
-                            if fade_in_remaining > 0 && fade_in_total > 0 {
-                                let apply = fade_in_remaining.min(samples_to_push.len());
+                            if state.fade_in_remaining > 0 && state.fade_in_total > 0 {
+                                let apply = state.fade_in_remaining.min(samples_to_push.len());
                                 for i in 0..apply {
                                     let progress = 1.0
-                                        - (fade_in_remaining - i) as f32
-                                            / fade_in_total as f32;
+                                        - (state.fade_in_remaining - i) as f32
+                                            / state.fade_in_total as f32;
                                     samples_to_push[i] *= progress;
                                 }
-                                fade_in_remaining =
-                                    fade_in_remaining.saturating_sub(apply);
+                                state.fade_in_remaining =
+                                    state.fade_in_remaining.saturating_sub(apply);
                             }
 
                             // ===============================================
@@ -1186,7 +385,6 @@ pub fn decoder_thread(
                             // ===============================================
                             let mut written = 0;
                             while written < samples_to_push.len() {
-                                // Check for commands while waiting for buffer space
                                 if let Ok(cmd) = cmd_rx.try_recv() {
                                     if handle_command(
                                         cmd,
@@ -1194,26 +392,11 @@ pub fn decoder_thread(
                                         &event_tx,
                                         &mut producer,
                                         &shared,
-                                        &mut current_track,
-                                        &mut format_reader,
-                                        &mut decoder,
-                                        &mut current_track_id,
-                                        &mut sample_buf,
-                                        &mut next_meta,
-                                        &mut crossfade,
-                                        &mut fade_in_remaining,
-                                        &mut fade_in_total,
+                                        &mut state,
                                     ) {
                                         return;
                                     }
-                                    // If Play/Stop was called, abandon remaining
-                                    // samples from this packet — they're from the
-                                    // OLD track and must not leak into the ring buffer.
-                                    // We check sample_buf (set to None by Play) rather
-                                    // than flush_pending, because the output callback
-                                    // may have already cleared flush_pending during
-                                    // the HTTP fetch inside handle_command.
-                                    if format_reader.is_none() || sample_buf.is_none() {
+                                    if state.format_reader.is_none() || state.sample_buf.is_none() {
                                         break;
                                     }
                                 }
@@ -1225,8 +408,21 @@ pub fn decoder_thread(
                                 }
                             }
 
-                            // Track position using raw (pre-resample) sample count so
-                            // position_ms() reflects the correct source-time position.
+                            // Clear pre-buffering gate once ring buffer has enough runway
+                            if shared.prebuffering.load(Ordering::Acquire) {
+                                let flush_done = !shared.flush_pending.load(Ordering::Acquire)
+                                    && !shared.seek_flush_pending.load(Ordering::Acquire);
+                                if flush_done {
+                                    let sr = shared.device_sample_rate.load(Ordering::Relaxed) as usize;
+                                    let ch = shared.channels.load(Ordering::Relaxed).max(1) as usize;
+                                    let threshold = sr * ch / 10; // 100ms of audio
+                                    if producer.occupied_len() >= threshold {
+                                        shared.prebuffering.store(false, Ordering::Release);
+                                    }
+                                }
+                            }
+
+                            // Track position using raw (pre-resample) sample count
                             shared
                                 .position_samples
                                 .fetch_add(raw_sample_count as i64, Ordering::Relaxed);
@@ -1239,8 +435,8 @@ pub fn decoder_thread(
                             let _ = event_tx.send(AudioEvent::Error {
                                 message: format!("Decode error: {e}"),
                             });
-                            format_reader = None;
-                            decoder = None;
+                            state.format_reader = None;
+                            state.decoder = None;
                         }
                     }
                 }
@@ -1253,76 +449,18 @@ pub fn decoder_thread(
                 {
                     info!("Track decode complete (EOF)");
 
-                    if let Some(cf) = crossfade.take() {
-                        // Crossfade was active — promote the next-track decoder.
-                        // Extract pending samples before moving other fields
-                        let pending_samples = cf.pending;
-                        let cf_meta = cf.meta;
+                    if let Some(cf) = state.crossfade.take() {
                         info!(
-                            rating_key = cf_meta.rating_key,
+                            rating_key = cf.meta.rating_key,
                             "Crossfade complete — swapping to next track"
                         );
-                        if let Some(ref old) = current_track {
-                            let _ = event_tx.send(AudioEvent::TrackEnded {
-                                rating_key: old.rating_key,
-                            });
-                        }
-                        // Set position to where the crossfade decoder has decoded
-                        let ch = cf.channels as i64;
-                        shared.position_samples.store(
-                            (cf.elapsed_frames as i64).saturating_mul(ch),
-                            Ordering::Relaxed,
-                        );
-                        // Rotate BPM: next → current
-                        let nb = shared.next_bpm.swap(0, Ordering::Relaxed);
-                        shared.current_bpm.store(nb, Ordering::Relaxed);
-                        // Promote normalization gain for the new current track
-                        shared.normalization_gain_millths.store(
-                            (cf.norm_gain * 1_000.0) as i64,
-                            Ordering::Relaxed,
-                        );
-                        shared.next_norm_gain_millths.store(1_000, Ordering::Relaxed);
-
-                        format_reader = Some(cf.format_reader);
-                        decoder = Some(cf.decoder);
-                        current_track_id = cf.track_id;
-                        sample_buf = cf.sample_buf;
-                        shared.sample_rate.store(cf.sample_rate as i64, Ordering::Relaxed);
-                        shared.channels.store(cf.channels as i64, Ordering::Relaxed);
-                        shared.finished.store(false, Ordering::Relaxed);
-                        current_track = Some(cf_meta.clone());
-
-                        // Push any remaining decoded+resampled samples that were buffered
-                        // during crossfade mixing but not yet consumed.
-                        if !pending_samples.is_empty() {
-                            let mut written = 0;
-                            while written < pending_samples.len() {
-                                let n = producer.push_slice(&pending_samples[written..]);
-                                written += n;
-                                if n == 0 {
-                                    std::thread::sleep(std::time::Duration::from_millis(2));
-                                }
-                            }
-                        }
-
-                        let _ = event_tx.send(AudioEvent::TrackStarted {
-                            rating_key: cf_meta.rating_key,
-                            duration_ms: cf_meta.duration_ms,
-                        });
-                        let _ = event_tx.send(AudioEvent::State {
-                            state: PlaybackState::Playing,
-                        });
-                    } else if let Some(nmeta) = next_meta.take() {
-                        // Gapless: open next track immediately. The ring buffer
-                        // still contains audio from the tail of the old track, so
-                        // decoding begins before that audio is consumed — true gapless.
+                        promote_crossfade(cf, &event_tx, &mut producer, &shared, &mut state);
+                    } else if let Some(nmeta) = state.next_meta.take() {
                         info!(rating_key = nmeta.rating_key, "Gapless: opening next track");
                         match open_for_decode(&nmeta.url, &shared)
                             .and_then(|(mss, u)| probe_audio(mss, &u))
                         {
                             Ok((mut fmt, dec, tid, sr, ch, codec)) => {
-                                // Use pre-computed gain from crossfade setup if
-                                // available, otherwise resolve from scratch.
                                 let norm_gain = {
                                     let next_g =
                                         shared.next_norm_gain_millths.load(Ordering::Relaxed);
@@ -1332,7 +470,7 @@ pub fn decoder_thread(
                                         resolve_normalization_gain(&nmeta, &mut fmt, &shared, codec)
                                     }
                                 };
-                                if let Some(ref old) = current_track {
+                                if let Some(ref old) = state.current_track {
                                     let _ = event_tx.send(AudioEvent::TrackEnded {
                                         rating_key: old.rating_key,
                                     });
@@ -1345,15 +483,16 @@ pub fn decoder_thread(
                                 );
                                 shared.next_norm_gain_millths.store(1_000, Ordering::Relaxed);
 
-                                format_reader = Some(fmt);
-                                decoder = Some(dec);
-                                current_track_id = tid;
-                                sample_buf = None;
+                                state.format_reader = Some(fmt);
+                                state.decoder = Some(dec);
+                                state.current_track_id = tid;
+                                state.sample_buf = None;
+                                state.resampler = None;
                                 shared.sample_rate.store(sr as i64, Ordering::Relaxed);
                                 shared.channels.store(ch as i64, Ordering::Relaxed);
                                 shared.position_samples.store(0, Ordering::Relaxed);
-                                shared.finished.store(false, Ordering::Relaxed);
-                                current_track = Some(nmeta.clone());
+                                shared.finished.store(false, Ordering::Release);
+                                state.current_track = Some(nmeta.clone());
                                 let _ = event_tx.send(AudioEvent::TrackStarted {
                                     rating_key: nmeta.rating_key,
                                     duration_ms: nmeta.duration_ms,
@@ -1367,28 +506,28 @@ pub fn decoder_thread(
                                     error = %e,
                                     "Gapless: failed to open next track — ending playback"
                                 );
-                                if let Some(ref meta) = current_track {
+                                if let Some(ref meta) = state.current_track {
                                     let _ = event_tx.send(AudioEvent::TrackEnded {
                                         rating_key: meta.rating_key,
                                     });
                                 }
-                                shared.finished.store(true, Ordering::Relaxed);
-                                format_reader = None;
-                                decoder = None;
-                                current_track = None;
+                                shared.finished.store(true, Ordering::Release);
+                                state.format_reader = None;
+                                state.decoder = None;
+                                state.current_track = None;
                             }
                         }
                     } else {
                         // Normal end of playback — no queued next track
-                        if let Some(ref meta) = current_track {
+                        if let Some(ref meta) = state.current_track {
                             let _ = event_tx.send(AudioEvent::TrackEnded {
                                 rating_key: meta.rating_key,
                             });
                         }
-                        shared.finished.store(true, Ordering::Relaxed);
-                        format_reader = None;
-                        decoder = None;
-                        current_track = None;
+                        shared.finished.store(true, Ordering::Release);
+                        state.format_reader = None;
+                        state.decoder = None;
+                        state.current_track = None;
                     }
                 }
                 Err(e) => {
@@ -1396,262 +535,11 @@ pub fn decoder_thread(
                     let _ = event_tx.send(AudioEvent::Error {
                         message: format!("Read error: {e}"),
                     });
-                    format_reader = None;
-                    decoder = None;
+                    state.format_reader = None;
+                    state.decoder = None;
                 }
             }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Command handler
-// ---------------------------------------------------------------------------
-
-/// Handle a single command. Returns true if the thread should shut down.
-#[allow(clippy::too_many_arguments)]
-fn handle_command(
-    cmd: AudioCommand,
-    _cmd_rx: &Receiver<AudioCommand>,
-    event_tx: &Sender<AudioEvent>,
-    _producer: &mut HeapProd<f32>,
-    shared: &Arc<DecoderShared>,
-    current_track: &mut Option<TrackMeta>,
-    format_reader: &mut Option<Box<dyn FormatReader>>,
-    decoder: &mut Option<Box<dyn symphonia::core::codecs::Decoder>>,
-    current_track_id: &mut u32,
-    sample_buf: &mut Option<SampleBuffer<f32>>,
-    next_meta: &mut Option<TrackMeta>,
-    crossfade: &mut Option<CrossfadeState>,
-    fade_in_remaining: &mut usize,
-    fade_in_total: &mut usize,
-) -> bool {
-    match cmd {
-        AudioCommand::Play(meta) => {
-            info!(rating_key = meta.rating_key, url = %meta.url, "Play command received");
-
-            // Clear any queued next track and in-progress crossfade
-            *next_meta = None;
-            *crossfade = None;
-
-            // Signal the output callback to drain stale samples immediately
-            shared.flush_pending.store(true, Ordering::Release);
-
-            let _ = event_tx.send(AudioEvent::State {
-                state: PlaybackState::Buffering,
-            });
-
-            match open_for_decode(&meta.url, shared) {
-                Ok((mss, url)) => match probe_audio(mss, &url) {
-                    Ok((mut fmt, dec, tid, sr, ch, codec)) => {
-                        let norm_gain = resolve_normalization_gain(&meta, &mut fmt, shared, codec);
-                        *format_reader = Some(fmt);
-                        *decoder = Some(dec);
-                        *current_track_id = tid;
-                        *sample_buf = None;
-
-                        shared.sample_rate.store(sr as i64, Ordering::Relaxed);
-                        shared.channels.store(ch as i64, Ordering::Relaxed);
-                        shared.position_samples.store(0, Ordering::Relaxed);
-                        shared.paused.store(false, Ordering::Relaxed);
-                        shared.finished.store(false, Ordering::Relaxed);
-                        shared.current_bpm.store(0, Ordering::Relaxed);
-                        shared.next_bpm.store(0, Ordering::Relaxed);
-                        shared.normalization_gain_millths
-                            .store((norm_gain * 1_000.0) as i64, Ordering::Relaxed);
-                        shared.next_norm_gain_millths.store(1_000, Ordering::Relaxed);
-
-                        *current_track = Some(meta.clone());
-
-                        // Arm micro fade-in to prevent silence→audio pop
-                        let dev_rate = shared.device_sample_rate.load(Ordering::Relaxed) as u32;
-                        *fade_in_total = fade_in_sample_count(dev_rate, ch);
-                        *fade_in_remaining = *fade_in_total;
-
-                        let _ = event_tx.send(AudioEvent::TrackStarted {
-                            rating_key: meta.rating_key,
-                            duration_ms: meta.duration_ms,
-                        });
-                        let _ = event_tx.send(AudioEvent::State {
-                            state: PlaybackState::Playing,
-                        });
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Failed to probe audio");
-                        let _ = event_tx.send(AudioEvent::Error { message: e });
-                        let _ = event_tx.send(AudioEvent::State {
-                            state: PlaybackState::Stopped,
-                        });
-                    }
-                },
-                Err(e) => {
-                    error!(error = %e, "Failed to fetch audio");
-                    let _ = event_tx.send(AudioEvent::Error { message: e });
-                    let _ = event_tx.send(AudioEvent::State {
-                        state: PlaybackState::Stopped,
-                    });
-                }
-            }
-        }
-
-        AudioCommand::Pause => {
-            shared.paused.store(true, Ordering::Relaxed);
-            let _ = event_tx.send(AudioEvent::State {
-                state: PlaybackState::Paused,
-            });
-        }
-
-        AudioCommand::Resume => {
-            shared.paused.store(false, Ordering::Relaxed);
-            if format_reader.is_some() {
-                let _ = event_tx.send(AudioEvent::State {
-                    state: PlaybackState::Playing,
-                });
-            }
-        }
-
-        AudioCommand::Stop => {
-            *format_reader = None;
-            *decoder = None;
-            *current_track = None;
-            *next_meta = None;
-            *crossfade = None;
-            shared.paused.store(false, Ordering::Relaxed);
-            shared.finished.store(true, Ordering::Relaxed);
-            shared.position_samples.store(0, Ordering::Relaxed);
-            let _ = event_tx.send(AudioEvent::State {
-                state: PlaybackState::Stopped,
-            });
-        }
-
-        AudioCommand::Seek(ms) => {
-            if let Some(ref mut fmt) = format_reader {
-                let time_secs = ms as f64 / 1000.0;
-                let seek_to = SeekTo::Time {
-                    time: symphonia::core::units::Time {
-                        seconds: time_secs as u64,
-                        frac: time_secs.fract(),
-                    },
-                    track_id: Some(*current_track_id),
-                };
-                match fmt.seek(SeekMode::Coarse, seek_to) {
-                    Ok(seeked) => {
-                        if let Some(ref mut dec) = decoder {
-                            dec.reset();
-                        }
-                        let ch = shared.channels.load(Ordering::Relaxed);
-                        shared.position_samples.store(
-                            (seeked.actual_ts as i64) * ch,
-                            Ordering::Relaxed,
-                        );
-                        // Seeking cancels any in-progress crossfade
-                        *crossfade = None;
-                        // Tell the output callback to drain the ring buffer so stale
-                        // pre-seek audio is discarded instantly instead of playing
-                        // through (~2 s worth of buffered samples).
-                        shared.seek_flush_pending.store(true, Ordering::Release);
-                        debug!(seeked_to_ms = ms, actual_ts = seeked.actual_ts, "Seek complete");
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Seek failed");
-                    }
-                }
-            }
-        }
-
-        AudioCommand::SetVolume(vol) => {
-            shared.set_volume(vol);
-        }
-
-        AudioCommand::PreloadNext(meta) => {
-            debug!(
-                rating_key = meta.rating_key,
-                url = %meta.url,
-                "PreloadNext: warming cache + queueing for gapless"
-            );
-            // Start downloading the next track in the background
-            prefetch_url_bg(meta.url.clone(), Arc::clone(shared));
-            // Queue for gapless swap / crossfade trigger
-            *next_meta = Some(meta.clone());
-
-            // Detect BPM in a background OS thread so it's ready before crossfade time
-            let shared_bpm = Arc::clone(shared);
-            let url_bpm = meta.url.clone();
-            std::thread::Builder::new()
-                .name("bpm-detect".into())
-                .spawn(move || {
-                    detect_bpm_bg(&url_bpm, &shared_bpm);
-                })
-                .ok();
-        }
-
-        AudioCommand::SetCrossfadeWindow(ms) => {
-            shared.crossfade_window_ms.store(ms, Ordering::Relaxed);
-            info!(ms = ms, "Crossfade window updated");
-        }
-
-        AudioCommand::SetNormalizationEnabled(enabled) => {
-            shared.normalization_enabled.store(enabled, Ordering::Relaxed);
-            info!(enabled = enabled, "Audio normalization toggled");
-        }
-
-        AudioCommand::SetEqEnabled(enabled) => {
-            shared.eq_enabled.store(enabled, Ordering::Relaxed);
-            info!(enabled = enabled, "EQ toggled");
-        }
-
-        AudioCommand::SetEq { gains_db } => {
-            let sr = shared.device_sample_rate.load(Ordering::Relaxed) as f32;
-            let coeffs = compute_eq_coeffs(&gains_db, sr);
-            if let Ok(mut lock) = shared.eq_coeffs.lock() {
-                *lock = coeffs;
-            }
-            if let Ok(mut gains_lock) = shared.eq_gains_millths.lock() {
-                for (i, &g) in gains_db.iter().enumerate() {
-                    gains_lock[i] = (g * 1000.0) as i32;
-                }
-            }
-            shared.eq_sample_rate.store(sr as i64, Ordering::Relaxed);
-
-            // Auto-gain: reduce output by the max EQ boost to prevent clipping.
-            let max_boost_db = gains_db.iter().cloned().fold(0.0f32, f32::max);
-            let pregain = if max_boost_db > 0.01 {
-                10f32.powf(-max_boost_db / 20.0)
-            } else {
-                1.0
-            };
-            shared.eq_pregain_millths.store((pregain * 1_000.0) as i64, Ordering::Relaxed);
-            debug!("EQ coefficients recomputed at {}Hz, pregain={:.3}", sr as i32, pregain);
-        }
-
-        AudioCommand::SetPreampGain(db) => {
-            // Convert dB to linear gain and store as fixed-point × 1000.
-            // Clamped to a sane range (−24 to +6 dB) to prevent accidental extremes.
-            let linear = 10f32.powf(db.clamp(-24.0, 6.0) / 20.0);
-            shared.preamp_gain_millths.store((linear * 1_000.0) as i64, Ordering::Relaxed);
-            debug!(db = db, linear = linear, "Pre-amp gain updated");
-        }
-
-        AudioCommand::SetSameAlbumCrossfade(enabled) => {
-            shared.same_album_crossfade.store(enabled, Ordering::Relaxed);
-            info!(enabled = enabled, "Same-album crossfade toggled");
-        }
-
-        AudioCommand::SetVisualizerEnabled(enabled) => {
-            shared.vis_enabled.store(enabled, Ordering::Relaxed);
-            debug!(enabled = enabled, "Visualizer PCM bridge toggled");
-        }
-
-        AudioCommand::SetPreferredDevice(name) => {
-            *shared.preferred_device_name.lock().unwrap() = name.clone();
-            debug!(?name, "Preferred output device updated (takes effect on next play)");
-        }
-
-        AudioCommand::Shutdown => {
-            info!("Decoder thread shutting down");
-            return true;
-        }
-    }
-
-    false
-}

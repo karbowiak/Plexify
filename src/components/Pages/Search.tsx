@@ -4,10 +4,11 @@ import { useSearchStore, useConnectionStore, buildPlexImageUrl } from "../../sto
 import { getRecentSearches, clearRecentSearches } from "../../lib/recentSearches"
 import type { PlexMedia, Track } from "../../types/plex"
 import { MediaCard } from "../MediaCard"
+import { MediaGrid } from "../shared/MediaGrid"
 import { PriorityMediaCard } from "../PriorityMediaCard"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import { usePlayerStore } from "../../stores/playerStore"
-import { useContextMenuStore } from "../../stores/contextMenuStore"
+import { useContextMenu } from "../../hooks/useContextMenu"
 
 type MediaType = "artist" | "album" | "track" | "playlist"
 
@@ -85,7 +86,7 @@ function getInfo(item: PlexMedia, baseUrl: string, token: string) {
 }
 
 export function Search() {
-  const { results, isSearching, query, search } = useSearchStore()
+  const { results, isSearching, query, search } = useSearchStore(useShallow(s => ({ results: s.results, isSearching: s.isSearching, query: s.query, search: s.search })))
   const { baseUrl, token, musicSectionId } = useConnectionStore(
     useShallow(s => ({
       baseUrl: s.baseUrl,
@@ -94,7 +95,7 @@ export function Search() {
     }))
   )
   const playTrack = usePlayerStore(s => s.playTrack)
-  const showContextMenu = useContextMenuStore(s => s.show)
+  const { handler: ctxMenu } = useContextMenu()
 
   const [recentSearches, setRecentSearches] = useState<string[]>(() => getRecentSearches())
 
@@ -123,8 +124,8 @@ export function Search() {
             return (
               <div key={type}>
                 <div className="mb-3 text-xl font-bold">{GROUP_LABELS[type]}</div>
-                <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}>
-                  {items.slice(0, 10).map((item, idx) => {
+                <MediaGrid gap={3}>
+                  {items.slice(0, 10).map((item) => {
                     const info = getInfo(item, baseUrl, token)
                     if (!info) return null
                     const prefetch = info.itemType === "artist"
@@ -133,16 +134,16 @@ export function Search() {
                         ? () => prefetchAlbum(info.ratingKey)
                         : undefined
                     const onClick = info.itemType === "track"
-                      ? () => void playTrack(tracks[idx], tracks)
+                      ? () => void playTrack(item as Track & { type: "track" }, tracks)
                       : undefined
                     const onContextMenu = (item.type === "artist" || item.type === "album")
-                      ? (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, item.type, item) }
+                      ? ctxMenu(item.type, item)
                       : undefined
                     const usePriority = info.itemType === "artist" || info.itemType === "album"
                     const Card = usePriority ? PriorityMediaCard : MediaCard
                     return (
                       <Card
-                        key={idx}
+                        key={info.ratingKey}
                         title={info.title}
                         desc={info.desc}
                         thumb={info.thumb}
@@ -156,7 +157,7 @@ export function Search() {
                       />
                     )
                   })}
-                </div>
+                </MediaGrid>
               </div>
             )
           })}
@@ -179,7 +180,7 @@ export function Search() {
                   <button
                     key={q}
                     onClick={() => void search(musicSectionId!, q)}
-                    className="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-sm text-gray-300 hover:border-white/30 hover:bg-white/10 hover:text-white transition-all"
+                    className="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-sm text-gray-300 hover:border-accent/30 hover:bg-accent/10 hover:text-white transition-all"
                   >
                     {q}
                   </button>

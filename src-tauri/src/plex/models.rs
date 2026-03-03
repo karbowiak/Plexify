@@ -199,9 +199,10 @@ pub struct PlexApiResponse<T> {
 /// Items may be under `"Metadata"` (most endpoints), `"Directory"`
 /// (library section listings), or `"Hub"` (hub/discovery endpoints).
 ///
-/// Note: `size`, `totalSize`, and `offset` are intentionally omitted —
-/// Plex returns them inconsistently as either integers or strings, and
-/// we don't use them in the frontend.
+/// Note: `size` and `offset` are intentionally omitted — they're only
+/// present on paginated responses and we compute pagination from `total_size`.
+/// `totalSize` uses `serde_string_or_i64_opt` because Plex returns it
+/// inconsistently as either an integer or a string.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct MediaContainer<T> {
     /// Items under the "Metadata" key (tracks, albums, playlists, etc.)
@@ -215,6 +216,11 @@ pub struct MediaContainer<T> {
     /// Items under the "Hub" key (hub/discovery endpoints use this key)
     #[serde(rename = "Hub", default)]
     pub hub: Vec<T>,
+
+    /// Total number of matching items (for paginated responses).
+    /// Plex returns this as either an integer or a string.
+    #[serde(rename(deserialize = "totalSize"), default, deserialize_with = "serde_string_or_i64_opt::deserialize")]
+    pub total_size: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------

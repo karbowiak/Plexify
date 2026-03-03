@@ -1,4 +1,6 @@
-import { useEqStore, EQ_LABELS, EQ_PRESETS } from "../stores/eqStore"
+import { useEffect, useState } from "react"
+import { useEqStore, EQ_LABELS, EQ_PRESETS, type EqGains } from "../stores/eqStore"
+import { audioGetOutputDevices } from "../lib/plex"
 
 const MIN_DB = -12
 const MAX_DB = 12
@@ -19,13 +21,43 @@ interface Props {
 }
 
 export default function EqPanel({ onClose }: Props) {
-  const { gains, enabled, setEnabled, setBand, applyPreset } = useEqStore()
+  const {
+    gains, enabled, setEnabled, setBand, applyPreset,
+    postgainDb, autoPostgain, setPostgainDb, setAutoPostgain,
+    currentDevice, deviceProfiles, saveProfileForDevice, deleteProfileForDevice,
+  } = useEqStore()
+
+  const [devices, setDevices] = useState<{ name: string; connected: boolean }[]>([])
+
+  useEffect(() => {
+    audioGetOutputDevices().then((connected) => {
+      const connectedSet = new Set(connected)
+      // Union of currently connected devices + any devices with saved profiles
+      const profileDevices = Object.keys(deviceProfiles)
+      const allNames = new Set([...connected, ...profileDevices])
+      const list = [...allNames]
+        .map((name) => ({ name, connected: connectedSet.has(name) }))
+        .sort((a, b) => {
+          if (a.name === currentDevice) return -1
+          if (b.name === currentDevice) return 1
+          if (a.connected && !b.connected) return -1
+          if (!a.connected && b.connected) return 1
+          return a.name.localeCompare(b.name)
+        })
+      setDevices(list)
+    }).catch(() => {})
+  }, [currentDevice, deviceProfiles])
 
   return (
     <>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
-        <span className="text-sm font-semibold text-white tracking-wide">Equalizer</span>
+        <div className="flex flex-col">
+          <span className="text-sm font-semibold text-white tracking-wide">Equalizer</span>
+          {currentDevice && (
+            <span className="text-[10px] text-white/40 truncate max-w-[180px]">{currentDevice}</span>
+          )}
+        </div>
         <div className="flex items-center gap-3">
           <button
             onClick={() => setEnabled(!enabled)}
@@ -70,7 +102,7 @@ export default function EqPanel({ onClose }: Props) {
       </div>
 
       {/* Sliders — overflow:hidden clips any sub-pixel thumb bleed at track extremes */}
-      <div className={`px-4 pt-4 pb-4 transition-opacity overflow-hidden ${!enabled ? "opacity-40 pointer-events-none" : ""}`}>
+      <div className={`px-4 pt-4 pb-2 transition-opacity overflow-hidden ${!enabled ? "opacity-40 pointer-events-none" : ""}`}>
         <div className="flex items-start justify-between gap-1">
           {gains.map((db, i) => (
             <div key={i} className="flex flex-col items-center gap-1" style={{ width: 36 }}>
@@ -111,6 +143,93 @@ export default function EqPanel({ onClose }: Props) {
           ))}
         </div>
       </div>
+
+      {/* Makeup Gain row */}
+      <div className={`flex items-center gap-3 px-4 py-2 border-t border-[var(--border)] transition-opacity ${!enabled ? "opacity-40 pointer-events-none" : ""}`}>
+        <span className="text-[11px] text-white/60 shrink-0">Gain</span>
+        <button
+          onClick={() => setAutoPostgain(!autoPostgain)}
+          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors shrink-0 ${
+            autoPostgain
+              ? "bg-accent text-black"
+              : "bg-white/10 text-white/50 hover:bg-white/20"
+          }`}
+        >
+          Auto
+        </button>
+        {autoPostgain ? (
+          <span className="text-[11px] text-white/30 tabular-nums">
+            +{postgainDb.toFixed(1)} dB
+          </span>
+        ) : (
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <input
+              type="range"
+              min={0}
+              max={12}
+              step={0.5}
+              value={postgainDb}
+              onChange={(e) => setPostgainDb(parseFloat(e.target.value))}
+              className="eq-slider appearance-none cursor-pointer flex-1 h-1"
+              aria-label={`Makeup gain: ${postgainDb} dB`}
+            />
+            <span className="text-[11px] text-white/60 tabular-nums shrink-0 w-12 text-right">
+              +{postgainDb.toFixed(1)} dB
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Device Profiles */}
+      {devices.length > 0 && (
+        <div className={`px-4 py-2 border-t border-[var(--border)] transition-opacity ${!enabled ? "opacity-40 pointer-events-none" : ""}`}>
+          <span className="text-[11px] text-white/40 font-semibold uppercase tracking-wider">Device Profiles</span>
+          <div className="mt-1.5 flex flex-col gap-1">
+            {devices.map(({ name: dev, connected }) => {
+              const hasProfile = !!deviceProfiles[dev]
+              const isActive = dev === currentDevice
+              return (
+                <div
+                  key={dev}
+                  className={`flex items-center gap-2 py-1 px-2 rounded text-xs ${
+                    isActive ? "bg-white/5" : ""
+                  }`}
+                >
+                  {isActive ? (
+                    <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+                  ) : !connected ? (
+                    <span className="w-1.5 h-1.5 rounded-full bg-white/20 shrink-0" />
+                  ) : null}
+                  <span className={`truncate flex-1 ${
+                    isActive ? "text-white" : connected ? "text-white/50" : "text-white/25 italic"
+                  }`}>
+                    {dev}
+                  </span>
+                  {hasProfile && (
+                    <svg className="w-3 h-3 text-accent shrink-0" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
+                    </svg>
+                  )}
+                  <button
+                    onClick={() => saveProfileForDevice(dev)}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/60 hover:bg-white/20 hover:text-white transition-colors shrink-0"
+                  >
+                    Save
+                  </button>
+                  {hasProfile && (
+                    <button
+                      onClick={() => deleteProfileForDevice(dev)}
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/40 hover:bg-red-500/20 hover:text-red-400 transition-colors shrink-0"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </>
   )
 }

@@ -10,9 +10,12 @@ import { QueuePanel } from "./components/QueuePanel"
 import LyricsPanel from "./components/LyricsPanel"
 import { UpdateDialog } from "./components/UpdateDialog"
 import { ContextMenu } from "./components/ContextMenu"
+import { DebugPanel } from "./components/DebugPanel"
+import { useDebugPanelStore } from "./stores/debugPanelStore"
 import { createAppMenu } from "./lib/appMenu"
 import { addItemsToPlaylist } from "./lib/plex"
 import { recordRecentPlaylist } from "./lib/recentPlaylists"
+import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, useLibraryStore, useUIStore } from "./stores"
 import { useLastfmStore } from "./stores/lastfmStore"
 import "./stores/accentStore"    // import so the module runs applyAccent() on load
@@ -21,9 +24,16 @@ import "./stores/fontStore"     // import so the module runs applyFont() on load
 import "./stores/cardSizeStore" // import so the module sets --card-size CSS var on load
 
 function App() {
-  const { isConnected, musicSectionId, isLoading, loadAndConnect } = useConnectionStore()
-  const { fetchPlaylists, fetchRecentlyAdded, fetchHubs, fetchTags, prefetchAllPlaylists, prefetchMixTracks } = useLibraryStore()
-  const { showCreatePlaylist, setShowCreatePlaylist, pendingPlaylistItemIds, setPendingPlaylistItemIds } = useUIStore()
+  const debugPanelOpen = useDebugPanelStore(s => s.open)
+  const { isConnected, musicSectionId, isLoading, loadAndConnect } = useConnectionStore(
+    useShallow(s => ({ isConnected: s.isConnected, musicSectionId: s.musicSectionId, isLoading: s.isLoading, loadAndConnect: s.loadAndConnect }))
+  )
+  const { fetchPlaylists, fetchRecentlyAdded, fetchHubs, fetchTags, prefetchAllPlaylists, prefetchMixTracks } = useLibraryStore(
+    useShallow(s => ({ fetchPlaylists: s.fetchPlaylists, fetchRecentlyAdded: s.fetchRecentlyAdded, fetchHubs: s.fetchHubs, fetchTags: s.fetchTags, prefetchAllPlaylists: s.prefetchAllPlaylists, prefetchMixTracks: s.prefetchMixTracks }))
+  )
+  const { showCreatePlaylist, setShowCreatePlaylist, pendingPlaylistItemIds, setPendingPlaylistItemIds } = useUIStore(
+    useShallow(s => ({ showCreatePlaylist: s.showCreatePlaylist, setShowCreatePlaylist: s.setShowCreatePlaylist, pendingPlaylistItemIds: s.pendingPlaylistItemIds, setPendingPlaylistItemIds: s.setPendingPlaylistItemIds }))
+  )
   const initLastfm = useLastfmStore(s => s.initialize)
   const [location, navigate] = useLocation()
 
@@ -92,7 +102,9 @@ function App() {
         <CreatePlaylist
           onClose={() => { setShowCreatePlaylist(false); setPendingPlaylistItemIds(null) }}
           onCreated={pendingPlaylistItemIds ? (playlist) => {
-            void addItemsToPlaylist(playlist.rating_key, pendingPlaylistItemIds).catch(() => {})
+            void addItemsToPlaylist(playlist.rating_key, pendingPlaylistItemIds)
+              .then(() => useLibraryStore.getState().invalidatePlaylistItems(playlist.rating_key))
+              .catch(() => {})
             recordRecentPlaylist(playlist.rating_key)
             setPendingPlaylistItemIds(null)
           } : undefined}
@@ -101,6 +113,7 @@ function App() {
 
       <UpdateDialog />
       <ContextMenu />
+      {debugPanelOpen && <DebugPanel />}
     </div>
   )
 }

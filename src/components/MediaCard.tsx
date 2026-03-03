@@ -32,7 +32,7 @@ export function MediaCard({ title, desc, thumb, thumbFallback, isArtist, scrollI
       onContextMenu={onContextMenu}
       style={scrollStyle}
       className={clsx(
-        "group cursor-pointer rounded-md bg-app-card p-3 transition-colors hover:bg-app-surface-hover",
+        "group cursor-pointer rounded-md bg-app-card p-3 transition-colors hover:bg-accent/[0.06]",
         scrollItem && "flex-shrink-0"
       )}
     >

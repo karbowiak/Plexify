@@ -1,103 +1,15 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo } from "react"
 import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, usePlayerStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
-import { rateItem } from "../../lib/plex"
-import { lastfmLoveTrack } from "../../lib/lastfm"
-import { useLastfmStore } from "../../stores/lastfmStore"
+import { formatMs, formatTotalMs, formatDate, keyToId } from "../../lib/formatters"
+import { SortTh } from "../shared/SortTh"
+import { StarRating } from "../shared/StarRating"
 import { prefetchTrackAudio } from "../../stores/playerStore"
-import { useContextMenuStore } from "../../stores/contextMenuStore"
+import { useContextMenu } from "../../hooks/useContextMenu"
+import { useTableSort } from "../../hooks/useTableSort"
 
-function formatMs(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`
-}
 
-function formatTotalMs(ms: number): string {
-  const totalMin = Math.floor(ms / 60_000)
-  const hr = Math.floor(totalMin / 60)
-  const min = totalMin % 60
-  if (hr === 0) return `${min} min`
-  return min > 0 ? `${hr} hr ${min} min` : `${hr} hr`
-}
-
-function formatDate(value: string | null): string {
-  if (!value) return ""
-  const num = Number(value)
-  const date = isNaN(num) ? new Date(value) : new Date(num * 1000)
-  if (isNaN(date.getTime())) return ""
-  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(date)
-}
-
-function keyToId(key: string): number {
-  return parseInt(key.split("/").pop() ?? "0", 10)
-}
-
-function SortTh({
-  col, label, active, dir, onSort, align,
-}: {
-  col: string
-  label: string
-  active: string
-  dir: "asc" | "desc"
-  onSort: (col: string) => void
-  align: "left" | "right"
-}) {
-  const isActive = active === col
-  return (
-    <th
-      className={`p-2 text-${align} cursor-pointer select-none whitespace-nowrap transition-colors hover:text-white ${isActive ? "text-white" : ""}`}
-      onClick={() => onSort(col)}
-    >
-      {label}
-      {isActive && (
-        <span className="ml-1 text-accent">{dir === "asc" ? "↑" : "↓"}</span>
-      )}
-    </th>
-  )
-}
-
-/** Interactive star rating — always visible in the Rating column. */
-function StarRating({ ratingKey, userRating, artist, track }: {
-  ratingKey: number
-  userRating: number | null
-  artist: string
-  track: string
-}) {
-  const loveThreshold = useLastfmStore(s => s.loveThreshold)
-  const [local, setLocal] = useState<number | null | undefined>(undefined)
-  const display = local !== undefined ? local : userRating
-  const filled = Math.round((display ?? 0) / 2)
-
-  function rate(value: number | null) {
-    setLocal(value)
-    void rateItem(ratingKey, value).catch(() => setLocal(undefined))
-    // Sync love/unlove to Last.fm based on the configured threshold (fire-and-forget)
-    const plexRating = value ?? 0
-    const shouldLove = plexRating >= loveThreshold
-    void lastfmLoveTrack(artist, track, shouldLove).catch(() => {})
-  }
-
-  return (
-    <div className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
-      {[1, 2, 3, 4, 5].map(star => (
-        <button
-          key={star}
-          title={`Rate ${star} star${star > 1 ? "s" : ""}`}
-          className={`transition-colors ${filled >= star ? "text-accent" : "text-gray-600 hover:text-accent/70"}`}
-          onClick={e => {
-            e.stopPropagation()
-            rate(filled === star ? null : star * 2)
-          }}
-        >
-          <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-            <path d="M3.612 15.443c-.386.198-.824-.149-.746-.592l.83-4.73L.173 6.765c-.329-.314-.158-.888.283-.95l4.898-.696L7.538.792c.197-.39.73-.39.927 0l2.184 4.327 4.898.696c.441.062.612.636.282.95l-3.522 3.356.83 4.73c.078.443-.36.79-.746.592L8 13.187l-4.389 2.256z" />
-          </svg>
-        </button>
-      ))}
-    </div>
-  )
-}
 
 export function Liked() {
   const { likedTracks, fetchLikedTracks } = useLibraryStore(useShallow(s => ({
@@ -110,7 +22,7 @@ export function Liked() {
     addToQueue: s.addToQueue,
     currentTrack: s.currentTrack,
   })))
-  const showContextMenu = useContextMenuStore(s => s.show)
+  const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
   const { baseUrl, token, musicSectionId } = useConnectionStore(useShallow(s => ({
     baseUrl: s.baseUrl,
     token: s.token,
@@ -132,20 +44,7 @@ export function Liked() {
   })
 
   type SortCol = "default" | "title" | "artist" | "album" | "rating" | "rated_at" | "duration"
-  type SortDir = "asc" | "desc"
-  const [sortCol, setSortCol] = useState<SortCol>("default")
-  const [sortDir, setSortDir] = useState<SortDir>("asc")
-
-  function handleSort(col: string) {
-    const c = col as SortCol
-    if (sortCol === c) {
-      setSortDir(d => d === "asc" ? "desc" : "asc")
-    } else {
-      setSortCol(c)
-      // Rating sorts desc by default (highest first)
-      setSortDir(c === "rating" ? "desc" : "asc")
-    }
-  }
+  const { sortCol, sortDir, handleSort } = useTableSort<SortCol>({ descByDefault: ["rating"] })
 
   const tracks = useMemo(() => {
     if (sortCol === "default") return dedupedTracks
@@ -251,13 +150,14 @@ export function Liked() {
               const albumId = keyToId(track.parent_key)
               const artistId = keyToId(track.grandparent_key)
               const isActive = currentTrack?.rating_key === track.rating_key
+              const isContextTarget = isCtxTarget(track.rating_key)
               return (
                 <tr
                   key={track.rating_key}
-                  className={`group cursor-pointer rounded ${isActive ? "bg-white/5" : "hover:bg-white/5"}`}
+                  className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-accent/5" : "hover:bg-accent/5"}`}
                   onClick={() => void playTrack(track, tracks, "Liked Songs", "/collection/tracks")}
                   onMouseEnter={() => prefetchTrackAudio(track)}
-                  onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "track", track) }}
+                  onContextMenu={ctxMenu("track", track)}
                 >
                   {/* Index */}
                   <td className="p-2 text-center w-8">
@@ -311,7 +211,7 @@ export function Liked() {
                           </div>
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-white/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
                               title="Add to Queue"
                               onClick={e => { e.stopPropagation(); addToQueue([track]) }}
                             >
@@ -321,7 +221,7 @@ export function Liked() {
                               Queue
                             </button>
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-white/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
                               title="Track Radio"
                               onClick={e => { e.stopPropagation(); void playRadio(track.rating_key, 'track') }}
                             >

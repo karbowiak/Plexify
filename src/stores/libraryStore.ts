@@ -138,6 +138,8 @@ interface LibraryState {
   prefetchMixTracks: () => Promise<void>
   createPlaylist: (title: string, sectionId: number) => Promise<Playlist>
   refreshAll: (sectionId: number) => Promise<void>
+  /** Evict a single playlist's item cache and refetch if it's currently viewed. */
+  invalidatePlaylistItems: (playlistId: number) => void
   /** Null out all TTL timestamps and playlist caches so the next fetch hits the network. */
   invalidateCache: () => void
 }
@@ -415,6 +417,17 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
       get().fetchRecentlyAdded(sectionId, 50, { force: true }),
       get().fetchHubs(sectionId, { force: true }),
     ])
+  },
+
+  invalidatePlaylistItems: (playlistId: number) => {
+    const { playlistItemsCache, playlistIsFullyLoaded, currentPlaylistId } = get()
+    const { [playlistId]: _items, ...restCache } = playlistItemsCache
+    const { [playlistId]: _loaded, ...restLoaded } = playlistIsFullyLoaded
+    set({ playlistItemsCache: restCache, playlistIsFullyLoaded: restLoaded })
+    // Refetch if the user is currently viewing this playlist
+    if (currentPlaylistId === playlistId) {
+      void get().fetchPlaylistItems(playlistId)
+    }
   },
 
   invalidateCache: () => set({

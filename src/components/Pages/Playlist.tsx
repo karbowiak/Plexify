@@ -2,68 +2,18 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, usePlayerStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
-import { buildItemUri, rateItem } from "../../lib/plex"
-import { lastfmLoveTrack } from "../../lib/lastfm"
-import { useLastfmStore } from "../../stores/lastfmStore"
+import { buildItemUri } from "../../lib/plex"
+import { formatMs, formatTotalMs, formatDate, formatBitrate, keyToId } from "../../lib/formatters"
+import { SortTh } from "../shared/SortTh"
+import { StarRating } from "../shared/StarRating"
 import { prefetchTrackAudio } from "../../stores/playerStore"
-import { useContextMenuStore } from "../../stores/contextMenuStore"
+import { useContextMenu } from "../../hooks/useContextMenu"
+import { useTableSort } from "../../hooks/useTableSort"
 import { RichText } from "../RichText"
 import { UltraBlur } from "../UltraBlur"
 import { useScrollContainer } from "../Page"
 
-function formatMs(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`
-}
 
-function formatTotalMs(ms: number): string {
-  const totalMin = Math.floor(ms / 60_000)
-  const hr = Math.floor(totalMin / 60)
-  const min = totalMin % 60
-  if (hr === 0) return `${min} min`
-  return min > 0 ? `${hr} hr ${min} min` : `${hr} hr`
-}
-
-function formatDate(value: string | null): string {
-  if (!value) return ""
-  const num = Number(value)
-  const date = isNaN(num) ? new Date(value) : new Date(num * 1000)
-  if (isNaN(date.getTime())) return ""
-  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(date)
-}
-
-function formatBitrate(kbps: number | null | undefined): string {
-  if (!kbps) return ""
-  return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} kbps`
-}
-
-function keyToId(key: string): number {
-  return parseInt(key.split("/").pop() ?? "0", 10)
-}
-
-function SortTh({
-  col, label, active, dir, onSort, align,
-}: {
-  col: string
-  label: string
-  active: string
-  dir: "asc" | "desc"
-  onSort: (col: string) => void
-  align: "left" | "right"
-}) {
-  const isActive = active === col
-  return (
-    <th
-      className={`p-2 text-${align} cursor-pointer select-none whitespace-nowrap transition-colors hover:text-white ${isActive ? "text-white" : ""}`}
-      onClick={() => onSort(col)}
-    >
-      {label}
-      {isActive && (
-        <span className="ml-1 text-accent">{dir === "asc" ? "↑" : "↓"}</span>
-      )}
-    </th>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Column picker
@@ -122,7 +72,7 @@ function ColumnPicker({ visible, toggle }: { visible: Set<ColId>; toggle: (id: C
     <div ref={ref} className="relative inline-block">
       <button
         onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/10"
+        className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors px-2 py-1 rounded hover:bg-accent/10"
       >
         <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
           <path d="M1 3.5A.5.5 0 0 1 1.5 3h13a.5.5 0 0 1 0 1h-13A.5.5 0 0 1 1 3.5zm3 3A.5.5 0 0 1 4.5 6h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5zm2 3A.5.5 0 0 1 6.5 9h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5z" />
@@ -134,7 +84,7 @@ function ColumnPicker({ visible, toggle }: { visible: Set<ColId>; toggle: (id: C
           {ALL_COLUMNS.map(col => (
             <label
               key={col.id}
-              className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-white/10 text-sm text-gray-300"
+              className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-accent/10 text-sm text-gray-300"
             >
               <input
                 type="checkbox"
@@ -151,52 +101,6 @@ function ColumnPicker({ visible, toggle }: { visible: Set<ColId>; toggle: (id: C
   )
 }
 
-// ---------------------------------------------------------------------------
-// Star rating
-// ---------------------------------------------------------------------------
-
-function TrackRating({ ratingKey, userRating, artist, track }: {
-  ratingKey: number
-  userRating: number | null
-  artist: string
-  track: string
-}) {
-  const loveThreshold = useLastfmStore(s => s.loveThreshold)
-  // Optimistic local override — undefined means "use server value"
-  const [local, setLocal] = useState<number | null | undefined>(undefined)
-  const display = local !== undefined ? local : userRating
-  const filled = Math.round((display ?? 0) / 2)
-
-  function rate(value: number | null) {
-    setLocal(value)
-    void rateItem(ratingKey, value).catch(() => setLocal(undefined))
-    // Sync love/unlove to Last.fm based on the configured threshold (fire-and-forget)
-    const plexRating = value ?? 0
-    const shouldLove = plexRating >= loveThreshold
-    void lastfmLoveTrack(artist, track, shouldLove).catch(() => {})
-  }
-
-  return (
-    <div className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
-      {[1, 2, 3, 4, 5].map(star => (
-        <button
-          key={star}
-          title={`Rate ${star} star${star > 1 ? "s" : ""}`}
-          className={`transition-colors ${filled >= star ? "text-accent" : "text-gray-600 hover:text-accent/70"}`}
-          onClick={e => {
-            e.stopPropagation()
-            // Click the same filled star again → clear rating
-            rate(filled === star ? null : star * 2)
-          }}
-        >
-          <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
-            <path d="M3.612 15.443c-.386.198-.824-.149-.746-.592l.83-4.73L.173 6.765c-.329-.314-.158-.888.283-.95l4.898-.696L7.538.792c.197-.39.73-.39.927 0l2.184 4.327 4.898.696c.441.062.612.636.282.95l-3.522 3.356.83 4.73c.078.443-.36.79-.746.592L8 13.187l-4.389 2.256z" />
-          </svg>
-        </button>
-      ))}
-    </div>
-  )
-}
 
 /**
  * Actual pixel height of a single track row.
@@ -227,7 +131,7 @@ export function Playlist({ playlistId }: { playlistId: number }) {
     addToQueue: s.addToQueue,
     currentTrack: s.currentTrack,
   })))
-  const showContextMenu = useContextMenuStore(s => s.show)
+  const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
   const { baseUrl, token, sectionUuid } = useConnectionStore(useShallow(s => ({
     baseUrl: s.baseUrl,
     token: s.token,
@@ -240,25 +144,7 @@ export function Playlist({ playlistId }: { playlistId: number }) {
   const { visible: visibleCols, toggle: toggleCol } = usePlaylistColumns()
 
   type SortCol = "default" | "title" | "artist" | "album" | "year" | "plays" | "popularity" | "label" | "bitrate" | "format" | "added_at" | "duration"
-  type SortDir = "asc" | "desc"
-  const [sortCol, setSortCol] = useState<SortCol>("default")
-  const [sortDir, setSortDir] = useState<SortDir>("asc")
-
-  // Reset sort when navigating to a different playlist.
-  useEffect(() => {
-    setSortCol("default")
-    setSortDir("asc")
-  }, [playlistId])
-
-  function handleSort(col: string) {
-    const c = col as SortCol
-    if (sortCol === c) {
-      setSortDir(d => d === "asc" ? "desc" : "asc")
-    } else {
-      setSortCol(c)
-      setSortDir("asc")
-    }
-  }
+  const { sortCol, sortDir, handleSort } = useTableSort<SortCol>({ resetKey: playlistId })
 
   const sortedItems = useMemo(() => {
     if (sortCol === "default") return currentPlaylistItems
@@ -469,13 +355,14 @@ export function Playlist({ playlistId }: { playlistId: number }) {
               const albumId = keyToId(track.parent_key)
               const artistId = keyToId(track.grandparent_key)
               const isActive = currentTrack?.rating_key === track.rating_key
+              const isContextTarget = isCtxTarget(track.rating_key)
               return (
                 <tr
                   key={track.rating_key}
-                  className={`group cursor-pointer rounded ${isActive ? "bg-white/5" : "hover:bg-white/5"}`}
+                  className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-accent/5" : "hover:bg-accent/5"}`}
                   onClick={() => void playTrack(track, sortedItems, currentPlaylist?.title, `/playlist/${playlistId}`)}
                   onMouseEnter={() => prefetchTrackAudio(track)}
-                  onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "track", track) }}
+                  onContextMenu={ctxMenu("track", track)}
                 >
                   <td className="p-2 text-center w-8">
                     {isActive ? (
@@ -529,7 +416,7 @@ export function Playlist({ playlistId }: { playlistId: number }) {
                           </div>
                           <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-white/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
                               title="Add to Queue"
                               onClick={e => { e.stopPropagation(); addToQueue([track]) }}
                             >
@@ -539,7 +426,7 @@ export function Playlist({ playlistId }: { playlistId: number }) {
                               Queue
                             </button>
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-white/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
                               title="Track Radio"
                               onClick={e => { e.stopPropagation(); void playRadio(track.rating_key, 'track') }}
                             >
@@ -549,7 +436,7 @@ export function Playlist({ playlistId }: { playlistId: number }) {
                               Radio
                             </button>
                             <span className="w-px h-3 bg-white/20 mx-0.5" />
-                            <TrackRating ratingKey={track.rating_key} userRating={track.user_rating} artist={track.grandparent_title ?? ""} track={track.title} />
+                            <StarRating ratingKey={track.rating_key} userRating={track.user_rating} artist={track.grandparent_title ?? ""} track={track.title} size={11} />
                           </div>
                         </div>
                       </div>

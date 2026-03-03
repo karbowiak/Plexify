@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { Link } from "wouter"
+import { open } from "@tauri-apps/plugin-shell"
 import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, usePlayerStore, buildPlexImageUrl, useUIStore, useLibraryStore } from "../../stores"
 import { getAlbum, getAlbumTracks, getRelatedHubs } from "../../lib/plex"
+import { formatMs, formatTotalDuration } from "../../lib/formatters"
+import { ImageModal } from "../shared/ImageModal"
 import { prefetchTrackAudio } from "../../stores/playerStore"
-import { useContextMenuStore } from "../../stores/contextMenuStore"
+import { useContextMenu } from "../../hooks/useContextMenu"
 import type { Album, Artist, Track, Hub, PlexTag } from "../../types/plex"
 import { MediaCard } from "../MediaCard"
 import { ScrollRow } from "../ScrollRow"
@@ -19,22 +23,11 @@ import type { ItunesAlbumInfo } from "../../lib/itunes"
 import { buildMetaImageUrl } from "../../lib/metadataImage"
 import { useMetadataSourceStore } from "../../stores/metadataSourceStore"
 import { HeroRating } from "../HeroRating"
+import { useMetadataFetch } from "../../hooks/useMetadataFetch"
+import { StarRating } from "../shared/StarRating"
+import { useDebugStore } from "../../stores/debugStore"
+import { useDebugPanelStore } from "../../stores/debugPanelStore"
 
-function formatMs(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`
-}
-
-function formatTotalDuration(tracks: Track[]): string {
-  const totalMs = tracks.reduce((sum, t) => sum + t.duration, 0)
-  const totalSec = Math.floor(totalMs / 1000)
-  const h = Math.floor(totalSec / 3600)
-  const m = Math.floor((totalSec % 3600) / 60)
-  const s = totalSec % 60
-  if (h > 0) return `${h}h ${m}m`
-  if (m > 0) return `${m}m ${s}s`
-  return `${s}s`
-}
 
 function TagChip({ tag, tagType }: { tag: PlexTag; tagType: "genre" | "mood" | "style" }) {
   return (
@@ -48,10 +41,10 @@ function TagChip({ tag, tagType }: { tag: PlexTag; tagType: "genre" | "mood" | "
 }
 
 export function AlbumPage({ albumId }: { albumId: number }) {
-  const { baseUrl, token, musicSectionId } = useConnectionStore()
-  const { playTrack, playRadio, addToQueue, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playRadio: s.playRadio, addToQueue: s.addToQueue, currentTrack: s.currentTrack })))
-  const showContextMenu = useContextMenuStore(s => s.show)
-  const { pageRefreshKey } = useUIStore()
+  const { baseUrl, token, musicSectionId } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId })))
+  const { playTrack, playRadio, addToQueue, addNext, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playRadio: s.playRadio, addToQueue: s.addToQueue, addNext: s.addNext, currentTrack: s.currentTrack })))
+  const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
+  const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
 
   // Seed from eager-load cache for an instant first render.
   const cached = getCachedAlbum(albumId)
@@ -65,6 +58,9 @@ export function AlbumPage({ albumId }: { albumId: number }) {
   const [descExpanded, setDescExpanded] = useState(false)
   const [showImageModal, setShowImageModal] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const menuBtnRef = useRef<HTMLButtonElement>(null)
+  const debugEnabled = useDebugStore(s => s.debugEnabled)
+  const showDebugPanel = useDebugPanelStore(s => s.show)
 
   // Metadata source priority
   const priority = useMetadataSourceStore(s => s.priority)
@@ -130,24 +126,30 @@ export function AlbumPage({ albumId }: { albumId: number }) {
     [tagsGenre, tagsMood, tagsStyle]
   )
 
+  // Map each tag name (lowercase) to its tagType for building correct genre links.
+  // Must be before early returns — hooks cannot be called conditionally.
+  const albumGenre = album?.genre ?? []
+  const albumStyle = album?.style ?? []
+  const albumMood  = album?.mood ?? []
+  const tagTypeMap = useMemo(() => {
+    const m = new Map<string, "genre" | "mood" | "style">()
+    for (const t of tagsGenre) m.set(t.tag.toLowerCase(), "genre")
+    for (const t of tagsMood)  m.set(t.tag.toLowerCase(), "mood")
+    for (const t of tagsStyle) m.set(t.tag.toLowerCase(), "style")
+    // Album-specific tags override (they are authoritative)
+    for (const t of albumGenre) m.set(t.tag.toLowerCase(), "genre")
+    for (const t of albumStyle) m.set(t.tag.toLowerCase(), "style")
+    for (const t of albumMood)  m.set(t.tag.toLowerCase(), "mood")
+    return m
+  }, [albumGenre, albumStyle, albumMood, tagsGenre, tagsMood, tagsStyle])
+
   // Fetch LastFM + Deezer + iTunes metadata once we know the album / artist names
-  useEffect(() => {
-    if (!album?.title || !album?.parent_title) return
-    let cancelled = false
-    setLastfmData(null)
-    setDeezerData(null)
-    setItunesData(null)
-    void getLastfmAlbum(album.parent_title, album.title).then(d => {
-      if (!cancelled && d) setLastfmData(d)
-    })
-    void getDeezerAlbum(album.parent_title, album.title).then(d => {
-      if (!cancelled && d) setDeezerData(d)
-    })
-    void getItunesAlbum(album.parent_title, album.title).then(d => {
-      if (!cancelled && d) setItunesData(d)
-    })
-    return () => { cancelled = true }
-  }, [album?.title, album?.parent_title, getLastfmAlbum, getDeezerAlbum, getItunesAlbum])
+  const albumKey = album?.title && album?.parent_title ? `${album.parent_title}||${album.title}` : null
+  useMetadataFetch([
+    { key: albumKey, fetch: () => getLastfmAlbum(album!.parent_title, album!.title), setState: setLastfmData },
+    { key: albumKey, fetch: () => getDeezerAlbum(album!.parent_title, album!.title), setState: setDeezerData },
+    { key: albumKey, fetch: () => getItunesAlbum(album!.parent_title, album!.title), setState: setItunesData },
+  ], [albumKey, getLastfmAlbum, getDeezerAlbum, getItunesAlbum])
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading album…</div>
   if (error) return <div className="p-8 text-sm text-red-400">{error}</div>
@@ -177,18 +179,6 @@ export function AlbumPage({ albumId }: { albumId: number }) {
     ...album.mood,
   ]
 
-  // Map each tag name (lowercase) to its tagType for building correct genre links.
-  const tagTypeMap = useMemo(() => {
-    const m = new Map<string, "genre" | "mood" | "style">()
-    for (const t of tagsGenre) m.set(t.tag.toLowerCase(), "genre")
-    for (const t of tagsMood)  m.set(t.tag.toLowerCase(), "mood")
-    for (const t of tagsStyle) m.set(t.tag.toLowerCase(), "style")
-    // Album-specific tags override (they are authoritative)
-    for (const t of album.genre) m.set(t.tag.toLowerCase(), "genre")
-    for (const t of album.style) m.set(t.tag.toLowerCase(), "style")
-    for (const t of album.mood)  m.set(t.tag.toLowerCase(), "mood")
-    return m
-  }, [album.genre, album.style, album.mood, tagsGenre, tagsMood, tagsStyle])
 
   // Bio: pick from the highest-priority source that has text.
   // Only Plex and Last.fm have album bios/wiki; Deezer and Apple are skipped.
@@ -276,6 +266,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
           {/* Three-dot menu */}
           <div className="relative">
             <button
+              ref={menuBtnRef}
               onClick={() => setMenuOpen(v => !v)}
               className="flex h-9 w-9 items-center justify-center rounded-full text-white/50 hover:text-white hover:bg-white/10 transition-all"
               title="More options"
@@ -284,22 +275,100 @@ export function AlbumPage({ albumId }: { albumId: number }) {
                 <circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/>
               </svg>
             </button>
-            {menuOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 z-50 w-52 rounded-lg bg-app-surface shadow-xl border border-[var(--border)] py-1">
+            {album && menuOpen && (() => {
+              const rect = menuBtnRef.current?.getBoundingClientRect()
+              return createPortal(<>
+                <div className="fixed inset-0 z-[9998]" onClick={() => setMenuOpen(false)} />
+                <div
+                  className="fixed z-[9999] w-56 max-h-[70vh] overflow-y-auto rounded-lg bg-app-surface shadow-xl border border-[var(--border)] py-1"
+                  style={{ top: (rect?.bottom ?? 0) + 4, right: window.innerWidth - (rect?.right ?? 0) }}
+                >
+                  {/* Queue */}
+                  <button
+                    onClick={() => { addNext(tracks); setMenuOpen(false) }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
+                  >
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 18l8.5-6L6 6v12zm2-8.14L11.03 12 8 14.14V9.86zM16 6h2v12h-2z" /></svg>
+                    Play next
+                  </button>
                   <button
                     onClick={() => { addToQueue(tracks); setMenuOpen(false) }}
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
                   >
-                    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-                      <path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
-                    </svg>
-                    Add album to Queue
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z" /></svg>
+                    Add to queue
                   </button>
+
+                  <hr className="my-1 border-t border-[var(--border)]" />
+
+                  {/* Rating */}
+                  <StarRating
+                    ratingKey={album.rating_key}
+                    userRating={album.user_rating ?? null}
+                    enableLove={false}
+                    artist={album.parent_title}
+                    track={album.title}
+                    size={14}
+                    onRated={() => setMenuOpen(false)}
+                  />
+
+                  <hr className="my-1 border-t border-[var(--border)]" />
+
+                  {/* Share */}
+                  <div className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/30">Share</div>
+                  <button
+                    onClick={() => { void open(`https://www.last.fm/music/${encodeURIComponent(album.parent_title)}`); setMenuOpen(false) }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
+                  >
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" /></svg>
+                    Last.fm artist
+                  </button>
+                  <button
+                    onClick={() => { void open(`https://www.last.fm/music/${encodeURIComponent(album.parent_title)}/${encodeURIComponent(album.title)}`); setMenuOpen(false) }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
+                  >
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" /></svg>
+                    Last.fm album
+                  </button>
+                  {deezerData?.deezer_url && (
+                    <button
+                      onClick={() => { void open(deezerData.deezer_url); setMenuOpen(false) }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
+                    >
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" /></svg>
+                      Deezer
+                    </button>
+                  )}
+
+                  <hr className="my-1 border-t border-[var(--border)]" />
+
+                  {/* Navigation */}
+                  <Link
+                    href={`/artist/${album.parent_key.split("/").pop()}`}
+                    onClick={() => setMenuOpen(false)}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
+                  >
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-5.33 0-8 2.67-8 4v1h16v-1c0-1.33-2.67-4-8-4z" /></svg>
+                    Go to artist
+                  </Link>
+
+                  {/* Debug */}
+                  {debugEnabled && (
+                    <>
+                      <hr className="my-1 border-t border-[var(--border)]" />
+                      <div className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/30">Debug</div>
+                      <button
+                        onClick={() => { showDebugPanel("album", album); setMenuOpen(false) }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M20 8h-2.81a5.985 5.985 0 0 0-1.82-1.96L17 4.41 15.59 3l-2.17 2.17a5.947 5.947 0 0 0-2.84 0L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81A6.008 6.008 0 0 0 12 22a6.008 6.008 0 0 0 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z"/></svg>
+                        Debug Info
+                      </button>
+                    </>
+                  )}
                 </div>
-              </>
-            )}
+              </>, document.body)
+            })()}
           </div>
         </div>
 
@@ -403,20 +472,21 @@ export function AlbumPage({ albumId }: { albumId: number }) {
             <tr>
               <th className="p-2 text-center w-8">#</th>
               <th className="p-2 text-left">Title</th>
-              <th className="p-2 text-center w-36">Rating</th>
-              <th className="p-2 text-right">Duration</th>
+              <th className="p-2 text-right w-32">Rating</th>
+              <th className="p-2 text-right w-36">Duration</th>
             </tr>
           </thead>
           <tbody>
             {tracks.map((track, idx) => {
               const isActive = currentTrack?.rating_key === track.rating_key
+              const isContextTarget = isCtxTarget(track.rating_key)
               return (
               <tr
                 key={track.rating_key}
-                className={`group cursor-pointer rounded ${isActive ? "bg-white/5" : "hover:bg-white/5"}`}
+                className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-accent/5" : "hover:bg-accent/5"}`}
                 onClick={() => void playTrack(track, tracks, album.title, `/album/${albumId}`)}
                 onMouseEnter={() => prefetchTrackAudio(track)}
-                onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "track", track) }}
+                onContextMenu={ctxMenu("track", track)}
               >
                 <td className="p-2 text-center w-8">
                   {isActive ? (
@@ -447,10 +517,10 @@ export function AlbumPage({ albumId }: { albumId: number }) {
                     <div className="text-xs text-gray-500">{track.original_title}</div>
                   )}
                 </td>
-                <td className="p-2 text-center" onClick={e => e.stopPropagation()}>
+                <td className="p-2 text-right" onClick={e => e.stopPropagation()}>
                   <HeroRating ratingKey={track.rating_key} userRating={track.user_rating} />
                 </td>
-                <td className="p-2 text-right tabular-nums">
+                <td className="p-2 text-right w-36 tabular-nums">
                   <span className="group-hover:hidden">{formatMs(track.duration)}</span>
                   <div className="hidden group-hover:inline-flex items-center gap-2">
                     <button
@@ -552,19 +622,8 @@ export function AlbumPage({ albumId }: { albumId: number }) {
         </div>
       )}
 
-      {/* Album art modal */}
       {showImageModal && thumbUrl && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-          onClick={() => setShowImageModal(false)}
-        >
-          <img
-            src={thumbUrl}
-            alt={album.title}
-            className="max-h-[85vh] max-w-[85vw] rounded-2xl shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          />
-        </div>
+        <ImageModal src={thumbUrl} alt={album.title} onClose={() => setShowImageModal(false)} />
       )}
     </div>
   )

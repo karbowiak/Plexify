@@ -15,14 +15,11 @@ import {
 import { CSS } from "@dnd-kit/utilities"
 import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore, useConnectionStore, buildPlexImageUrl } from "../stores"
+import { formatMs } from "../lib/formatters"
 import { useUIStore } from "../stores/uiStore"
 import { isDjGenerated, isRadioGenerated } from "../stores/playerStore"
 import { LyricsContent } from "./LyricsPanel"
 
-function formatMs(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`
-}
 
 interface SortableItemProps {
   id: string
@@ -64,7 +61,7 @@ function SortableItem({
     <div
       ref={setNodeRef}
       style={style}
-      className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer hover:bg-white/5 group ${isCurrent ? "border-l-2 border-accent" : ""}`}
+      className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer hover:bg-accent/5 group ${isCurrent ? "border-l-2 border-accent" : ""}`}
       onClick={onJump}
     >
       {/* Drag handle */}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { useLocation } from "wouter"
+import { useShallow } from "zustand/react/shallow"
 import { open } from "@tauri-apps/plugin-shell"
 import clsx from "clsx"
 import { useConnectionStore, useLibraryStore } from "../../stores"
@@ -20,8 +21,9 @@ import type { FontPreset } from "../../stores/fontStore"
 import { useMetadataSourceStore, type MetadataSource, SOURCE_LABELS, SOURCE_DESCRIPTIONS } from "../../stores/metadataSourceStore"
 import { useCardSizeStore, CARD_SIZE_MIN, CARD_SIZE_MAX } from "../../stores/cardSizeStore"
 import { useNotificationStore } from "../../stores/notificationStore"
+import { useDebugStore } from "../../stores/debugStore"
 
-type Section = "account" | "playback" | "lastfm" | "metadata" | "downloads" | "ai" | "experience" | "notifications" | "about"
+type Section = "account" | "playback" | "lastfm" | "metadata" | "downloads" | "ai" | "experience" | "notifications" | "debug" | "about"
 type AuthState = "idle" | "polling" | "picking"
 
 const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
@@ -95,6 +97,15 @@ const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
     icon: (
       <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
         <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
+      </svg>
+    ),
+  },
+  {
+    id: "debug",
+    label: "Debug",
+    icon: (
+      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M20 8h-2.81a5.985 5.985 0 0 0-1.82-1.96L17 4.41 15.59 3l-2.17 2.17a5.947 5.947 0 0 0-2.84 0L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81A6.008 6.008 0 0 0 12 22a6.008 6.008 0 0 0 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z"/>
       </svg>
     ),
   },
@@ -563,8 +574,18 @@ function AccountSection() {
     clearError,
     baseUrl: savedUrl,
     token: savedToken,
-  } = useConnectionStore()
-  const { fetchPlaylists, fetchRecentlyAdded, fetchHubs } = useLibraryStore()
+  } = useConnectionStore(useShallow(s => ({
+    connect: s.connect,
+    disconnectAndClear: s.disconnectAndClear,
+    startPlexAuth: s.startPlexAuth,
+    isLoading: s.isLoading,
+    isConnected: s.isConnected,
+    error: s.error,
+    clearError: s.clearError,
+    baseUrl: s.baseUrl,
+    token: s.token,
+  })))
+  const { fetchPlaylists, fetchRecentlyAdded, fetchHubs } = useLibraryStore(useShallow(s => ({ fetchPlaylists: s.fetchPlaylists, fetchRecentlyAdded: s.fetchRecentlyAdded, fetchHubs: s.fetchHubs })))
   const [, navigate] = useLocation()
 
   const [url, setUrl] = useState(savedUrl)
@@ -1007,6 +1028,44 @@ function NotificationsSection() {
           <button
             onClick={() => setNotificationsEnabled(false)}
             className={`${pillBase} ${!notificationsEnabled ? pillActive : pillInactive}`}
+          >
+            Off
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Debug section
+// ---------------------------------------------------------------------------
+
+function DebugSection() {
+  const { debugEnabled, setDebugEnabled } = useDebugStore()
+
+  const pillBase = "rounded-full px-4 py-1.5 text-sm transition-colors"
+  const pillActive = "bg-accent text-black font-semibold"
+  const pillInactive = "bg-white/10 text-white hover:bg-white/20"
+
+  return (
+    <div className="flex flex-col gap-10 max-w-xl">
+      <div>
+        <h3 className="text-base font-semibold text-white mb-1">Debug Mode</h3>
+        <p className="text-xs text-white/35 mb-4">
+          Shows raw Plex IDs, file paths, and stream data in track info and right-click menus.
+          Intended for diagnosing playback or metadata issues.
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setDebugEnabled(true)}
+            className={`${pillBase} ${debugEnabled ? pillActive : pillInactive}`}
+          >
+            On
+          </button>
+          <button
+            onClick={() => setDebugEnabled(false)}
+            className={`${pillBase} ${!debugEnabled ? pillActive : pillInactive}`}
           >
             Off
           </button>
@@ -1760,6 +1819,7 @@ export function SettingsPage() {
         )}
         {section === "experience" && <ExperienceSection />}
         {section === "notifications" && <NotificationsSection />}
+        {section === "debug" && <DebugSection />}
         {section === "about" && <AboutSection />}
       </main>
     </div>

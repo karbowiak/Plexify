@@ -34,12 +34,14 @@ export function useArtistImage(
   // Re-renders only when THIS artist's entry changes in the store.
   const deezerEntry = useDeezerMetadataStore(s => key ? s.artists[key] : undefined)
   const getDeezerArtist = useDeezerMetadataStore(s => s.getArtist)
+  const deezerHydrated = useDeezerMetadataStore(s => s._hasHydrated)
 
   // Warm the Deezer cache when this artist hasn't been fetched yet.
+  // Gate on hydration to avoid firing fetches before IndexedDB data loads.
   useEffect(() => {
-    if (!artistName || deezerEntry !== undefined) return
+    if (!deezerHydrated || !artistName || deezerEntry !== undefined) return
     void getDeezerArtist(artistName)
-  }, [artistName, deezerEntry !== undefined, getDeezerArtist])
+  }, [deezerHydrated, artistName, deezerEntry !== undefined, getDeezerArtist])
 
   const deezerUrl = deezerEntry?.data?.image_url ?? null
 
@@ -77,13 +79,16 @@ export function useAlbumImage(
   const itunesEntry = useItunesMetadataStore(s => key ? s.albums[key] : undefined)
   const getDeezerAlbum = useDeezerMetadataStore(s => s.getAlbum)
   const getItunesAlbum = useItunesMetadataStore(s => s.getAlbum)
+  const deezerHydrated = useDeezerMetadataStore(s => s._hasHydrated)
+  const itunesHydrated = useItunesMetadataStore(s => s._hasHydrated)
 
-  // Warm caches when entries are missing
+  // Warm caches when entries are missing.
+  // Gate on hydration to avoid firing fetches before IndexedDB data loads.
   useEffect(() => {
     if (!artistName || !albumName) return
-    if (deezerEntry === undefined) void getDeezerAlbum(artistName, albumName)
-    if (itunesEntry === undefined) void getItunesAlbum(artistName, albumName)
-  }, [artistName, albumName, deezerEntry !== undefined, itunesEntry !== undefined, getDeezerAlbum, getItunesAlbum])
+    if (deezerHydrated && deezerEntry === undefined) void getDeezerAlbum(artistName, albumName)
+    if (itunesHydrated && itunesEntry === undefined) void getItunesAlbum(artistName, albumName)
+  }, [artistName, albumName, deezerHydrated, itunesHydrated, deezerEntry !== undefined, itunesEntry !== undefined, getDeezerAlbum, getItunesAlbum])
 
   const deezerUrl = deezerEntry?.data?.cover_url ?? null
   const appleUrl  = itunesEntry?.data?.cover_url ?? null

@@ -1,13 +1,14 @@
 import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, useConnectionStore, usePlayerStore, buildPlexImageUrl } from "../../stores"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
-import { buildItemUri } from "../../lib/plex"
+import { makeOnPlay } from "../../lib/mediaPlay"
 import { MediaCard } from "../MediaCard"
+import { MediaGrid } from "../shared/MediaGrid"
 import { getMediaInfo } from "./Home"
 
 export function RecentlyAddedPage() {
   const recentlyAdded = useLibraryStore(s => s.recentlyAdded)
-  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore()
+  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId, sectionUuid: s.sectionUuid })))
   const { playFromUri, playTrack, playPlaylist } = usePlayerStore(useShallow(s => ({
     playFromUri:  s.playFromUri,
     playTrack:    s.playTrack,
@@ -23,49 +24,30 @@ export function RecentlyAddedPage() {
     return undefined
   }
 
-  function makeOnPlay(item: typeof recentlyAdded[number]) {
-    if (item.type === "track") {
-      return () => void playTrack(item, [item], item.grandparent_title, null)
-    }
-    if (!sectionUuid) return undefined
-    if (item.type === "album") {
-      const uri = buildItemUri(sectionUuid, `/library/metadata/${item.rating_key}`)
-      return () => void playFromUri(uri, false, item.title, `/album/${item.rating_key}`)
-    }
-    if (item.type === "artist") {
-      const uri = buildItemUri(sectionUuid, `/library/metadata/${item.rating_key}`)
-      return () => void playFromUri(uri, false, item.title, `/artist/${item.rating_key}`)
-    }
-    if (item.type === "playlist") {
-      return () => void playPlaylist(item.rating_key, item.leaf_count, item.title, `/playlist/${item.rating_key}`)
-    }
-    return undefined
-  }
-
   return (
     <div className="p-8">
       <h1 className="mb-6 text-3xl font-bold">Recently Added</h1>
       {recentlyAdded.length === 0 ? (
         <div className="text-sm text-gray-400">Nothing recently added.</div>
       ) : (
-        <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}>
+        <MediaGrid>
           {recentlyAdded.map((item, idx) => {
             const info = getMediaInfo(item, baseUrl, token)
             if (!info) return null
             return (
               <MediaCard
-                key={idx}
+                key={"rating_key" in item ? (item.rating_key || `ra-${idx}`) : idx}
                 title={info.title}
                 desc={info.desc}
                 thumb={info.thumb}
                 isArtist={info.isArtist}
                 href={info.href ?? undefined}
                 prefetch={makePrefetch(info)}
-                onPlay={makeOnPlay(item)}
+                onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, sectionUuid })}
               />
             )
           })}
-        </div>
+        </MediaGrid>
       )}
     </div>
   )

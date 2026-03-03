@@ -3,6 +3,7 @@ import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, useLibraryStore, usePlayerStore, buildPlexImageUrl } from "../../stores"
 import { getMixTracks, searchLibrary, buildItemUri } from "../../lib/plex"
+import { formatMs, formatTotalMs, keyToId } from "../../lib/formatters"
 import { UltraBlur } from "../UltraBlur"
 import type { Track, Playlist } from "../../types/plex"
 
@@ -10,22 +11,6 @@ import type { Track, Playlist } from "../../types/plex"
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatMs(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`
-}
-
-function formatTotalMs(ms: number): string {
-  const totalMin = Math.floor(ms / 60_000)
-  const hr = Math.floor(totalMin / 60)
-  const min = totalMin % 60
-  if (hr === 0) return `${min} min`
-  return min > 0 ? `${hr} hr ${min} min` : `${hr} hr`
-}
-
-function keyToId(key: string): number {
-  return parseInt(key.split("/").pop() ?? "0", 10)
-}
 
 function mixTitleToArtistName(title: string): string {
   return title.replace(/\s+(Mix|Radio|Station|Mix Radio)$/i, "").trim()
@@ -305,7 +290,7 @@ export function MixPage() {
               return (
                 <tr
                   key={`${track.rating_key}-${idx}`}
-                  className={`group cursor-pointer rounded ${isActive ? "bg-white/5" : "hover:bg-white/5"}`}
+                  className={`group cursor-pointer rounded ${isActive ? "bg-accent/5" : "hover:bg-accent/5"}`}
                   onClick={() => void playTrack(track, tracks, mixItem.title, "/mix")}
                 >
                   <td className="p-2 text-center w-8">
@@ -361,7 +346,7 @@ export function MixPage() {
                           </div>
                           <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-white/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
                               title="Add to Queue"
                               onClick={e => { e.stopPropagation(); addToQueue([track]) }}
                             >

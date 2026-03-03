@@ -7,8 +7,8 @@ export function CreatePlaylist({ onClose, onCreated }: { onClose: () => void; on
   const [created, setCreated] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { createPlaylist } = useLibraryStore()
-  const { musicSectionId } = useConnectionStore()
+  const createPlaylist = useLibraryStore(s => s.createPlaylist)
+  const musicSectionId = useConnectionStore(s => s.musicSectionId)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

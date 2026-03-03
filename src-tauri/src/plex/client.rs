@@ -51,6 +51,7 @@ pub struct PlexClient {
     base_url: String,
     pub token: String,
     pub client_id: String,
+    pub machine_identifier: String,
     pub client: ClientWithMiddleware,
 }
 
@@ -125,6 +126,7 @@ impl PlexClient {
             base_url: config.base_url,
             token: config.token,
             client_id: config.client_id,
+            machine_identifier: String::new(),
             client,
         })
     }

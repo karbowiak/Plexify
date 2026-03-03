@@ -61,6 +61,7 @@ symphonia-adapter-libopus = "0.2"
 cpal = "0.15"
 ringbuf = "0.4"
 crossbeam-channel = "0.5"
+rubato = "0.14"
 
 [dev-dependencies]
 tokio-test = "0.4"

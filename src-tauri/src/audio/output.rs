@@ -9,18 +9,18 @@ use ringbuf::traits::Consumer;
 use ringbuf::HeapCons;
 use tracing::{error, info};
 
-use super::decoder::DecoderShared;
+use super::state::DecoderShared;
 use super::eq::{BiquadCoeffs, BiquadState};
 
 /// Size of the ring buffer in samples (2 seconds at 48kHz stereo)
 pub const RING_BUFFER_SIZE: usize = 48000 * 2 * 2;
 
 /// Builds and starts the cpal output stream.
-/// Returns the Stream handle (must be kept alive) and the device sample rate.
+/// Returns the Stream handle, the device sample rate, and the resolved device name.
 pub fn start_output(
     consumer: HeapCons<f32>,
     shared: Arc<DecoderShared>,
-) -> Result<(Stream, u32), String> {
+) -> Result<(Stream, u32, String), String> {
     let host = cpal::default_host();
 
     // Use the user-preferred device if set; fall back to system default.
@@ -38,6 +38,8 @@ pub fn start_output(
             .ok_or("No audio output device found")?
     };
 
+    let device_name = device.name().unwrap_or_default();
+
     let default_config = device
         .default_output_config()
         .map_err(|e| format!("Failed to get default output config: {e}"))?;
@@ -46,7 +48,7 @@ pub fn start_output(
     let channels = default_config.channels();
 
     info!(
-        device = device.name().unwrap_or_default(),
+        device = %device_name,
         sample_rate = sample_rate,
         channels = channels,
         sample_format = ?default_config.sample_format(),
@@ -66,7 +68,7 @@ pub fn start_output(
         .play()
         .map_err(|e| format!("Failed to start audio stream: {e}"))?;
 
-    Ok((stream, sample_rate))
+    Ok((stream, sample_rate, device_name))
 }
 
 /// Smooth soft-knee peak limiter — transparent below 0.95 (≈ −0.45 dBFS),
@@ -102,6 +104,16 @@ fn build_f32_stream(
     let mut eq_was_enabled = false;
     // PCM accumulator for the visualizer relay — collects mono-mixed samples.
     let mut vis_accum: Vec<f32> = Vec::with_capacity(512);
+    // Pause/resume transition tracking for fade ramps
+    let mut was_paused = false;
+    // Fade-out state: remaining samples to fade, total fade length
+    let mut fade_out_remaining: usize = 0;
+    let mut fade_out_total: usize = 0;
+    // Fade-in state for resume and post-seek
+    let mut fade_in_remaining: usize = 0;
+    let mut fade_in_total: usize = 0;
+    // 5 ms fade duration in samples (per channel)
+    let fade_samples = (5 * config.sample_rate.0 as usize * output_channels) / 1000;
 
     let stream = device
         .build_output_stream(
@@ -135,14 +147,46 @@ fn build_f32_stream(
                             break;
                         }
                     }
-                    // Reset EQ history to prevent seeking artifacts from stale IIR state
                     for band in &mut eq_state { *band = [BiquadState::default(); 8]; }
+                    // Arm fade-in for the first buffer after seek
+                    fade_in_remaining = fade_samples;
+                    fade_in_total = fade_samples;
                     data.fill(0.0);
                     return;
                 }
 
-                // If paused or finished, output silence
-                if shared.paused.load(Ordering::Relaxed) {
+                // Also check for seek_fadein_pending (set by decoder after seek)
+                if shared.seek_fadein_pending.swap(false, Ordering::AcqRel) {
+                    fade_in_remaining = fade_samples;
+                    fade_in_total = fade_samples;
+                }
+
+                // Pre-buffering gate: output silence while the decoder fills the
+                // ring buffer after a Play or Seek command. This prevents the
+                // guaranteed underrun that occurs when the output callback runs
+                // before the decoder has pushed any data.
+                if shared.prebuffering.load(Ordering::Acquire) {
+                    data.fill(0.0);
+                    return;
+                }
+
+                // Pause/resume transition detection
+                let is_paused = shared.paused.load(Ordering::Acquire);
+
+                if is_paused && !was_paused {
+                    // Just paused — start fade-out on current buffer contents
+                    fade_out_remaining = fade_samples;
+                    fade_out_total = fade_samples;
+                }
+                if !is_paused && was_paused {
+                    // Just resumed — arm fade-in
+                    fade_in_remaining = fade_samples;
+                    fade_in_total = fade_samples;
+                }
+                was_paused = is_paused;
+
+                // If paused and fade-out is complete, output silence
+                if is_paused && fade_out_remaining == 0 {
                     data.fill(0.0);
                     return;
                 }
@@ -163,12 +207,16 @@ fn build_f32_stream(
                 // Normalization gain is applied in the decoder before samples reach the
                 // ring buffer, so the output callback only needs to scale by volume × pre-amp.
                 // eq_pregain compensates for EQ boost to prevent clipping.
+                // eq_postgain restores volume after EQ (makeup gain).
                 let volume = shared.volume();
                 let preamp = shared.preamp_gain_millths.load(Ordering::Relaxed) as f32 / 1_000.0;
-                let eq_pregain = if eq_enabled {
-                    shared.eq_pregain_millths.load(Ordering::Relaxed) as f32 / 1_000.0
+                let (eq_pregain, eq_postgain) = if eq_enabled {
+                    (
+                        shared.eq_pregain_millths.load(Ordering::Relaxed) as f32 / 1_000.0,
+                        shared.eq_postgain_millths.load(Ordering::Relaxed) as f32 / 1_000.0,
+                    )
                 } else {
-                    1.0
+                    (1.0, 1.0)
                 };
                 let source_channels = shared.channels.load(Ordering::Relaxed) as usize;
 
@@ -185,11 +233,10 @@ fn build_f32_stream(
                         // Direct read
                         let available = consumer.pop_slice(&mut data[pos..]);
                         if available == 0 {
-                            // Underrun — fill remainder with silence
                             data[pos..].fill(0.0);
                             break;
                         }
-                        // Apply volume × pre-amp × eq-pregain, then EQ, then soft limiter — single pass.
+                        // Apply volume × pre-amp × eq-pregain, then EQ, then postgain, then soft limiter.
                         // Channel index is (absolute output position) % output_channels.
                         for (i, sample) in data[pos..pos + available].iter_mut().enumerate() {
                             let ch = (pos + i) % output_channels;
@@ -200,6 +247,7 @@ fn build_f32_stream(
                                         *sample = eq_state[band][ch].process(*sample, &c[band]);
                                     }
                                 }
+                                *sample *= eq_postgain;
                             }
                             *sample = soft_limit(*sample);
                         }
@@ -210,7 +258,6 @@ fn build_f32_stream(
                         let frame_slice = &mut frame[..source_channels];
                         let read = consumer.pop_slice(frame_slice);
                         if read < source_channels {
-                            // Underrun
                             data[pos..].fill(0.0);
                             break;
                         }
@@ -224,7 +271,7 @@ fn build_f32_stream(
                                         s = eq_state[band][ch].process(s, &c[band]);
                                     }
                                 }
-                                frame[ch] = s;
+                                frame[ch] = s * eq_postgain;
                             }
                         }
 
@@ -243,6 +290,31 @@ fn build_f32_stream(
                         }
                     }
                 }
+
+                // Apply fade-out ramp (pause/stop transition)
+                if fade_out_remaining > 0 && fade_out_total > 0 {
+                    let apply = fade_out_remaining.min(data.len());
+                    for i in 0..apply {
+                        let progress = (fade_out_remaining - i) as f32 / fade_out_total as f32;
+                        data[i] *= progress;
+                    }
+                    // Silence the rest if fade-out completed mid-buffer
+                    if apply < data.len() && fade_out_remaining <= data.len() {
+                        data[apply..].fill(0.0);
+                    }
+                    fade_out_remaining = fade_out_remaining.saturating_sub(data.len());
+                }
+
+                // Apply fade-in ramp (resume/seek transition)
+                if fade_in_remaining > 0 && fade_in_total > 0 {
+                    let apply = fade_in_remaining.min(data.len());
+                    for i in 0..apply {
+                        let progress = 1.0 - (fade_in_remaining - i) as f32 / fade_in_total as f32;
+                        data[i] *= progress;
+                    }
+                    fade_in_remaining = fade_in_remaining.saturating_sub(data.len());
+                }
+
                 // PCM IPC bridge — feed visualizer when enabled.
                 // Down-mix processed output to mono and batch into 512-sample chunks.
                 if shared.vis_enabled.load(Ordering::Relaxed) && output_channels > 0 {

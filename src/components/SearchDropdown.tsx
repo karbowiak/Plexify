@@ -1,5 +1,6 @@
 import { useEffect } from "react"
 import { useLocation } from "wouter"
+import { useShallow } from "zustand/react/shallow"
 import { useSearchStore, useConnectionStore, buildPlexImageUrl } from "../stores"
 import { usePlayerStore } from "../stores/playerStore"
 import type { PlexMedia } from "../types/plex"
@@ -35,8 +36,8 @@ function buildItems(results: PlexMedia[]): DropdownItem[] {
 
 export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Props) {
   const [, navigate] = useLocation()
-  const { results, query } = useSearchStore()
-  const { baseUrl, token } = useConnectionStore()
+  const { results, query } = useSearchStore(useShallow(s => ({ results: s.results, query: s.query })))
+  const { baseUrl, token } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token })))
   const playTrack = usePlayerStore(s => s.playTrack)
 
   const items = buildItems(results)
@@ -91,7 +92,7 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
           return (
             <div
               key={row.item.rating_key}
-              className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-white/10" : "hover:bg-white/5"}`}
+              className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-accent/10" : "hover:bg-accent/5"}`}
               onMouseEnter={() => onActiveIndexChange(idx)}
               onMouseDown={e => e.preventDefault()}
               onClick={() => activateItem(idx)}
@@ -116,7 +117,7 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
           return (
             <div
               key={row.item.rating_key}
-              className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-white/10" : "hover:bg-white/5"}`}
+              className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-accent/10" : "hover:bg-accent/5"}`}
               onMouseEnter={() => onActiveIndexChange(idx)}
               onMouseDown={e => e.preventDefault()}
               onClick={() => activateItem(idx)}
@@ -143,7 +144,7 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
         return (
           <div
             key={row.item.rating_key}
-            className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-white/10" : "hover:bg-white/5"}`}
+            className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-accent/10" : "hover:bg-accent/5"}`}
             onMouseEnter={() => onActiveIndexChange(idx)}
             onMouseDown={e => e.preventDefault()}
             onClick={() => activateItem(idx)}

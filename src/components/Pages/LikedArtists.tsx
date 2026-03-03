@@ -1,14 +1,13 @@
 import { useEffect } from "react"
 import { Link } from "wouter"
+import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
 import { prefetchArtist } from "../../stores/metadataCache"
 import { useArtistImage } from "../../hooks/useMediaImage"
-import { useContextMenuStore } from "../../stores/contextMenuStore"
+import { starsFromRating } from "../../lib/formatters"
+import { MediaGrid } from "../shared/MediaGrid"
+import { useContextMenu } from "../../hooks/useContextMenu"
 
-function starsFromRating(rating: number | null): number {
-  if (!rating) return 0
-  return Math.round(rating / 2)
-}
 
 function ArtistThumb({ title, thumb }: { title: string; thumb: string | null }) {
   const resolved = useArtistImage(title, thumb)
@@ -17,6 +16,7 @@ function ArtistThumb({ title, thumb }: { title: string; thumb: string | null }) 
       <img
         src={resolved}
         alt={title}
+        loading="lazy"
         className="h-full w-full object-cover transition-transform group-hover:scale-105"
       />
     )
@@ -31,10 +31,10 @@ function ArtistThumb({ title, thumb }: { title: string; thumb: string | null }) 
 }
 
 export function LikedArtists() {
-  const { likedArtists, fetchLikedArtists } = useLibraryStore()
-  const { baseUrl, token, musicSectionId } = useConnectionStore()
-  const { pageRefreshKey } = useUIStore()
-  const showContextMenu = useContextMenuStore(s => s.show)
+  const { likedArtists, fetchLikedArtists } = useLibraryStore(useShallow(s => ({ likedArtists: s.likedArtists, fetchLikedArtists: s.fetchLikedArtists })))
+  const { baseUrl, token, musicSectionId } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId })))
+  const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
+  const { handler: ctxMenu } = useContextMenu()
 
   useEffect(() => {
     if (musicSectionId !== null) void fetchLikedArtists(musicSectionId)
@@ -75,7 +75,7 @@ export function LikedArtists() {
             No rated artists yet. Rate an artist in Plex to see them here.
           </div>
         ) : (
-          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}>
+          <MediaGrid>
             {likedArtists.map(artist => {
               const thumbUrl = artist.thumb
                 ? buildPlexImageUrl(baseUrl, token, artist.thumb)
@@ -86,8 +86,8 @@ export function LikedArtists() {
                   key={artist.rating_key}
                   href={`/artist/${artist.rating_key}`}
                   onMouseEnter={() => prefetchArtist(artist.rating_key, sectionId)}
-                  onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "artist", artist) }}
-                  className="group flex flex-col items-center gap-2 rounded-md p-3 no-underline transition-colors hover:bg-white/10"
+                  onContextMenu={ctxMenu("artist", artist)}
+                  className="group flex flex-col items-center gap-2 rounded-md p-3 no-underline transition-colors hover:bg-accent/[0.06]"
                 >
                   <div className="relative w-full aspect-square overflow-hidden rounded-full bg-app-surface shadow-lg">
                     <ArtistThumb title={artist.title} thumb={thumbUrl} />
@@ -115,7 +115,7 @@ export function LikedArtists() {
                 </Link>
               )
             })}
-          </div>
+          </MediaGrid>
         )}
       </div>
     </div>

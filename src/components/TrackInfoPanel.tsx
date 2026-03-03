@@ -1,30 +1,15 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
+import { useMetadataFetch } from "../hooks/useMetadataFetch"
 import { usePlayerStore } from "../stores"
 import { getTrack } from "../lib/plex"
+import { formatMs, formatSize, formatSampleRate } from "../lib/formatters"
 import type { Track } from "../types/plex"
 import { useLastfmMetadataStore } from "../stores/lastfmMetadataStore"
 import type { LastfmTrackInfo } from "../lib/lastfm"
 import { useDeezerMetadataStore } from "../stores/deezerMetadataStore"
 import type { DeezerArtistInfo } from "../lib/deezer"
+import { useDebugStore } from "../stores/debugStore"
 
-function formatDuration(ms: number): string {
-  const totalSec = Math.floor(ms / 1000)
-  const m = Math.floor(totalSec / 60)
-  const s = totalSec % 60
-  return `${m}:${s.toString().padStart(2, "0")}`
-}
-
-function formatSize(bytes: number): string {
-  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(2)} GB`
-  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  return `${bytes} B`
-}
-
-function formatSampleRate(hz: number): string {
-  if (hz >= 1000) return `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)} kHz`
-  return `${hz} Hz`
-}
 
 interface Props {
   onClose: () => void
@@ -48,27 +33,15 @@ export default function TrackInfoPanel({ onClose }: Props) {
     return () => { cancelled = true }
   }, [currentTrack?.rating_key])
 
-  // Fetch LastFM metadata for the current track
-  useEffect(() => {
-    if (!currentTrack?.grandparent_title || !currentTrack?.title) return
-    let cancelled = false
-    setLastfmData(null)
-    void getLastfmTrack(currentTrack.grandparent_title, currentTrack.title).then(d => {
-      if (!cancelled && d) setLastfmData(d)
-    })
-    return () => { cancelled = true }
-  }, [currentTrack?.rating_key, getLastfmTrack])
+  const trackKey = currentTrack?.grandparent_title && currentTrack?.title
+    ? `${currentTrack.grandparent_title}||${currentTrack.title}`
+    : null
+  useMetadataFetch([
+    { key: trackKey, fetch: () => getLastfmTrack(currentTrack!.grandparent_title, currentTrack!.title), setState: setLastfmData },
+    { key: currentTrack?.grandparent_title, fetch: () => getDeezerArtist(currentTrack!.grandparent_title), setState: setDeezerArtistData },
+  ], [currentTrack?.rating_key, getLastfmTrack, getDeezerArtist])
 
-  // Fetch Deezer artist data for fan count
-  useEffect(() => {
-    if (!currentTrack?.grandparent_title) return
-    let cancelled = false
-    setDeezerArtistData(null)
-    void getDeezerArtist(currentTrack.grandparent_title).then(d => {
-      if (!cancelled && d) setDeezerArtistData(d)
-    })
-    return () => { cancelled = true }
-  }, [currentTrack?.rating_key, getDeezerArtist])
+  const debugEnabled = useDebugStore(s => s.debugEnabled)
 
   const track = fullTrack ?? currentTrack
   if (!track) return null
@@ -93,7 +66,7 @@ export default function TrackInfoPanel({ onClose }: Props) {
   if (track.grandparent_title) rows.push(["Artist", track.grandparent_title])
   if (track.parent_title) rows.push(["Album", track.parent_title])
   if (track.parent_year) rows.push(["Year", String(track.parent_year)])
-  rows.push(["Duration", formatDuration(track.duration)])
+  rows.push(["Duration", formatMs(track.duration)])
 
   // Audio details
   if (codec) rows.push(["Codec", codec.toUpperCase()])
@@ -123,15 +96,44 @@ export default function TrackInfoPanel({ onClose }: Props) {
     rows.push(["Fans (Deezer)", deezerArtistData.fans.toLocaleString()])
   }
 
+  const [copied, setCopied] = useState(false)
+  const handleCopy = useCallback(() => {
+    void navigator.clipboard.writeText(JSON.stringify(track, null, 2))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }, [track])
+
+  const debugRows: [string, string][] = []
+  if (debugEnabled) {
+    debugRows.push(["Rating Key", String(track.rating_key)])
+    debugRows.push(["Key", track.key])
+    debugRows.push(["Library Section", String(track.library_section_id)])
+    if (part?.file) debugRows.push(["File", part.file])
+    if (track.music_analysis_version != null) debugRows.push(["Music Analysis v", String(track.music_analysis_version)])
+    if (track.view_count != null) debugRows.push(["Play Count", String(track.view_count)])
+    if (track.added_at) debugRows.push(["Added At", track.added_at])
+    if (track.updated_at) debugRows.push(["Updated At", track.updated_at])
+  }
+
   return (
     <>
       <div className="px-4 pt-3 pb-1 flex items-center justify-between">
         <h3 className="text-xs font-semibold uppercase tracking-widest text-white/50">Track Info</h3>
-        <button onClick={onClose} className="text-white/30 hover:text-white/60 transition-colors">
-          <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-            <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
-          </svg>
-        </button>
+        <div className="flex items-center gap-2">
+          {debugEnabled && (
+            <button
+              onClick={handleCopy}
+              className="px-2 py-0.5 rounded text-[10px] bg-white/8 hover:bg-white/14 text-white/50 hover:text-white/80 transition-colors"
+            >
+              {copied ? "Copied!" : "Copy JSON"}
+            </button>
+          )}
+          <button onClick={onClose} className="text-white/30 hover:text-white/60 transition-colors">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+              <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+            </svg>
+          </button>
+        </div>
       </div>
       <div className="px-4 pb-1">
         <p className="text-sm font-medium text-white truncate">{track.title}</p>
@@ -145,6 +147,21 @@ export default function TrackInfoPanel({ onClose }: Props) {
                 <td className="py-1.5 text-white/80 text-right">{value}</td>
               </tr>
             ))}
+            {debugRows.length > 0 && (
+              <>
+                <tr>
+                  <td colSpan={2} className="pt-3 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/25">
+                    Debug
+                  </td>
+                </tr>
+                {debugRows.map(([label, value]) => (
+                  <tr key={`dbg-${label}`} className="border-b border-white/5 last:border-0">
+                    <td className="py-1.5 pr-3 text-white/30 whitespace-nowrap font-mono">{label}</td>
+                    <td className="py-1.5 text-white/55 text-right font-mono break-all">{value}</td>
+                  </tr>
+                ))}
+              </>
+            )}
           </tbody>
         </table>
       </div>

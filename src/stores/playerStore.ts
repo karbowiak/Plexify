@@ -30,6 +30,7 @@ import type { Track, Level, LyricLine } from "../types/plex"
 import { useConnectionStore } from "./connectionStore"
 import { useAudioSettingsStore } from "./audioSettingsStore"
 import { useNotificationStore } from "./notificationStore"
+import { evictMap } from "./cacheUtils"
 import { sendNotification } from "@tauri-apps/plugin-notification"
 
 type RadioType = 'track' | 'artist' | 'album' | 'playlist'
@@ -410,6 +411,7 @@ async function fetchAudioStreamId(track: Track): Promise<number | null> {
   const inline = track.media?.[0]?.parts?.[0]?.streams?.find(s => s.stream_type === 2)?.id ?? null
   if (inline !== null) {
     _waveformStreamCache.set(track.rating_key, inline)
+    evictMap(_waveformStreamCache, 500)
     return inline
   }
   if (_waveformStreamCache.has(track.rating_key)) {
@@ -419,9 +421,11 @@ async function fetchAudioStreamId(track: Track): Promise<number | null> {
     const full = await getTrack(track.rating_key)
     const id = full.media?.[0]?.parts?.[0]?.streams?.find(s => s.stream_type === 2)?.id ?? null
     _waveformStreamCache.set(track.rating_key, id)
+    evictMap(_waveformStreamCache, 500)
     return id
   } catch {
     _waveformStreamCache.set(track.rating_key, null)
+    evictMap(_waveformStreamCache, 500)
     return null
   }
 }
@@ -444,6 +448,7 @@ async function fetchGainDb(track: Track): Promise<number | null> {
     const trackGain = stream.gain ?? null
     const albumGain = stream.album_gain ?? null
     _gainCache.set(track.rating_key, { trackGain, albumGain })
+    evictMap(_gainCache, 500)
     return pickGain(trackGain, albumGain)
   }
 
@@ -460,9 +465,11 @@ async function fetchGainDb(track: Track): Promise<number | null> {
     const trackGain = fullStream?.gain ?? null
     const albumGain = fullStream?.album_gain ?? null
     _gainCache.set(track.rating_key, { trackGain, albumGain })
+    evictMap(_gainCache, 500)
     return pickGain(trackGain, albumGain)
   } catch {
     _gainCache.set(track.rating_key, { trackGain: null, albumGain: null })
+    evictMap(_gainCache, 500)
     return null
   }
 }
@@ -683,12 +690,12 @@ export const usePlayerStore = create<PlayerState>()(
     const { sectionUuid } = useConnectionStore.getState()
     const itemKey = `/library/metadata/${track.rating_key}`
     const uri = sectionUuid ? buildItemUri(sectionUuid, itemKey) : itemKey
-    const { shuffle, repeat } = get()
+    const { repeat } = get()
 
     const queue = context ?? [track]
     const queueIndex = Math.max(0, context ? context.findIndex(t => t.rating_key === track.rating_key) : 0)
-    // Explicit track selection: clear progressive playlist and radio context.
-    set({ queue,
+    // Explicit track selection: clear progressive playlist and radio context, reset shuffle.
+    set({ queue, shuffle: false,
       playlistKey: null, playlistTotalCount: 0, playlistLoadedCount: 0,
       isRadioMode: false, radioSeedKey: null, radioType: null,
       contextName: contextName ?? null, contextHref: contextHref ?? null })
@@ -696,7 +703,7 @@ export const usePlayerStore = create<PlayerState>()(
     try {
       // Start audio + register server-side queue in parallel
       const [playQueue] = await Promise.all([
-        createPlayQueue(uri, shuffle, repeat),
+        createPlayQueue(uri, false, repeat),
         _startPlayback(track, queueIndex, get, set),
       ])
       set({ queueId: playQueue.id })
@@ -706,8 +713,8 @@ export const usePlayerStore = create<PlayerState>()(
   },
 
   playFromUri: async (uri: string, forceShuffle?: boolean, contextName?: string | null, contextHref?: string | null) => {
-    const { shuffle, repeat } = get()
-    const shouldShuffle = forceShuffle ?? shuffle
+    const { repeat } = get()
+    const shouldShuffle = forceShuffle ?? false
     try {
       const playQueue = await createPlayQueue(uri, shouldShuffle, repeat)
       if (playQueue.items.length === 0) {
@@ -740,7 +747,7 @@ export const usePlayerStore = create<PlayerState>()(
     if (tracks.length === 0) return
 
     set({
-      queue: tracks, queueId: null,
+      queue: tracks, queueId: null, shuffle: false,
       playlistKey: playlistId, playlistTotalCount: totalCount,
       playlistLoadedCount: tracks.length, isLoadingMoreTracks: false,
       isRadioMode: false, radioSeedKey: null, radioType: null,
@@ -945,7 +952,21 @@ export const usePlayerStore = create<PlayerState>()(
     set({ volume: clamped })
   },
 
-  toggleShuffle: () => set(s => ({ shuffle: !s.shuffle })),
+  toggleShuffle: () => {
+    const { shuffle, queue, queueIndex } = get()
+    if (!shuffle && queue.length > 1) {
+      // Keep current track at index 0, Fisher-Yates shuffle the rest
+      const current = queue[queueIndex]
+      const rest = queue.filter((_, i) => i !== queueIndex)
+      for (let i = rest.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [rest[i], rest[j]] = [rest[j], rest[i]]
+      }
+      set({ shuffle: true, queue: [current, ...rest], queueIndex: 0 })
+    } else {
+      set({ shuffle: !shuffle })
+    }
+  },
 
   cycleRepeat: () => set(s => ({ repeat: ((s.repeat + 1) % 3) as 0 | 1 | 2 })),
 

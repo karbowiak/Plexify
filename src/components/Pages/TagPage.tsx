@@ -1,39 +1,92 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState, startTransition } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, usePlayerStore, buildPlexImageUrl } from "../../stores"
 import { getItemsByTag, buildTagFilterUri } from "../../lib/plex"
 import { prefetchAlbum } from "../../stores/metadataCache"
 import { MediaCard } from "../MediaCard"
+import { MediaGrid } from "../shared/MediaGrid"
 import type { Album, PlexMedia } from "../../types/plex"
 
 type TagType = "genre" | "mood" | "style"
 
+const PAGE_SIZE = 100
+
+function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
+  let node = el?.parentElement ?? null
+  while (node && node !== document.body) {
+    const { overflowY } = getComputedStyle(node)
+    if (overflowY === "auto" || overflowY === "scroll") return node
+    node = node.parentElement
+  }
+  return null
+}
+
 export function TagPage({ tagType, tagName }: { tagType: TagType; tagName: string }) {
-  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore()
+  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId, sectionUuid: s.sectionUuid })))
   const { playFromUri } = usePlayerStore(useShallow(s => ({ playFromUri: s.playFromUri })))
 
   const [albums, setAlbums] = useState<Album[]>([])
+  const [totalCount, setTotalCount] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const sentinelRef = useRef<HTMLDivElement>(null)
 
+  // Initial fetch — reset state and load first page
   useEffect(() => {
     if (!musicSectionId) return
     setIsLoading(true)
     setError(null)
-    setAlbums([])
-    getItemsByTag(musicSectionId, tagType, tagName, "9")
-      .then(items => {
-        setAlbums(items.filter((m): m is Album & { type: "album" } => m.type === "album"))
+    startTransition(() => { setAlbums([]); setTotalCount(0) })
+    getItemsByTag(musicSectionId, tagType, tagName, "9", PAGE_SIZE, 0)
+      .then(({ items, total }) => {
+        startTransition(() => {
+          setAlbums(items.filter((m): m is Album & { type: "album" } => m.type === "album"))
+          setTotalCount(total)
+        })
       })
       .catch(e => setError(String(e)))
       .finally(() => setIsLoading(false))
   }, [musicSectionId, tagType, tagName])
+
+  async function loadMore() {
+    if (!musicSectionId || isLoadingMore) return
+    setIsLoadingMore(true)
+    try {
+      const { items } = await getItemsByTag(musicSectionId, tagType, tagName, "9", PAGE_SIZE, albums.length)
+      startTransition(() =>
+        setAlbums(prev => [...prev, ...items.filter((m): m is Album & { type: "album" } => m.type === "album")])
+      )
+    } finally {
+      setIsLoadingMore(false)
+    }
+  }
+
+  // Infinite scroll — re-create observer when loading state or completion changes
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!sentinel) return
+    if (isLoading || isLoadingMore || albums.length >= totalCount) return
+
+    const root = findScrollContainer(sentinel)
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries[0]?.isIntersecting) void loadMore()
+      },
+      { root, rootMargin: "200px" },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, isLoadingMore, albums.length >= totalCount])
 
   function handlePlayAll() {
     if (!sectionUuid || !musicSectionId) return
     const uri = buildTagFilterUri(sectionUuid, musicSectionId, tagType, tagName)
     void playFromUri(uri, true, tagName, null)
   }
+
+  const isFullyLoaded = albums.length >= totalCount && totalCount > 0
 
   return (
     <div className="p-8">
@@ -66,10 +119,7 @@ export function TagPage({ tagType, tagName }: { tagType: TagType; tagName: strin
       )}
 
       {albums.length > 0 && (
-        <div
-          className="grid gap-4"
-          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}
-        >
+        <MediaGrid>
           {albums.map(album => (
             <MediaCard
               key={album.rating_key}
@@ -80,8 +130,25 @@ export function TagPage({ tagType, tagName }: { tagType: TagType; tagName: strin
               prefetch={() => prefetchAlbum(album.rating_key)}
             />
           ))}
-        </div>
+        </MediaGrid>
       )}
+
+      {/* Sentinel — always in DOM so IntersectionObserver can attach */}
+      <div ref={sentinelRef} className="h-1" />
+
+      {/* Footer status */}
+      <div className="mt-4 flex items-center justify-center gap-2 text-xs text-gray-500">
+        {isLoadingMore && (
+          <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+        )}
+        {!isLoading && totalCount > 0 && (
+          isFullyLoaded
+            ? <span>{totalCount} albums</span>
+            : <span>{albums.length} of {totalCount} albums</span>
+        )}
+      </div>
     </div>
   )
 }

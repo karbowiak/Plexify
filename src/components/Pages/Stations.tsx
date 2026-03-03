@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useLocation } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import clsx from "clsx"
@@ -15,7 +15,9 @@ import {
   getMixTracks,
 } from "../../lib/plex"
 import { ScrollRow } from "../ScrollRow"
+import { formatTimeAgo } from "../../lib/formatters"
 import { MediaCard } from "../MediaCard"
+import { MediaGrid } from "../shared/MediaGrid"
 import type { KnownPlexMedia, LibraryTag, PlexMedia, Playlist } from "../../types/plex"
 
 // ---------------------------------------------------------------------------
@@ -69,14 +71,6 @@ function StationIcon() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatTimeAgo(ts: number): string {
-  const m = Math.floor((Date.now() - ts) / 60_000)
-  if (m < 1) return "Just now"
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
 
 function RecentMixCard({ mix, sectionUuid, sectionId, playFromUri }: {
   mix: RecentMix
@@ -99,7 +93,7 @@ function RecentMixCard({ mix, sectionUuid, sectionId, playFromUri }: {
   return (
     <div
       onClick={() => void playFromUri(uri, true)}
-      className="cursor-pointer rounded-xl bg-white/5 p-3 hover:bg-white/10 transition-colors active:scale-[0.97]"
+      className="cursor-pointer rounded-xl bg-white/5 p-3 hover:bg-accent/10 transition-colors active:scale-[0.97]"
     >
       <div className="mb-3 aspect-square overflow-hidden rounded-lg grid grid-cols-2 gap-px bg-black/20">
         {thumbs.map((t, i) => t ? (
@@ -256,7 +250,7 @@ function SearchBasedMixBuilder({ tabType, musicSectionId, baseUrl, token, sectio
                 className={clsx(
                   "flex items-center gap-3 px-3 py-2.5 transition-colors",
                   isSeeded ? "cursor-pointer bg-accent/20" :
-                  atLimit   ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-white/5"
+                  atLimit   ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-accent/5"
                 )}
               >
                 {thumb ? (
@@ -386,7 +380,7 @@ function TagGridMixBuilder({ tags, tabType, sectionUuid, sectionId, colorPalette
       {filtered.length === 0 && (
         <div className="text-sm text-white/40">No {tabType}s match "{filterQuery}"</div>
       )}
-      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}>
+      <MediaGrid gap={3}>
         {filtered.map((tag, idx) => (
           <div
             key={tag.tag}
@@ -407,7 +401,7 @@ function TagGridMixBuilder({ tags, tabType, sectionUuid, sectionId, colorPalette
             )}
           </div>
         ))}
-      </div>
+      </MediaGrid>
     </div>
   )
 }
@@ -452,9 +446,10 @@ export function StationsPage() {
   )
 
   // Mixes for You from hubs store
-  const mixesHubs  = hubs.filter(h => h.hub_identifier.startsWith("music.mixes"))
-  const mixesItems = mixesHubs.flatMap(h => h.metadata)
-  const mixesTitle = mixesHubs[0]?.title ?? "Mixes for You"
+  const { mixesHubs, mixesItems, mixesTitle } = useMemo(() => {
+    const mh = hubs.filter(h => h.hub_identifier.startsWith("music.mixes"))
+    return { mixesHubs: mh, mixesItems: mh.flatMap(h => h.metadata), mixesTitle: mh[0]?.title ?? "Mixes for You" }
+  }, [hubs])
 
   // Resolve artist thumbnails for each mix (same logic as Home.tsx)
   useEffect(() => {
@@ -538,7 +533,7 @@ export function StationsPage() {
               (item.composite ? buildPlexImageUrl(baseUrl, token, item.composite) : null)
             return (
               <MediaCard
-                key={idx}
+                key={item.rating_key || `mix-${idx}`}
                 title={item.title}
                 desc="Mix for You"
                 thumb={thumb}
@@ -574,7 +569,7 @@ export function StationsPage() {
           <div className="text-sm text-white/40">No stations available on this server.</div>
         )}
         {stations.length > 0 && (
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}>
+          <MediaGrid gap={3}>
             {stations.map((item, idx) => (
               <div
                 key={item.key}
@@ -587,7 +582,7 @@ export function StationsPage() {
                 <StationIcon />
               </div>
             ))}
-          </div>
+          </MediaGrid>
         )}
       </div>
 
@@ -595,7 +590,7 @@ export function StationsPage() {
       {recentMixes.length > 0 && (
         <div>
           <div className="mb-4 text-2xl font-bold">Recent Mixes</div>
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}>
+          <MediaGrid gap={3}>
             {recentMixes.map(mix => (
               <RecentMixCard
                 key={mix.id}
@@ -605,7 +600,7 @@ export function StationsPage() {
                 playFromUri={playFromUri}
               />
             ))}
-          </div>
+          </MediaGrid>
         </div>
       )}
 

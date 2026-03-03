@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { Link } from "wouter"
+import { open } from "@tauri-apps/plugin-shell"
 import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, buildPlexImageUrl, usePlayerStore, useUIStore, useLibraryStore } from "../../stores"
 import {
@@ -13,7 +15,7 @@ import {
   buildItemUri,
 } from "../../lib/plex"
 import { prefetchTrackAudio } from "../../stores/playerStore"
-import { useContextMenuStore } from "../../stores/contextMenuStore"
+import { useContextMenu } from "../../hooks/useContextMenu"
 import { useFocalPoint } from "../../lib/focalPoint"
 import type { Artist, Album, Track, Hub, Playlist } from "../../types/plex"
 import { MediaCard } from "../MediaCard"
@@ -27,13 +29,14 @@ import type { DeezerArtistInfo } from "../../lib/deezer"
 import { useItunesMetadataStore } from "../../stores/itunesMetadataStore"
 import type { ItunesArtistInfo } from "../../lib/itunes"
 import { buildMetaImageUrl } from "../../lib/metadataImage"
+import { formatMs } from "../../lib/formatters"
+import { ImageModal } from "../shared/ImageModal"
+import { useMetadataFetch } from "../../hooks/useMetadataFetch"
 import { useMetadataSourceStore } from "../../stores/metadataSourceStore"
 import { HeroRating } from "../HeroRating"
-
-function fmtDuration(ms: number) {
-  const s = Math.floor(ms / 1000)
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
-}
+import { StarRating } from "../shared/StarRating"
+import { useDebugStore } from "../../stores/debugStore"
+import { useDebugPanelStore } from "../../stores/debugPanelStore"
 
 
 function dedupe<T extends { rating_key: number }>(items: T[]): T[] {
@@ -76,10 +79,10 @@ function DeezerArtistAvatar({ name }: { name: string }) {
 }
 
 export function ArtistPage({ artistId }: { artistId: number }) {
-  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore()
+  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId, sectionUuid: s.sectionUuid })))
   const { playTrack, playFromUri, playRadio, addToQueue, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playFromUri: s.playFromUri, playRadio: s.playRadio, addToQueue: s.addToQueue, currentTrack: s.currentTrack })))
-  const showContextMenu = useContextMenuStore(s => s.show)
-  const { pageRefreshKey } = useUIStore()
+  const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
+  const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
 
   const cached = getCachedArtist(artistId)
   const [artist, setArtist] = useState<Artist | null>(cached?.artist ?? null)
@@ -98,6 +101,9 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   const [showImageModal, setShowImageModal] = useState(false)
   const [showHeroModal, setShowHeroModal] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const menuBtnRef = useRef<HTMLButtonElement>(null)
+  const debugEnabled = useDebugStore(s => s.debugEnabled)
+  const showDebugPanel = useDebugPanelStore(s => s.show)
 
   // Metadata source priority
   const priority = useMetadataSourceStore(s => s.priority)
@@ -195,23 +201,11 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   }, [artistId, musicSectionId, pageRefreshKey])
 
   // Fetch LastFM + Deezer + iTunes metadata once we know the artist name
-  useEffect(() => {
-    if (!artist?.title) return
-    let cancelled = false
-    setLastfmData(null)
-    setDeezerData(null)
-    setItunesData(null)
-    void getLastfmArtist(artist.title).then(d => {
-      if (!cancelled && d) setLastfmData(d)
-    })
-    void getDeezerArtist(artist.title).then(d => {
-      if (!cancelled && d) setDeezerData(d)
-    })
-    void getItunesArtist(artist.title).then(d => {
-      if (!cancelled && d) setItunesData(d)
-    })
-    return () => { cancelled = true }
-  }, [artist?.title, getLastfmArtist, getDeezerArtist, getItunesArtist])
+  useMetadataFetch([
+    { key: artist?.title, fetch: () => getLastfmArtist(artist!.title), setState: setLastfmData },
+    { key: artist?.title, fetch: () => getDeezerArtist(artist!.title), setState: setDeezerData },
+    { key: artist?.title, fetch: () => getItunesArtist(artist!.title), setState: setItunesData },
+  ], [artist?.title, getLastfmArtist, getDeezerArtist, getItunesArtist])
 
   // Compute artUrl before early returns so useFocalPoint can be called unconditionally.
   // Respect source priority — iterate through priority order, pick first source with an image.
@@ -241,6 +235,28 @@ export function ArtistPage({ artistId }: { artistId: number }) {
     [tagsGenre, tagsMood, tagsStyle]
   )
 
+  // Memoize album/hub filtering — depends on relatedHubs, fullAlbums, singles
+  const { albumHubs, displayAlbums, displaySingles, genres } = useMemo(() => {
+    const albumHubs = relatedHubs.filter(h =>
+      !SKIP_HUB_IDS.has(h.hub_identifier) &&
+      h.metadata.some(m => m.type === "album")
+    )
+    const hubAlbumKeys = new Set(
+      albumHubs.flatMap(h => h.metadata.filter(m => m.type === "album").map(m => m.rating_key))
+    )
+    const da = fullAlbums.filter(a => !hubAlbumKeys.has(a.rating_key))
+    const ds = singles.filter(a => !hubAlbumKeys.has(a.rating_key))
+
+    const g: string[] = []
+    const seenGenres = new Set<string>()
+    for (const album of [...fullAlbums, ...singles]) {
+      for (const gn of album.genre) {
+        if (!seenGenres.has(gn.tag)) { seenGenres.add(gn.tag); g.push(gn.tag) }
+      }
+    }
+    return { albumHubs, displayAlbums: da, displaySingles: ds, genres: g }
+  }, [relatedHubs, fullAlbums, singles])
+
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading artist…</div>
   if (error) return <div className="p-8 text-sm text-red-400">{error}</div>
   if (!artist) return null
@@ -252,24 +268,6 @@ export function ArtistPage({ artistId }: { artistId: number }) {
     if (src === "deezer" && deezerUrl) { thumbUrl = deezerUrl; break }
   }
   if (!thumbUrl) thumbUrl = plexThumb ?? deezerUrl ?? null
-
-  const albumHubs = relatedHubs.filter(h =>
-    !SKIP_HUB_IDS.has(h.hub_identifier) &&
-    h.metadata.some(m => m.type === "album")
-  )
-  const hubAlbumKeys = new Set(
-    albumHubs.flatMap(h => h.metadata.filter(m => m.type === "album").map(m => m.rating_key))
-  )
-  const displayAlbums = fullAlbums.filter(a => !hubAlbumKeys.has(a.rating_key))
-  const displaySingles = singles.filter(a => !hubAlbumKeys.has(a.rating_key))
-
-  const genres: string[] = []
-  const seenGenres = new Set<string>()
-  for (const album of [...fullAlbums, ...singles]) {
-    for (const g of album.genre) {
-      if (!seenGenres.has(g.tag)) { seenGenres.add(g.tag); genres.push(g.tag) }
-    }
-  }
 
   const artistUri = sectionUuid
     ? buildItemUri(sectionUuid, `/library/metadata/${artistId}`)
@@ -363,6 +361,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
           {/* Three-dot menu */}
           <div className="relative">
             <button
+              ref={menuBtnRef}
               onClick={() => setMenuOpen(v => !v)}
               className="flex h-9 w-9 items-center justify-center rounded-full text-white/50 hover:text-white hover:bg-white/10 transition-all"
               title="More options"
@@ -371,22 +370,74 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                 <circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/>
               </svg>
             </button>
-            {menuOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 z-50 w-56 rounded-lg bg-app-surface shadow-xl border border-[var(--border)] py-1">
+            {artist && menuOpen && (() => {
+              const rect = menuBtnRef.current?.getBoundingClientRect()
+              return createPortal(<>
+                <div className="fixed inset-0 z-[9998]" onClick={() => setMenuOpen(false)} />
+                <div
+                  className="fixed z-[9999] w-56 max-h-[70vh] overflow-y-auto rounded-lg bg-app-surface shadow-xl border border-[var(--border)] py-1"
+                  style={{ top: (rect?.bottom ?? 0) + 4, right: window.innerWidth - (rect?.right ?? 0) }}
+                >
+                  {/* Queue */}
                   <button
                     onClick={() => { addToQueue(popularTracks); setMenuOpen(false) }}
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
                   >
-                    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-                      <path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
-                    </svg>
-                    Add popular tracks to Queue
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z" /></svg>
+                    Add popular to queue
                   </button>
+
+                  <hr className="my-1 border-t border-[var(--border)]" />
+
+                  {/* Rating */}
+                  <StarRating
+                    ratingKey={artist.rating_key}
+                    userRating={artist.user_rating ?? null}
+                    enableLove={false}
+                    artist={artist.title}
+                    track=""
+                    size={14}
+                    onRated={() => setMenuOpen(false)}
+                  />
+
+                  <hr className="my-1 border-t border-[var(--border)]" />
+
+                  {/* Share */}
+                  <div className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/30">Share</div>
+                  <button
+                    onClick={() => { void open(`https://www.last.fm/music/${encodeURIComponent(artist.title)}`); setMenuOpen(false) }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
+                  >
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" /></svg>
+                    Last.fm
+                  </button>
+                  {deezerData?.deezer_url && (
+                    <button
+                      onClick={() => { void open(deezerData.deezer_url); setMenuOpen(false) }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
+                    >
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" /></svg>
+                      Deezer
+                    </button>
+                  )}
+
+                  {/* Debug */}
+                  {debugEnabled && (
+                    <>
+                      <hr className="my-1 border-t border-[var(--border)]" />
+                      <div className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/30">Debug</div>
+                      <button
+                        onClick={() => { showDebugPanel("artist", artist); setMenuOpen(false) }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M20 8h-2.81a5.985 5.985 0 0 0-1.82-1.96L17 4.41 15.59 3l-2.17 2.17a5.947 5.947 0 0 0-2.84 0L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81A6.008 6.008 0 0 0 12 22a6.008 6.008 0 0 0 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z"/></svg>
+                        Debug Info
+                      </button>
+                    </>
+                  )}
                 </div>
-              </>
-            )}
+              </>, document.body)
+            })()}
           </div>
         </div>
 
@@ -513,13 +564,14 @@ export function ArtistPage({ artistId }: { artistId: number }) {
               {popularTracks.map((track, i) => {
                 const albumId = track.parent_key ? track.parent_key.split("/").pop() : null
                 const isActive = currentTrack?.rating_key === track.rating_key
+                const isContextTarget = isCtxTarget(track.rating_key)
                 return (
                   <div
                     key={track.rating_key}
                     onClick={() => playTrack(track, popularTracks, artist.title, `/artist/${artistId}`)}
                     onMouseEnter={() => prefetchTrackAudio(track)}
-                    onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "track", track) }}
-                    className={`group flex cursor-pointer items-center gap-3 rounded-md px-3 py-1.5 ${isActive ? "bg-white/10" : "hover:bg-white/10"}`}
+                    onContextMenu={ctxMenu("track", track)}
+                    className={`group flex cursor-pointer items-center gap-3 rounded-md px-3 py-1.5 ${isActive || isContextTarget ? "bg-accent/10" : "hover:bg-accent/10"}`}
                   >
                     {isActive ? (
                       <>
@@ -591,7 +643,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                         Radio
                       </button>
                       <span className="text-xs tabular-nums text-gray-400 group-hover:hidden">
-                        {fmtDuration(track.duration)}
+                        {formatMs(track.duration)}
                       </span>
                     </span>
                   </div>
@@ -615,7 +667,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                   buildItemUri(sectionUuid, `/library/metadata/${album.rating_key}`),
                   false, album.title, `/album/${album.rating_key}`
                 )}
-                onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "album", album) }}
+                onContextMenu={ctxMenu("album", album)}
                 scrollItem
               />
             ))}
@@ -636,7 +688,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                   buildItemUri(sectionUuid, `/library/metadata/${album.rating_key}`),
                   false, album.title, `/album/${album.rating_key}`
                 )}
-                onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "album", album) }}
+                onContextMenu={ctxMenu("album", album)}
                 scrollItem
               />
             ))}
@@ -666,7 +718,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                     buildItemUri(sectionUuid, `/library/metadata/${a.rating_key}`),
                     false, a.title, `/album/${a.rating_key}`
                   )}
-                  onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "album", a) }}
+                  onContextMenu={ctxMenu("album", a)}
                   scrollItem
                 />
               ))}
@@ -688,7 +740,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                   buildItemUri(sectionUuid, `/library/metadata/${a.rating_key}`),
                   false, a.title, `/artist/${a.rating_key}`
                 )}
-                onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "artist", a) }}
+                onContextMenu={ctxMenu("artist", a)}
                 isArtist
                 scrollItem
               />
@@ -713,7 +765,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                     buildItemUri(sectionUuid, `/library/metadata/${a.rating_key}`),
                     false, a.title, `/artist/${a.rating_key}`
                   )}
-                  onContextMenu={e => { e.preventDefault(); e.stopPropagation(); showContextMenu(e.clientX, e.clientY, "artist", a) }}
+                  onContextMenu={ctxMenu("artist", a)}
                   isArtist
                   scrollItem
                 />
@@ -757,34 +809,11 @@ export function ArtistPage({ artistId }: { artistId: number }) {
         )}
       </div>
 
-      {/* ── Avatar modal ── */}
       {showImageModal && thumbUrl && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-          onClick={() => setShowImageModal(false)}
-        >
-          <img
-            src={thumbUrl}
-            alt={artist.title}
-            className="max-h-[85vh] max-w-[85vw] rounded-2xl shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          />
-        </div>
+        <ImageModal src={thumbUrl} alt={artist.title} onClose={() => setShowImageModal(false)} />
       )}
-
-      {/* ── Hero image modal ── */}
       {showHeroModal && artUrl && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm"
-          onClick={() => setShowHeroModal(false)}
-        >
-          <img
-            src={artUrl}
-            alt={artist.title}
-            className="max-h-[95vh] max-w-[95vw] rounded-lg shadow-2xl object-contain"
-            onClick={e => e.stopPropagation()}
-          />
-        </div>
+        <ImageModal src={artUrl} alt={artist.title} onClose={() => setShowHeroModal(false)} overlay="dark" />
       )}
     </div>
   )

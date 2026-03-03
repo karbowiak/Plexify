@@ -1,9 +1,11 @@
+import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, useConnectionStore, buildPlexImageUrl } from "../../stores"
 import { MediaCard } from "../MediaCard"
+import { MediaGrid } from "../shared/MediaGrid"
 
 export function Library() {
   const playlists = useLibraryStore(s => s.playlists)
-  const { baseUrl, token } = useConnectionStore()
+  const { baseUrl, token } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token })))
 
   return (
     <div>
@@ -11,7 +13,7 @@ export function Library() {
       {playlists.length === 0 ? (
         <div className="text-sm text-gray-400">No playlists found.</div>
       ) : (
-        <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}>
+        <MediaGrid>
           {playlists.map(pl => {
             const artPath = pl.thumb ?? pl.composite
             const thumbUrl = artPath ? buildPlexImageUrl(baseUrl, token, artPath) : null
@@ -25,7 +27,7 @@ export function Library() {
               />
             )
           })}
-        </div>
+        </MediaGrid>
       )}
     </div>
   )

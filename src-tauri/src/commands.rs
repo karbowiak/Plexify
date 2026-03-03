@@ -77,7 +77,11 @@ pub async fn connect_plex(
         accept_invalid_certs: true,
         ..Default::default()
     };
-    let client = PlexClient::new(config).map_err(|e| format!("{:#}", e))?;
+    let mut client = PlexClient::new(config).map_err(|e| format!("{:#}", e))?;
+    // Fetch the server's machine identifier — needed for playlist URI construction.
+    if let Ok(identity) = client.get_identity().await {
+        client.machine_identifier = identity.machine_identifier;
+    }
     let mut guard = state.0.lock().await;
     *guard = Some(client);
     Ok(())
@@ -251,6 +255,13 @@ pub async fn get_artist_popular_leaves(
         .map_err(|e| format!("{:#}", e))
 }
 
+/// Paginated result from `get_items_by_tag`.
+#[derive(serde::Serialize)]
+pub struct PagedMediaItems {
+    pub items: Vec<PlexMedia>,
+    pub total: i64,
+}
+
 /// Get albums (or artists/tracks) filtered by a tag (genre/mood/style).
 #[tauri::command]
 pub async fn get_items_by_tag(
@@ -258,12 +269,16 @@ pub async fn get_items_by_tag(
     tag_type: String,
     tag_name: String,
     libtype: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
     state: State<'_, PlexState>,
-) -> Result<Vec<PlexMedia>, String> {
+) -> Result<PagedMediaItems, String> {
     let c = client!(state);
-    c.get_by_tag(section_id, &tag_type, &tag_name, libtype.as_deref(), None)
+    let (items, total) = c
+        .get_by_tag(section_id, &tag_type, &tag_name, libtype.as_deref(), limit, offset)
         .await
-        .map_err(|e| format!("{:#}", e))
+        .map_err(|e| format!("{:#}", e))?;
+    Ok(PagedMediaItems { items, total })
 }
 
 /// Get metadata-based similar artists for an artist.
@@ -1168,6 +1183,45 @@ pub fn audio_set_preamp_gain(
     }
 }
 
+/// Set post-EQ makeup gain in dB (0..+18). Restores volume lost to pregain.
+#[tauri::command]
+pub fn audio_set_eq_postgain(
+    db: f32,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_eq_postgain(db); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Enable or disable automatic post-EQ makeup gain.
+/// When enabled, postgain automatically compensates for pregain (postgain = 1/pregain).
+#[tauri::command]
+pub fn audio_set_eq_postgain_auto(
+    auto_mode: bool,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_eq_postgain_auto(auto_mode); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Get the name of the actual OS audio device currently in use.
+#[tauri::command]
+pub fn audio_get_current_device(
+    state: State<'_, AudioEngineState>,
+) -> Result<String, String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => Ok(engine.get_current_device()),
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
 /// Enable or disable crossfade for consecutive same-album tracks.
 /// When disabled (default), same-album tracks play gaplessly without any crossfade.
 #[tauri::command]
@@ -1189,9 +1243,8 @@ pub async fn get_lyrics(
     rating_key: i64,
     state: State<'_, PlexState>,
 ) -> Result<Vec<LyricLine>, String> {
-    let guard = state.0.lock().await;
-    let client = guard.as_ref().ok_or("Plex not connected")?;
-    crate::plex::lyrics::get_lyrics(client, rating_key)
+    let c = client!(state);
+    crate::plex::lyrics::get_lyrics(&c, rating_key)
         .await
         .map_err(|e| e.to_string())
 }

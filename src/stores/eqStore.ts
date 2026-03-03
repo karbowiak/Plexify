@@ -1,6 +1,13 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import { audioSetEq, audioSetEqEnabled } from "../lib/plex"
+import { listen } from "@tauri-apps/api/event"
+import {
+  audioSetEq,
+  audioSetEqEnabled,
+  audioSetEqPostgain,
+  audioSetEqPostgainAuto,
+  audioGetCurrentDevice,
+} from "../lib/plex"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -23,16 +30,62 @@ export const EQ_PRESETS: { name: string; gains: EqGains }[] = [
 ]
 
 // ---------------------------------------------------------------------------
+// Device Profile
+// ---------------------------------------------------------------------------
+
+export interface EqProfile {
+  gains: EqGains
+  enabled: boolean
+  postgainDb: number
+  autoPostgain: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Compute auto postgain dB from current gains: max(0, max_boost). */
+function computeAutoPostgainDb(gains: EqGains): number {
+  const maxBoost = Math.max(0, ...gains)
+  return maxBoost
+}
+
+/** Send postgain state to the audio engine. */
+function sendPostgain(db: number, auto: boolean) {
+  void audioSetEqPostgainAuto(auto)
+  void audioSetEqPostgain(db)
+}
+
+// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
 interface EqState {
+  // Core EQ
   gains: EqGains
   enabled: boolean
+  // Postgain (makeup gain)
+  postgainDb: number
+  autoPostgain: boolean
+  // Device profiles
+  deviceProfiles: Record<string, EqProfile>
+  currentDevice: string
+
+  // Core EQ actions
   setBand: (index: number, db: number) => void
   setEnabled: (enabled: boolean) => void
   applyPreset: (preset: EqGains) => void
   syncToEngine: () => void
+
+  // Postgain actions
+  setPostgainDb: (db: number) => void
+  setAutoPostgain: (auto: boolean) => void
+
+  // Device profile actions
+  setCurrentDevice: (name: string) => void
+  saveProfileForDevice: (deviceName: string) => void
+  deleteProfileForDevice: (deviceName: string) => void
+  loadProfileForDevice: (deviceName: string) => void
 }
 
 export const useEqStore = create<EqState>()(
@@ -40,13 +93,22 @@ export const useEqStore = create<EqState>()(
     (set, get) => ({
       gains: [...FLAT] as EqGains,
       enabled: false,
+      postgainDb: 0,
+      autoPostgain: true,
+      deviceProfiles: {},
+      currentDevice: "",
 
       setBand: (index, db) => {
         const next = [...get().gains] as EqGains
         next[index] = db
-        set({ gains: next })
+        const updates: Partial<EqState> = { gains: next }
+        if (get().autoPostgain) {
+          updates.postgainDb = computeAutoPostgainDb(next)
+        }
+        set(updates)
         if (get().enabled) {
           void audioSetEq(next)
+          // Engine auto-computes postgain in SetEq handler when auto mode is on
         }
       },
 
@@ -54,28 +116,115 @@ export const useEqStore = create<EqState>()(
         set({ enabled })
         void audioSetEqEnabled(enabled)
         if (enabled) {
-          void audioSetEq(get().gains)
+          const { gains, postgainDb, autoPostgain } = get()
+          void audioSetEq(gains)
+          sendPostgain(postgainDb, autoPostgain)
         }
       },
 
       applyPreset: (preset) => {
-        set({ gains: [...preset] as EqGains })
+        const updates: Partial<EqState> = { gains: [...preset] as EqGains }
+        if (get().autoPostgain) {
+          updates.postgainDb = computeAutoPostgainDb(preset)
+        }
+        set(updates)
         if (get().enabled) {
           void audioSetEq(preset)
         }
       },
 
       syncToEngine: () => {
-        const { gains, enabled } = get()
+        const { gains, enabled, postgainDb, autoPostgain } = get()
         void audioSetEqEnabled(enabled)
         if (enabled) {
           void audioSetEq(gains)
+          sendPostgain(postgainDb, autoPostgain)
+        }
+        // Query actual device and set it
+        audioGetCurrentDevice().then((name) => {
+          if (name) set({ currentDevice: name })
+        }).catch(() => {})
+      },
+
+      setPostgainDb: (db) => {
+        set({ postgainDb: db, autoPostgain: false })
+        void audioSetEqPostgainAuto(false)
+        void audioSetEqPostgain(db)
+      },
+
+      setAutoPostgain: (auto) => {
+        if (auto) {
+          const postgainDb = computeAutoPostgainDb(get().gains)
+          set({ autoPostgain: true, postgainDb })
+        } else {
+          set({ autoPostgain: false })
+        }
+        sendPostgain(get().postgainDb, auto)
+      },
+
+      setCurrentDevice: (name) => {
+        set({ currentDevice: name })
+        // Auto-load matching profile if one exists
+        const profile = get().deviceProfiles[name]
+        if (profile) {
+          get().loadProfileForDevice(name)
+        }
+      },
+
+      saveProfileForDevice: (deviceName) => {
+        const { gains, enabled, postgainDb, autoPostgain, deviceProfiles } = get()
+        set({
+          deviceProfiles: {
+            ...deviceProfiles,
+            [deviceName]: { gains: [...gains] as EqGains, enabled, postgainDb, autoPostgain },
+          },
+        })
+      },
+
+      deleteProfileForDevice: (deviceName) => {
+        const { deviceProfiles } = get()
+        const next = { ...deviceProfiles }
+        delete next[deviceName]
+        set({ deviceProfiles: next })
+      },
+
+      loadProfileForDevice: (deviceName) => {
+        const profile = get().deviceProfiles[deviceName]
+        if (!profile) return
+        set({
+          gains: [...profile.gains] as EqGains,
+          enabled: profile.enabled,
+          postgainDb: profile.postgainDb,
+          autoPostgain: profile.autoPostgain,
+        })
+        // Sync to engine
+        void audioSetEqEnabled(profile.enabled)
+        if (profile.enabled) {
+          void audioSetEq(profile.gains)
+          sendPostgain(profile.postgainDb, profile.autoPostgain)
         }
       },
     }),
     {
       name: "plex-eq-v1",
-      partialize: (state) => ({ gains: state.gains, enabled: state.enabled }),
+      partialize: (state) => ({
+        gains: state.gains,
+        enabled: state.enabled,
+        postgainDb: state.postgainDb,
+        autoPostgain: state.autoPostgain,
+        deviceProfiles: state.deviceProfiles,
+      }),
     },
   ),
 )
+
+// ---------------------------------------------------------------------------
+// Device change listener — set up once on import
+// ---------------------------------------------------------------------------
+
+listen<{ name: string }>("audio-device-changed", (event) => {
+  const name = event.payload?.name
+  if (name) {
+    useEqStore.getState().setCurrentDevice(name)
+  }
+}).catch(() => {})

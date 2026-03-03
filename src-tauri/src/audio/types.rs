@@ -17,7 +17,6 @@ pub struct TrackMeta {
 }
 
 /// Commands sent from the Tauri thread to the decoder thread
-#[derive(Debug)]
 pub enum AudioCommand {
     Play(TrackMeta),
     Pause,
@@ -34,7 +33,36 @@ pub enum AudioCommand {
     SetSameAlbumCrossfade(bool),   // when false (default), suppress crossfade for same-album tracks
     SetVisualizerEnabled(bool),    // gate PCM IPC bridge for visualizer
     SetPreferredDevice(Option<String>), // preferred CPAL output device name (applied on next Play)
+    SetEqPostgain(f32),                 // post-EQ makeup gain in dB (0..+18)
+    SetEqPostgainAuto(bool),            // auto-compute postgain as 1/pregain
+    SwapProducer(ringbuf::HeapProd<f32>), // replace the ring buffer producer (device switch)
     Shutdown,
+}
+
+impl std::fmt::Debug for AudioCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Play(m) => write!(f, "Play({})", m.rating_key),
+            Self::Pause => write!(f, "Pause"),
+            Self::Resume => write!(f, "Resume"),
+            Self::Stop => write!(f, "Stop"),
+            Self::Seek(ms) => write!(f, "Seek({ms})"),
+            Self::SetVolume(v) => write!(f, "SetVolume({v})"),
+            Self::PreloadNext(m) => write!(f, "PreloadNext({})", m.rating_key),
+            Self::SetCrossfadeWindow(ms) => write!(f, "SetCrossfadeWindow({ms})"),
+            Self::SetNormalizationEnabled(e) => write!(f, "SetNormalizationEnabled({e})"),
+            Self::SetEq { .. } => write!(f, "SetEq"),
+            Self::SetEqEnabled(e) => write!(f, "SetEqEnabled({e})"),
+            Self::SetPreampGain(g) => write!(f, "SetPreampGain({g})"),
+            Self::SetSameAlbumCrossfade(e) => write!(f, "SetSameAlbumCrossfade({e})"),
+            Self::SetVisualizerEnabled(e) => write!(f, "SetVisualizerEnabled({e})"),
+            Self::SetPreferredDevice(n) => write!(f, "SetPreferredDevice({n:?})"),
+            Self::SetEqPostgain(g) => write!(f, "SetEqPostgain({g})"),
+            Self::SetEqPostgainAuto(a) => write!(f, "SetEqPostgainAuto({a})"),
+            Self::SwapProducer(_) => write!(f, "SwapProducer"),
+            Self::Shutdown => write!(f, "Shutdown"),
+        }
+    }
 }
 
 /// Events emitted from the audio engine back to the frontend
