@@ -254,6 +254,7 @@ pub fn run() {
             // Library
             commands::get_library_sections,
             commands::search_library,
+            commands::browse_section,
             commands::get_recently_added,
             commands::get_hubs,
             commands::get_on_deck,

@@ -58,6 +58,28 @@ export function searchLibrary(
   return invoke("search_library", { sectionId, query, libtype: libtype ?? null })
 }
 
+/**
+ * Browse all items of a given type in a library section.
+ *
+ * Used by the RAG indexer to enumerate every artist/album/track.
+ * @param libtype "artist" | "album" | "track"
+ */
+export function browseSection(
+  sectionId: number,
+  libtype: string,
+  sort?: string,
+  limit?: number,
+  offset?: number,
+): Promise<PlexMedia[]> {
+  return invoke("browse_section", {
+    sectionId,
+    libtype,
+    sort: sort ?? null,
+    limit: limit ?? null,
+    offset: offset ?? null,
+  })
+}
+
 /** Get recently added items in a section. */
 export function getRecentlyAdded(
   sectionId: number,

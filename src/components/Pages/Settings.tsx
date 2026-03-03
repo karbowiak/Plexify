@@ -20,6 +20,8 @@ import type { FontPreset } from "../../stores/fontStore"
 import { useMetadataSourceStore, type MetadataSource, SOURCE_LABELS, SOURCE_DESCRIPTIONS } from "../../stores/metadataSourceStore"
 import { useCardSizeStore, CARD_SIZE_MIN, CARD_SIZE_MAX } from "../../stores/cardSizeStore"
 import { useNotificationStore } from "../../stores/notificationStore"
+import { useAiStore, PROVIDER_LABELS, PROVIDER_DESCRIPTIONS, DEFAULT_BASE_URLS, POPULAR_MODELS, type AiProvider } from "../../stores/aiStore"
+import { buildRagIndex, clearRagIndex } from "../../lib/ragDatabase"
 
 type Section = "account" | "playback" | "lastfm" | "metadata" | "downloads" | "ai" | "experience" | "notifications" | "about"
 type AuthState = "idle" | "polling" | "picking"
@@ -368,6 +370,322 @@ function ComingSoon({ description }: { title: string; description: string }) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-white/40">{description}</p>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// AI section — provider configuration, feature toggles, RAG index
+// ---------------------------------------------------------------------------
+
+const PROVIDERS: AiProvider[] = ["openrouter", "openai", "ollama"]
+
+function AiSection() {
+  const {
+    provider, apiKey, baseUrl, model,
+    lyricsTranslationEnabled, ragEnabled,
+    ragStatus, ragDocumentCount, ragLastIndexedAt, ragError,
+    isTestingConnection, connectionTestResult, connectionTestError,
+    setProvider, setApiKey, setBaseUrl, setModel,
+    setLyricsTranslationEnabled, setRagEnabled,
+    testConnection, isConfigured,
+  } = useAiStore()
+
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [isIndexing, setIsIndexing] = useState(false)
+
+  const pillBase = "rounded-full px-4 py-1.5 text-sm transition-colors"
+  const pillActive = "bg-accent text-black font-semibold"
+  const pillInactive = "bg-white/10 text-white hover:bg-white/20"
+
+  async function handleRebuildIndex() {
+    setIsIndexing(true)
+    try {
+      await buildRagIndex()
+    } finally {
+      setIsIndexing(false)
+    }
+  }
+
+  async function handleClearIndex() {
+    await clearRagIndex()
+  }
+
+  const configured = isConfigured()
+  const models = POPULAR_MODELS[provider]
+
+  return (
+    <div className="space-y-10 max-w-2xl">
+
+      {/* ── Provider Selection ── */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-1">AI Provider</h3>
+        <p className="text-xs text-white/40 mb-4">
+          Choose which AI service to use. All providers use the OpenAI-compatible API format.
+        </p>
+        <div className="flex flex-col gap-2">
+          {PROVIDERS.map(p => (
+            <button
+              key={p}
+              onClick={() => setProvider(p)}
+              className={clsx(
+                "flex items-start gap-3 rounded-xl border px-4 py-3 text-left transition-colors",
+                provider === p
+                  ? "border-accent/60 bg-accent/10"
+                  : "border-white/10 bg-white/3 hover:border-white/20"
+              )}
+            >
+              <div className="flex-shrink-0 mt-0.5">
+                <div className={clsx(
+                  "w-4 h-4 rounded-full border-2 flex items-center justify-center",
+                  provider === p ? "border-accent" : "border-white/30"
+                )}>
+                  {provider === p && <div className="w-2 h-2 rounded-full bg-accent" />}
+                </div>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white">{PROVIDER_LABELS[p]}</p>
+                <p className="text-xs text-white/40 mt-0.5">{PROVIDER_DESCRIPTIONS[p]}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── API Key ── */}
+      {provider !== "ollama" && (
+        <div>
+          <h3 className="text-base font-semibold text-white mb-1">API Key</h3>
+          <p className="text-xs text-white/40 mb-3">
+            {provider === "openrouter"
+              ? "Get your API key from openrouter.ai/keys"
+              : "Get your API key from platform.openai.com/api-keys"}
+          </p>
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <input
+                type={showApiKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-..."
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/20 focus:border-accent/50 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  {showApiKey ? (
+                    <path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z" />
+                  ) : (
+                    <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" />
+                  )}
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Base URL ── */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-1">
+          {provider === "ollama" ? "Ollama Server URL" : "API Base URL"}
+        </h3>
+        <p className="text-xs text-white/40 mb-3">
+          {provider === "ollama"
+            ? "URL of your local Ollama server. Default: http://localhost:11434/v1"
+            : "Override the default API endpoint if using a proxy or custom deployment."}
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder={DEFAULT_BASE_URLS[provider]}
+            className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/20 focus:border-accent/50 focus:outline-none font-mono text-xs"
+          />
+          <button
+            onClick={() => setBaseUrl(DEFAULT_BASE_URLS[provider])}
+            className="rounded-lg border border-white/10 px-3 py-2 text-xs text-white/60 hover:border-white/20 hover:text-white transition-colors flex-shrink-0"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+
+      {/* ── Model Selection ── */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-1">Model</h3>
+        <p className="text-xs text-white/40 mb-3">
+          Select a model or type a custom model ID.
+        </p>
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {models.map(m => (
+            <button
+              key={m.id}
+              onClick={() => setModel(m.id)}
+              className={clsx(pillBase, model === m.id ? pillActive : pillInactive)}
+            >
+              {m.name}
+            </button>
+          ))}
+        </div>
+        <input
+          type="text"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          placeholder="Custom model ID…"
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/20 focus:border-accent/50 focus:outline-none font-mono text-xs"
+        />
+      </div>
+
+      {/* ── Connection Test ── */}
+      <div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => void testConnection()}
+            disabled={isTestingConnection || (!apiKey && provider !== "ollama")}
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-black hover:bg-accent/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {isTestingConnection ? "Testing…" : "Test Connection"}
+          </button>
+          {connectionTestResult === "success" && (
+            <span className="flex items-center gap-1.5 text-sm text-green-400">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
+              </svg>
+              Connected successfully
+            </span>
+          )}
+          {connectionTestResult === "error" && (
+            <span className="text-sm text-red-400 max-w-md truncate" title={connectionTestError ?? ""}>
+              {connectionTestError ?? "Connection failed"}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Feature Toggles ── */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-4">Features</h3>
+        <div className="flex flex-col gap-3">
+          {/* Lyrics Translation */}
+          <div className="rounded-xl border border-white/10 bg-white/3 px-5 py-4 flex items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white">Lyrics Romanization & Translation</p>
+              <p className="text-xs text-white/40 mt-0.5">
+                Auto-translate non-Latin lyrics (Japanese, Chinese, Korean, etc.) with romanization and English translation displayed inline.
+              </p>
+            </div>
+            <button
+              onClick={() => setLyricsTranslationEnabled(!lyricsTranslationEnabled)}
+              className={clsx(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0",
+                lyricsTranslationEnabled ? "bg-accent" : "bg-white/20"
+              )}
+            >
+              <span className={clsx(
+                "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                lyricsTranslationEnabled ? "translate-x-6" : "translate-x-1"
+              )} />
+            </button>
+          </div>
+
+          {/* RAG Database */}
+          <div className="rounded-xl border border-white/10 bg-white/3 px-5 py-4 flex items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white">Music Library AI Index</p>
+              <p className="text-xs text-white/40 mt-0.5">
+                Build a searchable index of your entire music library so the AI can generate playlists and answer questions about your collection.
+              </p>
+            </div>
+            <button
+              onClick={() => setRagEnabled(!ragEnabled)}
+              className={clsx(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0",
+                ragEnabled ? "bg-accent" : "bg-white/20"
+              )}
+            >
+              <span className={clsx(
+                "inline-block h-4 w-4 rounded-full bg-white transition-transform",
+                ragEnabled ? "translate-x-6" : "translate-x-1"
+              )} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── RAG Index Status ── */}
+      {ragEnabled && (
+        <div>
+          <h3 className="text-base font-semibold text-white mb-1">Library Index</h3>
+          <p className="text-xs text-white/40 mb-4">
+            The index contains metadata for all artists, albums, tracks, genres, moods, and styles in your Plex library.
+          </p>
+
+          <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
+            <div className="flex items-center justify-between px-5 py-3">
+              <span className="text-sm text-white/60">Status</span>
+              <span className={clsx("text-sm font-medium", {
+                "text-white/40": ragStatus === "idle",
+                "text-yellow-400": ragStatus === "indexing",
+                "text-green-400": ragStatus === "ready",
+                "text-red-400": ragStatus === "error",
+              })}>
+                {ragStatus === "idle" && "Not indexed"}
+                {ragStatus === "indexing" && "Indexing…"}
+                {ragStatus === "ready" && "Ready"}
+                {ragStatus === "error" && "Error"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-5 py-3">
+              <span className="text-sm text-white/60">Documents</span>
+              <span className="text-sm font-medium text-white tabular-nums">
+                {ragDocumentCount.toLocaleString()}
+              </span>
+            </div>
+            {ragLastIndexedAt && (
+              <div className="flex items-center justify-between px-5 py-3">
+                <span className="text-sm text-white/60">Last indexed</span>
+                <span className="text-sm text-white/60">
+                  {new Date(ragLastIndexedAt).toLocaleString()}
+                </span>
+              </div>
+            )}
+            {ragError && (
+              <div className="px-5 py-3">
+                <p className="text-xs text-red-400">{ragError}</p>
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-2 mt-3">
+            <button
+              onClick={() => void handleRebuildIndex()}
+              disabled={isIndexing || ragStatus === "indexing" || !configured}
+              className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-black hover:bg-accent/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {isIndexing || ragStatus === "indexing" ? "Indexing…" : ragDocumentCount > 0 ? "Rebuild Index" : "Build Index"}
+            </button>
+            {ragDocumentCount > 0 && (
+              <button
+                onClick={() => void handleClearIndex()}
+                disabled={isIndexing || ragStatus === "indexing"}
+                className="rounded-lg border border-white/10 px-4 py-2 text-sm text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40"
+              >
+                Clear Index
+              </button>
+            )}
+            {!configured && (
+              <p className="text-xs text-white/30 self-center ml-2">
+                Configure a provider and API key first.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1755,9 +2073,7 @@ export function SettingsPage() {
         {section === "downloads" && (
           <ComingSoon title="Downloads" description="Offline caching and download quality settings will appear here." />
         )}
-        {section === "ai" && (
-          <ComingSoon title="AI" description="Sonic recommendations, radio tuning and smart mix settings will appear here." />
-        )}
+        {section === "ai" && <AiSection />}
         {section === "experience" && <ExperienceSection />}
         {section === "notifications" && <NotificationsSection />}
         {section === "about" && <AboutSection />}

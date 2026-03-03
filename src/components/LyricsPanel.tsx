@@ -1,14 +1,36 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState, useMemo } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
+import { useAiStore } from "../stores/aiStore"
+import { translateLyrics, hasNonLatinScript, type TranslatedLyricLine } from "../lib/ai"
+
+// ---------------------------------------------------------------------------
+// Translation cache — keyed by track rating_key
+// ---------------------------------------------------------------------------
+
+const translationCache = new Map<number, TranslatedLyricLine[]>()
 
 /** Shared lyrics body used both in the standalone panel and the queue's Lyrics tab. */
 export function LyricsContent() {
-  const { lyricsLines, positionMs } = usePlayerStore(
-    useShallow(s => ({ lyricsLines: s.lyricsLines, positionMs: s.positionMs }))
+  const { lyricsLines, positionMs, currentTrack } = usePlayerStore(
+    useShallow(s => ({
+      lyricsLines: s.lyricsLines,
+      positionMs: s.positionMs,
+      currentTrack: s.currentTrack,
+    }))
   )
+  const { lyricsTranslationEnabled } = useAiStore(
+    useShallow(s => ({
+      lyricsTranslationEnabled: s.lyricsTranslationEnabled,
+    }))
+  )
+  const aiConfigured = useAiStore(s => s.isConfigured())
+
   const activeRef = useRef<HTMLParagraphElement>(null)
+  const [translations, setTranslations] = useState<TranslatedLyricLine[] | null>(null)
+  const [isTranslating, setIsTranslating] = useState(false)
+  const [translationError, setTranslationError] = useState(false)
 
   const activeIndex = lyricsLines
     ? lyricsLines.findIndex(
@@ -17,6 +39,59 @@ export function LyricsContent() {
           (positionMs < line.end_ms || i === lyricsLines.length - 1)
       )
     : -1
+
+  // Check if lyrics contain non-Latin text
+  const hasNonLatin = useMemo(() => {
+    if (!lyricsLines || lyricsLines.length === 0) return false
+    return lyricsLines.some(line => hasNonLatinScript(line.text))
+  }, [lyricsLines])
+
+  // Track rating key for cache lookup
+  const trackKey = currentTrack?.rating_key ?? 0
+
+  // Fetch translation when lyrics load and contain non-Latin text
+  useEffect(() => {
+    if (!lyricsLines || lyricsLines.length === 0 || !hasNonLatin) {
+      setTranslations(null)
+      return
+    }
+    if (!lyricsTranslationEnabled || !aiConfigured) {
+      setTranslations(null)
+      return
+    }
+
+    // Check cache
+    const cached = translationCache.get(trackKey)
+    if (cached && cached.length === lyricsLines.length) {
+      setTranslations(cached)
+      return
+    }
+
+    // Fetch translation
+    let cancelled = false
+    setIsTranslating(true)
+    setTranslationError(false)
+
+    translateLyrics(
+      lyricsLines.map(l => l.text),
+      currentTrack?.title ?? "",
+      currentTrack?.grandparent_title ?? "",
+    )
+      .then(result => {
+        if (!cancelled) {
+          setTranslations(result)
+          translationCache.set(trackKey, result)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setTranslationError(true)
+      })
+      .finally(() => {
+        if (!cancelled) setIsTranslating(false)
+      })
+
+    return () => { cancelled = true }
+  }, [lyricsLines, hasNonLatin, lyricsTranslationEnabled, aiConfigured, trackKey])
 
   useEffect(() => {
     if (activeRef.current) {
@@ -35,23 +110,76 @@ export function LyricsContent() {
           <p className="text-[color:var(--text-muted)] text-sm text-center">No lyrics available</p>
         </div>
       ) : (
-        lyricsLines.map((line, i) => {
-          const isActive = i === activeIndex
-          return (
-            <p
-              key={i}
-              ref={isActive ? activeRef : undefined}
-              className={`transition-all duration-300 leading-relaxed cursor-pointer select-text ${
-                isActive
-                  ? "text-[color:var(--text-primary)] text-base font-semibold"
-                  : "text-[color:var(--text-muted)] text-sm hover:text-[color:var(--text-secondary)]"
-              }`}
-              onClick={() => usePlayerStore.getState().seekTo(line.start_ms)}
-            >
-              {line.text}
-            </p>
-          )
-        })
+        <>
+          {/* Translation status indicator */}
+          {hasNonLatin && lyricsTranslationEnabled && aiConfigured && (
+            <div className="flex items-center gap-2 pb-1">
+              {isTranslating && (
+                <span className="text-[10px] text-accent/60 uppercase tracking-wider font-medium">
+                  Translating…
+                </span>
+              )}
+              {translationError && (
+                <span className="text-[10px] text-red-400/60 uppercase tracking-wider font-medium">
+                  Translation failed
+                </span>
+              )}
+              {translations && !isTranslating && (
+                <span className="text-[10px] text-green-400/40 uppercase tracking-wider font-medium">
+                  Translated
+                </span>
+              )}
+            </div>
+          )}
+
+          {lyricsLines.map((line, i) => {
+            const isActive = i === activeIndex
+            const translated = translations?.[i]
+            const hasTranslation = translated && (translated.romanized || translated.translated)
+
+            return (
+              <div
+                key={i}
+                ref={isActive ? activeRef : undefined}
+                className="cursor-pointer select-text"
+                onClick={() => usePlayerStore.getState().seekTo(line.start_ms)}
+              >
+                {/* Original text */}
+                <p
+                  className={`transition-all duration-300 leading-relaxed ${
+                    isActive
+                      ? "text-[color:var(--text-primary)] text-base font-semibold"
+                      : "text-[color:var(--text-muted)] text-sm hover:text-[color:var(--text-secondary)]"
+                  }`}
+                >
+                  {line.text}
+                </p>
+
+                {/* Romanization line */}
+                {hasTranslation && translated.romanized && (
+                  <p className={`transition-all duration-300 leading-snug mt-0.5 ${
+                    isActive
+                      ? "text-accent/70 text-[13px]"
+                      : "text-accent/30 text-xs"
+                  }`}>
+                    {translated.romanized}
+                  </p>
+                )}
+
+                {/* English translation line */}
+                {hasTranslation && translated.translated && (
+                  <p className={`transition-all duration-300 leading-snug mt-0.5 italic ${
+                    isActive
+                      ? "text-[color:var(--text-secondary)] text-xs"
+                      : "text-[color:var(--text-muted)] text-[11px] opacity-60"
+                  }`}>
+                    {translated.translated}
+                  </p>
+                )}
+              </div>
+            )
+          })}
+        </>
       )}
     </div>
   )

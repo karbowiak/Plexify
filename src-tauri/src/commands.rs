@@ -112,6 +112,32 @@ pub async fn search_library(
         .map_err(|e| format!("{:#}", e))
 }
 
+/// Browse all items of a given type in a library section (for RAG indexing).
+///
+/// `libtype` must be "artist" (8), "album" (9), or "track" (10).
+/// Results are paginated — pass `limit` and `offset` for incremental loading.
+#[tauri::command]
+pub async fn browse_section(
+    section_id: i64,
+    libtype: String,
+    sort: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
+    state: State<'_, PlexState>,
+) -> Result<Vec<crate::plex::PlexMedia>, String> {
+    let c = client!(state);
+    c.browse_section(
+        section_id,
+        Some(&libtype),
+        None,
+        sort.as_deref(),
+        limit,
+        offset,
+    )
+    .await
+    .map_err(|e| format!("{:#}", e))
+}
+
 /// Get recently added items in a section.
 #[tauri::command]
 pub async fn get_recently_added(
