@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
+import { useResizable } from "../hooks/useResizable"
 
 /** Shared lyrics body used both in the standalone panel and the queue's Lyrics tab. */
 export function LyricsContent() {
@@ -82,6 +83,13 @@ export default function LyricsPanel() {
     setLyricsPinned: s.setLyricsPinned,
   })))
   const currentTrack = usePlayerStore(s => s.currentTrack)
+  const { width: lyricsWidth, onMouseDown: onResizeMouseDown, isDragging: isResizing } = useResizable({
+    key: "plex-lyrics-width",
+    defaultWidth: 320,
+    minWidth: 240,
+    maxWidth: 600,
+    direction: "left",
+  })
 
   // Escape key to close overlay
   useEffect(() => {
@@ -134,15 +142,20 @@ export default function LyricsPanel() {
   if (isLyricsPinned) {
     return (
       <div
-        className={`flex-shrink-0 overflow-hidden transition-[width] duration-300 ease-in-out ${
-          isLyricsOpen ? "w-80" : "w-0"
-        }`}
+        className={`flex-shrink-0 overflow-hidden ${isResizing ? "" : "transition-[width] duration-300 ease-in-out"}`}
+        style={{ width: isLyricsOpen ? lyricsWidth : 0 }}
       >
         <div
-          className={`flex h-full w-80 flex-col bg-app-bg border-l border-[var(--border)] transition-transform duration-300 ease-in-out ${
+          className={`relative flex h-full flex-col bg-app-bg border-l border-[var(--border)] transition-transform duration-300 ease-in-out ${
             isLyricsOpen ? "translate-x-0" : "translate-x-full"
           }`}
+          style={{ width: lyricsWidth }}
         >
+          {/* Resize handle on left edge */}
+          <div
+            className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize z-10 hover:bg-white/10 transition-colors"
+            onMouseDown={onResizeMouseDown}
+          />
           {header}
           <LyricsContent />
         </div>

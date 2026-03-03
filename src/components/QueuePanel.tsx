@@ -1,3 +1,4 @@
+import { useResizable } from "../hooks/useResizable"
 import {
   DndContext,
   closestCenter,
@@ -153,6 +154,13 @@ export function QueuePanel() {
     setQueueActiveTab: s.setQueueActiveTab,
   })))
   const { baseUrl, token } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token })))
+  const { width: queueWidth, onMouseDown: onResizeMouseDown, isDragging: isResizing } = useResizable({
+    key: "plex-queue-width",
+    defaultWidth: 320,
+    minWidth: 240,
+    maxWidth: 600,
+    direction: "left",
+  })
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -282,15 +290,20 @@ export function QueuePanel() {
   if (isQueuePinned) {
     return (
       <div
-        className={`flex-shrink-0 overflow-hidden transition-[width] duration-300 ease-in-out ${
-          isQueueOpen ? "w-80" : "w-0"
-        }`}
+        className={`flex-shrink-0 overflow-hidden ${isResizing ? "" : "transition-[width] duration-300 ease-in-out"}`}
+        style={{ width: isQueueOpen ? queueWidth : 0 }}
       >
         <div
-          className={`flex h-full w-80 flex-col bg-app-bg border-l border-[var(--border)] transition-transform duration-300 ease-in-out ${
+          className={`relative flex h-full flex-col bg-app-bg border-l border-[var(--border)] transition-transform duration-300 ease-in-out ${
             isQueueOpen ? "translate-x-0" : "translate-x-full"
           }`}
+          style={{ width: queueWidth }}
         >
+          {/* Resize handle on left edge */}
+          <div
+            className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize z-10 hover:bg-white/10 transition-colors"
+            onMouseDown={onResizeMouseDown}
+          />
           {header}
           {queueActiveTab === "lyrics" ? <LyricsContent /> : list}
         </div>

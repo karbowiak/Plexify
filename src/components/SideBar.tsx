@@ -3,15 +3,28 @@ import clsx from "clsx"
 import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, useConnectionStore, buildPlexImageUrl } from "../stores"
 import { usePlayerStore } from "../stores/playerStore"
+import { useResizable } from "../hooks/useResizable"
 
 export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) {
   const [location] = useLocation()
   const playlists = useLibraryStore(s => s.playlists)
   const { baseUrl, token } = useConnectionStore()
   const playPlaylist = usePlayerStore(useShallow(s => s.playPlaylist))
+  const { width, onMouseDown } = useResizable({
+    key: "plex-sidebar-width",
+    defaultWidth: 240,
+    minWidth: 160,
+    maxWidth: 480,
+    direction: "right",
+  })
 
   return (
-    <div className="flex h-full w-60 flex-shrink-0 flex-col bg-app-bg p-6">
+    <div className="relative flex h-full flex-shrink-0 flex-col bg-app-bg p-6" style={{ width }}>
+      {/* Resize handle */}
+      <div
+        className="absolute right-0 top-0 bottom-0 w-1 cursor-ew-resize z-10 hover:bg-white/10 transition-colors"
+        onMouseDown={onMouseDown}
+      />
       <ul className="flex-shrink-0 pt-1 text-sm font-semibold">
         {routes1.map((i, index) => (
           <li key={`${i.href}-${index}`}>
