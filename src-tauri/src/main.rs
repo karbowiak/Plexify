@@ -6,11 +6,13 @@ mod commands;
 mod db;
 mod deezer;
 mod itunes;
+mod itunes_throttle;
 mod lastfm;
 mod mediasession;
 mod plex;
 mod plextv;
 mod podcast;
+mod podcastindex;
 mod radiobrowser;
 
 use commands::{AudioEngineState, PlexState};

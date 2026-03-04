@@ -65,6 +65,7 @@ interface VisualizerState {
   setAutoCycleMode: (mode: AutoCycleMode) => void
   setStarfieldReactivity: (val: number) => void
   setStarfieldBaseSpeed: (val: number) => void
+
 }
 
 export const useVisualizerStore = create<VisualizerState>()(
@@ -164,6 +165,7 @@ export const useVisualizerStore = create<VisualizerState>()(
       setAutoCycleMode: (mode) => set({ autoCycleMode: mode }),
       setStarfieldReactivity: (val) => set({ starfieldReactivity: Math.max(0, Math.min(100, val)) }),
       setStarfieldBaseSpeed: (val) => set({ starfieldBaseSpeed: Math.max(1, Math.min(10, val)) }),
+
     }),
     {
       name: "plex-visualizer-v1",

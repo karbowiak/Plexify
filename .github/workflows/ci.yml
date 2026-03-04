@@ -55,4 +55,7 @@ jobs:
 
       - name: Check Rust compilation
         working-directory: src-tauri
+        env:
+          PI_KEY: ${{ secrets.PI_KEY }}
+          PI_SECRET: ${{ secrets.PI_SECRET }}
         run: cargo check --all-features

@@ -3502,6 +3502,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha1",
  "souvlaki",
  "symphonia",
  "symphonia-adapter-libopus",

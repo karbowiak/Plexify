@@ -137,7 +137,10 @@ struct AppleRssResult {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
 struct AppleRssGenre {
+    #[serde(default)]
+    genre_id: String,
     #[serde(default)]
     name: String,
 }
@@ -272,22 +275,21 @@ fn scale_artwork(url: &str, size: u32) -> String {
 
 /// Search for podcasts by query using the iTunes Search API.
 pub async fn search_podcasts(query: &str, limit: u32) -> Result<Vec<PodcastSearchResult>> {
-    let resp = PODCAST_CLIENT
-        .get("https://itunes.apple.com/search")
-        .query(&[
+    let limit_str = limit.to_string();
+    let resp = crate::itunes_throttle::itunes_get(
+        "https://itunes.apple.com/search",
+        &[
             ("term", query),
             ("media", "podcast"),
             ("entity", "podcast"),
-            ("limit", &limit.to_string()),
-        ])
-        .send()
-        .await
-        .context("Failed to reach iTunes podcast search")?
-        .error_for_status()
-        .context("iTunes podcast search returned error status")?
-        .json::<ItunesSearchResponse>()
-        .await
-        .context("Failed to parse iTunes podcast search response")?;
+            ("limit", &limit_str),
+        ],
+    )
+    .await
+    .context("Failed to reach iTunes podcast search")?
+    .json::<ItunesSearchResponse>()
+    .await
+    .context("Failed to parse iTunes podcast search response")?;
 
     Ok(resp
         .results
@@ -306,94 +308,55 @@ pub async fn search_podcasts(query: &str, limit: u32) -> Result<Vec<PodcastSearc
         .collect())
 }
 
-/// Get top podcasts from Apple's RSS feed generator (no genre filter)
-/// or via iTunes Search API (with genre filter).
+/// Get top podcasts.
 ///
-/// Apple's RSS v2 chart API at `rss.marketingtools.apple.com` does not
-/// support genre filtering. When a genre_id is provided, we fall back to
-/// the iTunes Search API using the genre as a search term instead.
-pub async fn get_top_podcasts(genre_id: Option<u32>, limit: u32) -> Result<Vec<PodcastTopChart>> {
-    match genre_id {
-        None => {
-            // Use Apple RSS chart for overall top podcasts
-            let url = format!(
-                "https://rss.marketingtools.apple.com/api/v2/us/podcasts/top/{}/podcasts.json",
-                limit
-            );
-            let resp = PODCAST_CLIENT
-                .get(&url)
-                .send()
-                .await
-                .context("Failed to reach Apple podcast charts")?
-                .error_for_status()
-                .context("Apple podcast charts returned error status")?
-                .json::<AppleRssFeedResponse>()
-                .await
-                .context("Failed to parse Apple podcast charts response")?;
-
-            Ok(resp
-                .feed
-                .results
-                .into_iter()
-                .map(|r| {
-                    let genre = r
-                        .genres
-                        .first()
-                        .map(|g| g.name.clone())
-                        .unwrap_or_default();
-                    PodcastTopChart {
-                        itunes_id: r.id.parse::<u64>().unwrap_or(0),
-                        name: r.name,
-                        artist_name: r.artist_name,
-                        artwork_url: scale_artwork(&r.artwork_url100, 600),
-                        feed_url: String::new(), // Apple RSS chart doesn't include feed URLs
-                        genre,
-                        itunes_url: r.url,
-                    }
-                })
-                .collect())
-        }
-        Some(genre_id) => {
-            // Use iTunes Search API for genre-filtered results
-            let genre_name = get_podcast_categories()
-                .into_iter()
-                .find(|c| c.id == genre_id)
-                .map(|c| c.name)
-                .unwrap_or_else(|| "Podcast".to_string());
-
-            let resp = PODCAST_CLIENT
-                .get("https://itunes.apple.com/search")
-                .query(&[
-                    ("term", genre_name.as_str()),
-                    ("media", "podcast"),
-                    ("entity", "podcast"),
-                    ("genreId", &genre_id.to_string()),
-                    ("limit", &limit.to_string()),
-                ])
-                .send()
-                .await
-                .context("Failed to reach iTunes podcast genre search")?
-                .error_for_status()
-                .context("iTunes podcast genre search returned error status")?
-                .json::<ItunesSearchResponse>()
-                .await
-                .context("Failed to parse iTunes podcast genre search response")?;
-
-            Ok(resp
-                .results
-                .into_iter()
-                .map(|r| PodcastTopChart {
-                    itunes_id: r.collection_id,
-                    name: r.collection_name,
-                    artist_name: r.artist_name,
-                    artwork_url: scale_artwork(&r.artwork_url600, 600),
-                    feed_url: r.feed_url,
-                    genre: r.primary_genre_name,
-                    itunes_url: r.collection_view_url,
-                })
-                .collect())
-        }
+/// - `None` category → Apple RSS charts (overall top, not rate-limited)
+/// - `Some(name)` → Podcast Index trending filtered by category name
+pub async fn get_top_podcasts(category: Option<String>, limit: u32) -> Result<Vec<PodcastTopChart>> {
+    if let Some(ref cat) = category {
+        return crate::podcastindex::get_trending(Some(cat), limit).await;
     }
+
+    // Overall top chart — Apple RSS (unchanged)
+    let url = format!(
+        "https://rss.marketingtools.apple.com/api/v2/us/podcasts/top/{}/podcasts.json",
+        limit
+    );
+    let resp = PODCAST_CLIENT
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to reach Apple podcast charts")?
+        .error_for_status()
+        .context("Apple podcast charts returned error status")?
+        .json::<AppleRssFeedResponse>()
+        .await
+        .context("Failed to parse Apple podcast charts response")?;
+
+    let results: Vec<PodcastTopChart> = resp
+        .feed
+        .results
+        .into_iter()
+        .take(limit as usize)
+        .map(|r| {
+            let genre = r
+                .genres
+                .first()
+                .map(|g| g.name.clone())
+                .unwrap_or_default();
+            PodcastTopChart {
+                itunes_id: r.id.parse::<u64>().unwrap_or(0),
+                name: r.name,
+                artist_name: r.artist_name,
+                artwork_url: scale_artwork(&r.artwork_url100, 600),
+                feed_url: String::new(), // Apple RSS chart doesn't include feed URLs
+                genre,
+                itunes_url: r.url,
+            }
+        })
+        .collect();
+
+    Ok(results)
 }
 
 /// Fetch and parse an RSS podcast feed into a PodcastDetail with episodes.
@@ -497,17 +460,16 @@ pub async fn get_podcast_feed(feed_url: &str) -> Result<PodcastDetail> {
 
 /// Look up a single podcast by its iTunes ID.
 pub async fn lookup_podcast(itunes_id: u64) -> Result<Option<PodcastSearchResult>> {
-    let resp = PODCAST_CLIENT
-        .get("https://itunes.apple.com/lookup")
-        .query(&[("id", &itunes_id.to_string()), ("entity", &"podcast".to_string())])
-        .send()
-        .await
-        .context("Failed to reach iTunes podcast lookup")?
-        .error_for_status()
-        .context("iTunes podcast lookup returned error status")?
-        .json::<ItunesSearchResponse>()
-        .await
-        .context("Failed to parse iTunes podcast lookup response")?;
+    let id_str = itunes_id.to_string();
+    let resp = crate::itunes_throttle::itunes_get(
+        "https://itunes.apple.com/lookup",
+        &[("id", &id_str), ("entity", "podcast")],
+    )
+    .await
+    .context("Failed to reach iTunes podcast lookup")?
+    .json::<ItunesSearchResponse>()
+    .await
+    .context("Failed to parse iTunes podcast lookup response")?;
 
     Ok(resp.results.into_iter().next().and_then(|r| {
         if r.feed_url.is_empty() {
@@ -526,27 +488,7 @@ pub async fn lookup_podcast(itunes_id: u64) -> Result<Option<PodcastSearchResult
     }))
 }
 
-/// Returns the static list of iTunes podcast genre categories.
-pub fn get_podcast_categories() -> Vec<PodcastCategory> {
-    vec![
-        PodcastCategory { id: 1301, name: "Arts".into() },
-        PodcastCategory { id: 1321, name: "Business".into() },
-        PodcastCategory { id: 1303, name: "Comedy".into() },
-        PodcastCategory { id: 1304, name: "Education".into() },
-        PodcastCategory { id: 1483, name: "Fiction".into() },
-        PodcastCategory { id: 1511, name: "Government".into() },
-        PodcastCategory { id: 1306, name: "Health & Fitness".into() },
-        PodcastCategory { id: 1309, name: "History".into() },
-        PodcastCategory { id: 1310, name: "Kids & Family".into() },
-        PodcastCategory { id: 1311, name: "Leisure".into() },
-        PodcastCategory { id: 1314, name: "Music".into() },
-        PodcastCategory { id: 1489, name: "News".into() },
-        PodcastCategory { id: 1316, name: "Religion & Spirituality".into() },
-        PodcastCategory { id: 1318, name: "Science".into() },
-        PodcastCategory { id: 1545, name: "Society & Culture".into() },
-        PodcastCategory { id: 1305, name: "Sports".into() },
-        PodcastCategory { id: 1315, name: "Technology".into() },
-        PodcastCategory { id: 1481, name: "True Crime".into() },
-        PodcastCategory { id: 1307, name: "TV & Film".into() },
-    ]
+/// Returns podcast categories from the Podcast Index API (cached 24h).
+pub async fn get_podcast_categories() -> Result<Vec<PodcastCategory>> {
+    crate::podcastindex::get_categories().await
 }

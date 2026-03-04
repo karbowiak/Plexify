@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useMemo } from "react"
 import type { LevelData } from "../providers/types"
 import { useVisualizerStore, type CompactVisualizerMode } from "../stores/visualizerStore"
+import { useEasterEggStore } from "../stores/easterEggStore"
 
 // ---------------------------------------------------------------------------
 // Waveform math (Catmull-Rom spline — mirrors the SVG WaveformSVG logic)
@@ -175,15 +176,29 @@ export default function VisualizerCanvas({
     const activePct = hoverPct ?? progressPct
     const splitX = (activePct / 100) * W
     const isHovering = hoverPct !== null
+    const rainbow = useEasterEggStore.getState().rainbow
+    const rainbowPhase = (performance.now() / 50) % 360
 
     if (mode === "waveform") {
       // ── Catmull-Rom waveform ──
       const bars = waveformBars ?? Array(WAVEFORM_BARS).fill(0.15)
-      // Clamp offset to (0,1) exclusive — addColorStop throws IndexSizeError if
-      // the value is outside [0,1], which happens when positionMs overshoots
-      // duration by even a tiny amount due to floating-point drift.
       const stopOffset = Math.max(0.0001, Math.min(0.9999, activePct / 100))
-      if (activePct > 0 && activePct < 100) {
+      if (rainbow) {
+        if (activePct <= 0) {
+          ctx.fillStyle = "#404040"
+        } else {
+          const grad = ctx.createLinearGradient(0, 0, W, 0)
+          for (let i = 0; i <= 6; i++) {
+            const hue = (rainbowPhase + (i / 6) * 360) % 360
+            grad.addColorStop(Math.min((i / 6) * stopOffset, 0.9999), `hsl(${hue}, 85%, 60%)`)
+          }
+          if (activePct < 100) {
+            grad.addColorStop(Math.min(stopOffset + 0.0001, 1), "#404040")
+            grad.addColorStop(1, "#404040")
+          }
+          ctx.fillStyle = grad
+        }
+      } else if (activePct > 0 && activePct < 100) {
         const grad = ctx.createLinearGradient(0, 0, W, 0)
         grad.addColorStop(stopOffset, isHovering ? hexToRgba(accent, 0.4) : accent)
         grad.addColorStop(stopOffset, "#404040")
@@ -217,9 +232,11 @@ export default function VisualizerCanvas({
         const barH = Math.max(2, (smoothed[i] / maxVal) * H * 0.9)
         const barX = x + barW * 0.1
         const barWidth = barW * 0.8
-        ctx.fillStyle = x + barW / 2 < splitX
-          ? (isHovering ? hexToRgba(accent, 0.5) : accent)
-          : "#404040"
+        ctx.fillStyle = rainbow
+          ? `hsl(${(rainbowPhase + (i / BINS) * 360) % 360}, 85%, 60%)`
+          : x + barW / 2 < splitX
+            ? (isHovering ? hexToRgba(accent, 0.5) : accent)
+            : "#404040"
         ctx.fillRect(barX, H - barH, barWidth, barH)
       }
       // Progress indicator
@@ -232,7 +249,16 @@ export default function VisualizerCanvas({
     } else if (mode === "oscilloscope") {
       // ── Oscilloscope line ──
       const pcm = getRecentSamples(512)
-      ctx.strokeStyle = "#e0e0e0"
+      if (rainbow) {
+        const oscGrad = ctx.createLinearGradient(0, 0, W, 0)
+        for (let i = 0; i <= 6; i++) {
+          const hue = (rainbowPhase + (i / 6) * 360) % 360
+          oscGrad.addColorStop(i / 6, `hsl(${hue}, 85%, 60%)`)
+        }
+        ctx.strokeStyle = oscGrad
+      } else {
+        ctx.strokeStyle = "#e0e0e0"
+      }
       ctx.lineWidth = 1.5
       ctx.beginPath()
       const mid = H / 2
@@ -265,12 +291,18 @@ export default function VisualizerCanvas({
       const drawVU = (rms: number, y: number, h: number) => {
         const db = rms > 0 ? 20 * Math.log10(rms) : -60
         const pctFill = Math.max(0, Math.min(1, (db + 60) / 60)) * W
-        // accent → yellow → red gradient
         const grad2 = ctx.createLinearGradient(0, 0, W, 0)
-        grad2.addColorStop(0, accent)
-        grad2.addColorStop(0.7, accent)
-        grad2.addColorStop(0.85, "#f0c040")
-        grad2.addColorStop(1, "#e04040")
+        if (rainbow) {
+          for (let j = 0; j <= 6; j++) {
+            const hue = (rainbowPhase + (j / 6) * 360) % 360
+            grad2.addColorStop(j / 6, `hsl(${hue}, 85%, 60%)`)
+          }
+        } else {
+          grad2.addColorStop(0, accent)
+          grad2.addColorStop(0.7, accent)
+          grad2.addColorStop(0.85, "#f0c040")
+          grad2.addColorStop(1, "#e04040")
+        }
         ctx.fillStyle = "#333"
         ctx.fillRect(0, y, W, h)
         ctx.fillStyle = grad2

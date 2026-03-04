@@ -9,7 +9,9 @@ import { useAudioSettingsStore } from "../stores/audioSettingsStore"
 import { useVisualizerStore } from "../stores/visualizerStore"
 import { audioSetCacheMaxBytes, audioSetVisualizerEnabled } from "../lib/audio"
 import { formatMs } from "../lib/formatters"
+import { IconBlockquote, IconZzz, IconActivity, IconMaximize, IconAdjustments, IconPlaylist, IconVolume, IconVolume2, IconVolumeOff, IconHeadphones, IconArrowsCross } from "@tabler/icons-react"
 import { useCapability } from "../hooks/useCapability"
+import { useLongPress } from "../hooks/useLongPress"
 import EqPanel from "./EqPanel"
 import SleepTimerPanel from "./SleepTimerPanel"
 import TrackInfoPanel from "./TrackInfoPanel"
@@ -17,9 +19,13 @@ import DjPanel from "./DjPanel"
 import RadioPanel from "./RadioPanel"
 import PlayerPopover from "./PlayerPopover"
 import VisualizerCanvas from "./VisualizerCanvas"
+import { StarRating } from "./shared/StarRating"
 import VisualizerFullscreen from "./VisualizerFullscreen"
+import SquigglyVolumeSlider from "./SquigglyVolumeSlider"
 import { useSleepTimerStore } from "../stores/sleepTimerStore"
 import { useRadioStreamStore } from "../stores/radioStreamStore"
+import { useEasterEggs } from "../hooks/useEasterEggs"
+import { useEasterEggStore } from "../stores/easterEggStore"
 
 const CACHE_SIZE_KEY = "plexify-audio-cache-max-bytes"
 
@@ -243,6 +249,8 @@ function RadioPlayerBar() {
 }
 
 export function Player() {
+  useEasterEggs()
+  const vinylSpin = useEasterEggStore(s => s.vinylSpin)
   const volumeSliderRef = useRef<HTMLDivElement>(null)
   const volumeTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [seekHoverPct, setSeekHoverPct] = useState<number | null>(null)
@@ -274,6 +282,7 @@ export function Player() {
     setVolume,
     toggleShuffle,
     cycleRepeat,
+    stop,
     stopRadio,
     initAudioEvents,
   } = usePlayerStore(useShallow(s => ({
@@ -298,6 +307,7 @@ export function Player() {
     setVolume: s.setVolume,
     toggleShuffle: s.toggleShuffle,
     cycleRepeat: s.cycleRepeat,
+    stop: s.stop,
     stopRadio: s.stopRadio,
     initAudioEvents: s.initAudioEvents,
   })))
@@ -336,6 +346,11 @@ export function Player() {
   const hasDjModes = useCapability("djModes")
   const hasLyrics = useCapability("lyrics")
 
+  const playPauseLongPress = useLongPress({
+    onPress: () => { isPlaying ? pause() : resume() },
+    onLongPress: stop,
+  })
+
   // Initialize Rust audio engine event listeners on mount.
   // Also apply any persisted cache size limit before playback starts.
   useEffect(() => {
@@ -369,11 +384,12 @@ export function Player() {
     return () => { unlisten?.() }
   }, [])
 
-  // Gate PCM bridge — only run when a live-data visualizer mode is active
+  // Gate PCM bridge — only run when a live-data visualizer mode or party mode is active
+  const partyMode = useEasterEggStore(s => s.partyMode)
   useEffect(() => {
-    const needsPcm = compactMode !== "waveform" || fullscreenOpen
+    const needsPcm = compactMode !== "waveform" || fullscreenOpen || partyMode
     void audioSetVisualizerEnabled(needsPcm).catch(() => {})
-  }, [compactMode, fullscreenOpen])
+  }, [compactMode, fullscreenOpen, partyMode])
 
   // Media session action handlers — wire OS media keys / headphone controls / Control Center
   useEffect(() => {
@@ -513,7 +529,13 @@ export function Player() {
             <div className="w-[30%] min-w-[11.25rem]">
               <div className="flex items-center">
                 <div className="mr-3 flex items-center">
-                  <div className="mr-3 h-14 w-14 flex-shrink-0">
+                  <div
+                    className={`mr-3 h-14 w-14 flex-shrink-0 overflow-hidden ${vinylSpin ? "rounded-full" : ""}`}
+                    style={vinylSpin ? {
+                      animation: "vinyl-spin 3s linear infinite",
+                      animationPlayState: isPlaying ? "running" : "paused",
+                    } : undefined}
+                  >
                     {thumbUrl ? (
                       <img src={thumbUrl} alt="" className="h-full w-full object-cover" />
                     ) : (
@@ -543,16 +565,29 @@ export function Player() {
                         </>
                       )}
                     </p>
-                    {contextName && (
-                      <p className="text-[0.625rem] text-white/35 truncate mt-0.5">
-                        {contextHref ? (
-                          <Link href={contextHref} className="hover:text-white/60 hover:underline transition-colors">
-                            {contextName}
-                          </Link>
-                        ) : (
-                          contextName
+                    {currentTrack && (
+                      <div className="flex items-center gap-2 mt-0.5">
+                        {contextName && (
+                          <p className="text-[0.625rem] text-white/35 truncate">
+                            {contextHref ? (
+                              <Link href={contextHref} className="hover:text-white/60 hover:underline transition-colors">
+                                {contextName}
+                              </Link>
+                            ) : (
+                              contextName
+                            )}
+                          </p>
                         )}
-                      </p>
+                        <div className="flex-shrink-0">
+                          <StarRating
+                            itemId={currentTrack.id}
+                            userRating={currentTrack.userRating}
+                            artist={currentTrack.artistName}
+                            track={currentTrack.title}
+                            size={11}
+                          />
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -561,9 +596,11 @@ export function Player() {
 
             {/* Center: controls + progress */}
             <div className="flex w-[40%] max-w-[45.125rem] flex-col items-center px-4 pt-2">
-              <div className="flex items-center gap-x-1.5">
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center w-full">
+                {/* Left wing: radio, shuffle */}
+                <div className="flex items-center justify-end gap-x-1.5">
 
-                {/* Radio mode indicator — left of DJ, opens settings panel */}
+                {/* Radio mode indicator */}
                 {hasRadio && isRadioMode && (
                   <PlayerPopover
                     icon={
@@ -579,51 +616,6 @@ export function Player() {
                   </PlayerPopover>
                 )}
 
-                {/* Guest DJ — icon only when inactive, icon+name pill when active */}
-                {hasDjModes && <PlayerPopover
-                  icon={
-                    djMode ? (
-                      <>
-                        <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                          <path d="M8 1a6 6 0 0 0-6 6v2.5a2.5 2.5 0 0 0 2.5 2.5H5a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1H3.05A5 5 0 0 1 13 7H11a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h.5A2.5 2.5 0 0 0 14 9.5V7a6 6 0 0 0-6-6z" />
-                        </svg>
-                        <span className="text-[0.6875rem] font-semibold">{djShortName}</span>
-                      </>
-                    ) : (
-                      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                        <path d="M8 1a6 6 0 0 0-6 6v2.5a2.5 2.5 0 0 0 2.5 2.5H5a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1H3.05A5 5 0 0 1 13 7H11a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h.5A2.5 2.5 0 0 0 14 9.5V7a6 6 0 0 0-6-6z" />
-                      </svg>
-                    )
-                  }
-                  wide={!!djMode}
-                  active={!!djMode}
-                  label="Guest DJ"
-                  width={288}
-                >
-                  {(close) => <DjPanel onClose={close} />}
-                </PlayerPopover>}
-
-                {/* Crossfade style — cycle through Smooth/Filter/Echo/Cut */}
-                {cfWindowMs > 0 && (
-                  <button
-                    onClick={() => setCrossfadeStyle((crossfadeStyle + 1) % 4)}
-                    title={cfStyleInfo.label}
-                    className={`flex items-center gap-1 rounded-full transition-colors ${
-                      cfActive
-                        ? "bg-accent/15 px-2.5 h-7 text-accent"
-                        : "h-8 w-8 justify-center text-white/40 hover:text-white/70"
-                    }`}
-                  >
-                    {/* Crossfade icon — two overlapping curves */}
-                    <svg viewBox="0 0 16 16" width={cfActive ? 12 : 16} height={cfActive ? 12 : 16} fill="currentColor">
-                      <path d="M1 3.5a.5.5 0 0 1 .5-.5h3a4.5 4.5 0 0 1 3.27 1.4L9.9 6.85a3.5 3.5 0 0 0 2.55 1.1h2.05a.5.5 0 0 1 0 1H12.44a4.5 4.5 0 0 1-3.27-1.4L7.04 5.1A3.5 3.5 0 0 0 4.5 4H1.5a.5.5 0 0 1-.5-.5zm0 9a.5.5 0 0 0 .5.5h3a4.5 4.5 0 0 0 3.27-1.4l2.13-2.45a3.5 3.5 0 0 1 2.55-1.1h2.05a.5.5 0 0 0 0-1H12.44a4.5 4.5 0 0 0-3.27 1.4L7.04 10.9A3.5 3.5 0 0 1 4.5 12H1.5a.5.5 0 0 0-.5.5z"/>
-                    </svg>
-                    {cfActive && (
-                      <span className="text-[0.6875rem] font-semibold">{cfStyleInfo.short}</span>
-                    )}
-                  </button>
-                )}
-
                 {/* Shuffle */}
                 <button
                   onClick={toggleShuffle}
@@ -635,6 +627,10 @@ export function Player() {
                   </svg>
                 </button>
 
+                </div>
+
+                {/* Center: prev / play-pause / next — FIXED position, never shifts */}
+                <div className="flex items-center gap-x-1.5 px-1.5">
                 {/* Prev */}
                 <button
                   onClick={prev}
@@ -645,10 +641,10 @@ export function Player() {
                   </svg>
                 </button>
 
-                {/* Play/Pause */}
+                {/* Play/Pause — long-press to stop & clear queue */}
                 <button
-                  onClick={isPlaying ? pause : resume}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--text-primary)] text-[var(--bg-base)] hover:scale-[1.06]"
+                  {...playPauseLongPress}
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--text-primary)] text-[var(--bg-base)] hover:scale-[1.06] select-none"
                 >
                   {isPlaying ? (
                     <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
@@ -671,6 +667,10 @@ export function Player() {
                   </svg>
                 </button>
 
+                </div>
+
+                {/* Right wing: repeat, media info */}
+                <div className="flex items-center justify-start gap-x-1.5">
                 {/* Repeat */}
                 <button
                   onClick={cycleRepeat}
@@ -688,22 +688,12 @@ export function Player() {
                   )}
                 </button>
 
-                {/* Media info chip — shows codec + bitrate, opens track info panel */}
-                {currentTrack && (
+                {/* Track info — plain text quality label, clickable */}
+                {currentTrack && mediaLabel && (
                   <PlayerPopover
                     icon={
-                      mediaLabel ? (
-                        <span className="font-mono text-[0.6875rem] font-semibold tracking-wide">
-                          {mediaLabel}
-                        </span>
-                      ) : (
-                        <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                          <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
-                          <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/>
-                        </svg>
-                      )
+                      <span className="font-mono text-[0.625rem] font-medium tracking-wide">{mediaLabel}</span>
                     }
-                    wide={!!mediaLabel}
                     label="Track info"
                     align="center"
                     width="auto"
@@ -711,6 +701,85 @@ export function Player() {
                     {(close) => <TrackInfoPanel onClose={close} />}
                   </PlayerPopover>
                 )}
+
+                {/* Guest DJ — icon only when inactive, icon+name pill when active */}
+                {hasDjModes && <PlayerPopover
+                  icon={
+                    djMode ? (
+                      <>
+                        <IconHeadphones size={14} stroke={1.5} />
+                        <span className="text-[0.6875rem] font-semibold">{djShortName}</span>
+                      </>
+                    ) : (
+                      <IconHeadphones size={18} stroke={1.5} />
+                    )
+                  }
+                  wide={!!djMode}
+                  active={!!djMode}
+                  label="Guest DJ"
+                  width={288}
+                >
+                  {(close) => <DjPanel onClose={close} />}
+                </PlayerPopover>}
+
+                {/* Crossfade style — cycle through Smooth/Filter/Echo/Cut */}
+                {cfWindowMs > 0 && (
+                  <button
+                    onClick={() => setCrossfadeStyle((crossfadeStyle + 1) % 4)}
+                    title={cfStyleInfo.label}
+                    className={`flex items-center gap-1 rounded-full transition-colors ${
+                      cfActive
+                        ? "bg-accent/15 px-2.5 h-7 text-accent"
+                        : "h-8 w-8 justify-center text-white/40 hover:text-white/70"
+                    }`}
+                  >
+                    <IconArrowsCross size={cfActive ? 14 : 18} stroke={1.5} />
+                    {cfActive && (
+                      <span className="text-[0.6875rem] font-semibold">{cfStyleInfo.short}</span>
+                    )}
+                  </button>
+                )}
+
+                {/* Lyrics — only shown when lyrics are available */}
+                {hasLyrics && lyricsLines !== null && (
+                  <button
+                    onClick={() => {
+                      if (isQueuePinned) {
+                        if (!isQueueOpen || queueActiveTab !== "lyrics") {
+                          setQueueOpen(true)
+                          setQueueActiveTab("lyrics")
+                        } else {
+                          setQueueActiveTab("queue")
+                        }
+                      } else {
+                        setLyricsOpen(!isLyricsOpen)
+                      }
+                    }}
+                    title="Lyrics"
+                    className={`flex h-8 w-8 items-center justify-center transition-colors ${
+                      (isQueuePinned ? isQueueOpen && queueActiveTab === "lyrics" : isLyricsOpen)
+                        ? "text-accent"
+                        : "text-white/40 hover:text-white/70"
+                    }`}
+                    aria-label="Lyrics"
+                  >
+                    <IconBlockquote size={18} stroke={1.5} />
+                  </button>
+                )}
+
+                {/* Sleep timer */}
+                <PlayerPopover
+                  icon={
+                    <IconZzz size={18} stroke={1.5} />
+                  }
+                  label="Sleep Timer"
+                  active={!!sleepEndsAt}
+                  subtitle={sleepRemaining}
+                  width={224}
+                >
+                  {(close) => <SleepTimerPanel onClose={close} />}
+                </PlayerPopover>
+                </div>
               </div>
 
               {/* Progress / seek bar */}
@@ -758,51 +827,6 @@ export function Player() {
             {/* Right: volume + extra controls */}
             <div className="flex w-[30%] min-w-[11.25rem] items-center justify-end gap-1">
 
-              {/* Sleep timer */}
-              <PlayerPopover
-                icon={
-                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                    <path d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278z"/>
-                  </svg>
-                }
-                label="Sleep Timer"
-                active={!!sleepEndsAt}
-                subtitle={sleepRemaining}
-                width={224}
-              >
-                {(close) => <SleepTimerPanel onClose={close} />}
-              </PlayerPopover>
-
-              {/* Lyrics toggle */}
-              {hasLyrics && <button
-                onClick={() => {
-                  if (isQueuePinned) {
-                    // When queue is pinned, lyrics live in the queue panel as a tab
-                    if (!isQueueOpen || queueActiveTab !== "lyrics") {
-                      setQueueOpen(true)
-                      setQueueActiveTab("lyrics")
-                    } else {
-                      setQueueActiveTab("queue")
-                    }
-                  } else {
-                    setLyricsOpen(!isLyricsOpen)
-                  }
-                }}
-                title="Lyrics"
-                className={`flex-shrink-0 flex h-8 w-8 items-center justify-center transition-colors ${
-                  (isQueuePinned ? isQueueOpen && queueActiveTab === "lyrics" : isLyricsOpen) || lyricsLines !== null
-                    ? "text-accent"
-                    : "text-white/40 hover:text-white/70"
-                }`}
-                aria-label="Lyrics"
-              >
-                {/* Microphone icon */}
-                <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                  <path d="M8 1a2.5 2.5 0 0 0-2.5 2.5v5a2.5 2.5 0 0 0 5 0v-5A2.5 2.5 0 0 0 8 1z"/>
-                  <path d="M3.5 8.5a.5.5 0 0 1 .5.5A4 4 0 0 0 12 9a.5.5 0 0 1 1 0 5 5 0 0 1-4.5 4.975V15.5a.5.5 0 0 1-1 0v-1.525A5 5 0 0 1 3 9a.5.5 0 0 1 .5-.5z"/>
-                </svg>
-              </button>}
-
               {/* Visualizer mode cycle */}
               <button
                 onClick={cycleCompactMode}
@@ -810,27 +834,7 @@ export function Player() {
                 className="flex-shrink-0 flex h-8 w-8 items-center justify-center transition-colors text-white/40 hover:text-white/70"
                 aria-label="Cycle visualizer mode"
               >
-                {/* Waveform/spectrum icon — changes subtly per mode */}
-                {compactMode === "waveform" && (
-                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                    <path d="M0 8a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1A.5.5 0 0 1 0 9V8zm3-3a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-.5.5h-1A.5.5 0 0 1 3 9V5zm3-2a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5h-1A.5.5 0 0 1 6 11V3zm3 2a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-.5.5h-1A.5.5 0 0 1 9 9V5zm3 3a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5V8z"/>
-                  </svg>
-                )}
-                {compactMode === "spectrum" && (
-                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                    <path d="M1 13v-2h2v2H1zm3-2h2v2H4v-2zm3-2h2v4H7V9zm3-2h2v6h-2V7zm3-4h2v10h-2V3z"/>
-                  </svg>
-                )}
-                {compactMode === "oscilloscope" && (
-                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                    <path d="M0 8c0-.18.1-.34.25-.42l3-1.6a.5.5 0 0 1 .5.87L1.5 8l2.25 1.15a.5.5 0 0 1-.5.87l-3-1.6A.5.5 0 0 1 0 8zm16 0a.5.5 0 0 1-.25.42l-3 1.6a.5.5 0 1 1-.5-.87L14.5 8l-2.25-1.15a.5.5 0 1 1 .5-.87l3 1.6c.15.08.25.24.25.42zM5.5 4a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5zm2.5 2a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-1 0v-3A.5.5 0 0 1 8 6zm2.5-2a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5z"/>
-                  </svg>
-                )}
-                {compactMode === "vu" && (
-                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                    <path d="M1 11a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-3zm5-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm5-5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V2z"/>
-                  </svg>
-                )}
+                <IconActivity size={18} stroke={1.5} />
               </button>
 
               {/* Fullscreen visualizer expand */}
@@ -840,21 +844,13 @@ export function Player() {
                 className="flex-shrink-0 flex h-8 w-8 items-center justify-center transition-colors text-white/40 hover:text-white/70"
                 aria-label="Open fullscreen visualizer"
               >
-                <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                  <path d="M1.5 1h4a.5.5 0 0 1 0 1H2v3.5a.5.5 0 0 1-1 0v-4A.5.5 0 0 1 1.5 1zm9 0h4a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-1 0V2h-3.5a.5.5 0 0 1 0-1zm-9 9a.5.5 0 0 1 .5.5V14h3.5a.5.5 0 0 1 0 1h-4a.5.5 0 0 1-.5-.5v-4a.5.5 0 0 1 .5-.5zm13 0a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-.5.5h-4a.5.5 0 0 1 0-1H14v-3.5a.5.5 0 0 1 .5-.5z"/>
-                </svg>
+                <IconMaximize size={18} stroke={1.5} />
               </button>
 
               {/* EQ */}
               <PlayerPopover
                 icon={
-                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                    <rect x="1"  y="6" width="2" height="8" rx="1"/>
-                    <rect x="4"  y="3" width="2" height="11" rx="1"/>
-                    <rect x="7"  y="1" width="2" height="13" rx="1"/>
-                    <rect x="10" y="4" width="2" height="10" rx="1"/>
-                    <rect x="13" y="7" width="2" height="7" rx="1"/>
-                  </svg>
+                  <IconAdjustments size={18} stroke={1.5} />
                 }
                 label="Equalizer"
                 active={eqEnabled}
@@ -869,49 +865,33 @@ export function Player() {
                 className={`flex-shrink-0 mr-1 flex h-8 w-8 items-center justify-center transition-colors ${isQueueOpen ? "text-accent" : "text-white/40 hover:text-white/70"}`}
                 aria-label="Queue"
               >
-                <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                  <path d="M15 15H1v-1.5h14V15zm0-4.5H1V9h14v1.5zm-14-7A2.5 2.5 0 0 1 3.5 1h9a2.5 2.5 0 0 1 0 5h-9A2.5 2.5 0 0 1 1 3.5zm2.5-1a1 1 0 0 0 0 2h9a1 1 0 0 0 0-2h-9z" />
-                </svg>
+                <IconPlaylist size={18} stroke={1.5} />
               </button>
 
               {/* Volume icon — muted / low / full */}
               <button onClick={() => setVolume(volume === 0 ? 80 : 0)} className="flex-shrink-0 flex h-8 w-8 items-center justify-center text-white/70 hover:text-white transition-colors">
                 {volume === 0 ? (
-                  <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M13.86 5.47a.75.75 0 0 0-1.061 0l-1.47 1.47-1.47-1.47A.75.75 0 0 0 8.8 6.53L10.269 8l-1.47 1.47a.75.75 0 1 0 1.06 1.06l1.47-1.47 1.47 1.47a.75.75 0 0 0 1.06-1.06L12.39 8l1.47-1.47a.75.75 0 0 0 0-1.06z" />
-                    <path d="M10.116 1.5A.75.75 0 0 0 8.991.85l-6.925 4a3.642 3.642 0 0 0-1.33 4.967 3.639 3.639 0 0 0 1.33 1.332l6.925 4a.75.75 0 0 0 1.125-.649v-13a.75.75 0 0 0-.002-.001zm0 12.34L3.322 9.688a2.14 2.14 0 0 1 0-3.7l6.794-3.99v11.84z" />
-                  </svg>
+                  <IconVolumeOff size={18} stroke={1.5} />
                 ) : volume < 50 ? (
-                  <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M9.741.85a.75.75 0 0 1 .375.65v13a.75.75 0 0 1-1.125.65l-6.925-4a3.642 3.642 0 0 1-1.33-4.967 3.639 3.639 0 0 1 1.33-1.332l6.925-4a.75.75 0 0 1 .75 0zm-6.924 5.3a2.139 2.139 0 0 0 0 3.7l5.8 3.35V2.8l-5.8 3.35zm8.683 4.21v-4.2a2.447 2.447 0 0 1 0 4.2z" />
-                  </svg>
+                  <IconVolume2 size={18} stroke={1.5} />
                 ) : (
-                  <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M9.741.85a.75.75 0 0 1 .375.65v13a.75.75 0 0 1-1.125.65l-6.925-4a3.642 3.642 0 0 1-1.33-4.967 3.639 3.639 0 0 1 1.33-1.332l6.925-4a.75.75 0 0 1 .75 0zm-6.924 5.3a2.139 2.139 0 0 0 0 3.7l5.8 3.35V2.8l-5.8 3.35zm8.683 6.087a4.502 4.502 0 0 0 0-8.474v1.65a2.999 2.999 0 0 1 0 5.175v1.649z" />
-                  </svg>
+                  <IconVolume size={18} stroke={1.5} />
                 )}
               </button>
-              {/* Slider with volume tooltip */}
-              <div ref={volumeSliderRef} className="relative flex h-7 w-32 items-center">
+              {/* Squiggly volume slider */}
+              <div ref={volumeSliderRef} className="relative flex items-center">
                 {volumeTooltipVisible && (
                   <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-0.5 rounded-md bg-app-card border border-[var(--border)] text-xs font-bold text-white shadow-lg pointer-events-none whitespace-nowrap">
                     {Math.round(volume)}%
                   </div>
                 )}
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={volume}
-                  onChange={e => {
-                    setVolume(parseInt(e.target.value, 10))
+                <SquigglyVolumeSlider
+                  volume={volume}
+                  onChange={v => {
+                    setVolume(v)
                     setVolumeTooltipVisible(true)
                     if (volumeTooltipTimer.current) clearTimeout(volumeTooltipTimer.current)
                     volumeTooltipTimer.current = setTimeout(() => setVolumeTooltipVisible(false), 1500)
-                  }}
-                  className="h-1 w-full cursor-pointer appearance-none rounded-full"
-                  style={{
-                    background: `linear-gradient(to right, var(--accent) 0%, var(--accent) ${volume}%, #535353 ${volume}%, #535353 100%)`,
                   }}
                 />
               </div>

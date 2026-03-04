@@ -70,8 +70,8 @@ export interface PodcastTopChart {
 export const podcastSearch = (query: string, limit?: number): Promise<PodcastSearchResult[]> =>
   invoke("podcast_search", { query, limit })
 
-export const podcastGetTop = (genreId?: number, limit?: number): Promise<PodcastTopChart[]> =>
-  invoke("podcast_get_top", { genreId, limit })
+export const podcastGetTop = (category?: string, limit?: number): Promise<PodcastTopChart[]> =>
+  invoke("podcast_get_top", { category, limit })
 
 export const podcastGetFeed = (feedUrl: string): Promise<PodcastDetail> =>
   invoke("podcast_get_feed", { feedUrl })

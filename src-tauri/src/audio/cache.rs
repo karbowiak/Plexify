@@ -434,7 +434,21 @@ fn fix_mp3_bytes(bytes: Vec<u8>) -> Vec<u8> {
 /// but the actual audio is only ~30s.
 pub fn corrected_duration(meta_ms: i64, probed_ms: Option<i64>) -> i64 {
     match probed_ms {
-        Some(p) if (meta_ms - p).abs() > 5_000 => p,
+        Some(p) if (meta_ms - p).abs() > 5_000 => {
+            // If probed duration is suspiciously short (< 50% of metadata)
+            // while metadata claims a reasonable duration (> 30s), the probe
+            // likely misread the container (e.g. FLAC-in-MP4). Trust metadata.
+            if p < meta_ms / 2 && meta_ms > 30_000 {
+                tracing::warn!(
+                    meta_ms = meta_ms,
+                    probed_ms = p,
+                    "Probed duration suspiciously short — keeping metadata duration"
+                );
+                meta_ms
+            } else {
+                p
+            }
+        }
         _ => meta_ms,
     }
 }

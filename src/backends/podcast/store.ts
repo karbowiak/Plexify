@@ -59,15 +59,17 @@ interface PodcastState {
   // Transient
   searchResults: PodcastSearchResult[]
   isSearching: boolean
+  lastError: string | null
 
   // Actions
   subscribe: (podcast: { feedUrl: string; title: string; author: string; artworkUrl: string }) => void
   unsubscribe: (feedUrl: string) => void
   isSubscribed: (feedUrl: string) => boolean
   getFeed: (feedUrl: string) => Promise<PodcastDetail | null>
-  getTopChart: (genreId?: number, limit?: number) => Promise<PodcastTopChart[]>
+  getTopChart: (category?: string, limit?: number) => Promise<PodcastTopChart[]>
   searchPodcasts: (query: string) => Promise<void>
   clearSearch: () => void
+  clearError: () => void
   setEpisodeProgress: (feedUrl: string, guid: string, positionSecs: number) => void
   getEpisodeProgress: (feedUrl: string, guid: string) => number
   markEpisodeCompleted: (feedUrl: string, guid: string) => void
@@ -84,6 +86,7 @@ export const usePodcastStore = create<PodcastState>()(
       completedEpisodes: {},
       searchResults: [],
       isSearching: false,
+      lastError: null,
 
       subscribe: (podcast) => {
         const { subscriptions } = get()
@@ -124,8 +127,10 @@ export const usePodcastStore = create<PodcastState>()(
             }))
             return detail
           } catch (err) {
-            console.error("Failed to fetch podcast feed:", err)
-            return null
+            const msg = err instanceof Error ? err.message : String(err)
+            console.error("Failed to fetch podcast feed:", msg)
+            set({ lastError: `Failed to load podcast feed: ${msg}` })
+            throw err
           } finally {
             inflightFeeds.delete(feedUrl)
           }
@@ -135,8 +140,8 @@ export const usePodcastStore = create<PodcastState>()(
         return promise
       },
 
-      getTopChart: async (genreId?, limit?) => {
-        const key = `${genreId ?? "all"}-${limit ?? 20}`
+      getTopChart: async (category?, limit?) => {
+        const key = `${category ?? "all"}-${limit ?? 20}`
         const cached = get().topChartCache[key]
         if (cached && Date.now() - cached.cachedAt < TOP_CHART_TTL_MS) return cached.data
 
@@ -145,7 +150,7 @@ export const usePodcastStore = create<PodcastState>()(
 
         const promise = (async () => {
           try {
-            const results = await podcastGetTop(genreId, limit)
+            const results = await podcastGetTop(category, limit)
             set(s => ({
               topChartCache: {
                 ...s.topChartCache,
@@ -154,8 +159,10 @@ export const usePodcastStore = create<PodcastState>()(
             }))
             return results
           } catch (err) {
-            console.error("Failed to fetch top podcasts:", err)
-            return []
+            const msg = err instanceof Error ? err.message : String(err)
+            console.error("Failed to fetch top podcasts:", msg)
+            set({ lastError: `Failed to load podcasts: ${msg}` })
+            throw err
           } finally {
             inflightTopCharts.delete(key)
           }
@@ -174,12 +181,15 @@ export const usePodcastStore = create<PodcastState>()(
         try {
           const results = await podcastSearch(query, 20)
           set({ searchResults: results, isSearching: false })
-        } catch {
-          set({ searchResults: [], isSearching: false })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          set({ searchResults: [], isSearching: false, lastError: `Search failed: ${msg}` })
         }
       },
 
       clearSearch: () => set({ searchResults: [], isSearching: false }),
+
+      clearError: () => set({ lastError: null }),
 
       setEpisodeProgress: (feedUrl, guid, positionSecs) => {
         set(s => ({

@@ -65,42 +65,79 @@ function PodcastCard({
 }
 
 // ---------------------------------------------------------------------------
+// Error banner
+// ---------------------------------------------------------------------------
+
+function ErrorBanner({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry?: () => void }) {
+  return (
+    <div className="mb-4 flex items-center gap-3 rounded-lg bg-red-500/10 px-4 py-2.5 text-sm text-red-300 ring-1 ring-red-500/20">
+      <span className="flex-1">{message}</span>
+      {onRetry && (
+        <button onClick={onRetry} className="shrink-0 rounded px-2.5 py-1 text-xs font-medium text-red-200 hover:bg-red-500/20 transition-colors">
+          Retry
+        </button>
+      )}
+      <button onClick={onDismiss} className="shrink-0 text-red-400 hover:text-red-200 transition-colors">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+          <path d="M2.22 2.22a.75.75 0 0 1 1.06 0L8 6.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L9.06 8l4.72 4.72a.75.75 0 1 1-1.06 1.06L8 9.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L6.94 8 2.22 3.28a.75.75 0 0 1 0-1.06z" />
+        </svg>
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
 
 export function PodcastsPage() {
-  const { subscriptions, searchResults, isSearching, searchPodcasts, clearSearch, getTopChart } =
+  const { subscriptions, searchResults, isSearching, lastError, searchPodcasts, clearSearch, clearError, getTopChart } =
     usePodcastStore(useShallow(s => ({
       subscriptions: s.subscriptions,
       searchResults: s.searchResults,
       isSearching: s.isSearching,
+      lastError: s.lastError,
       searchPodcasts: s.searchPodcasts,
       clearSearch: s.clearSearch,
+      clearError: s.clearError,
       getTopChart: s.getTopChart,
     })))
 
   const [query, setQuery] = useState("")
   const [categories, setCategories] = useState<PodcastCategory[]>([])
-  const [selectedCategory, setSelectedCategory] = useState<number | null>(null)
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [topPodcasts, setTopPodcasts] = useState<PodcastTopChart[]>([])
   const [categoryPodcasts, setCategoryPodcasts] = useState<PodcastTopChart[]>([])
   const [isLoadingTop, setIsLoadingTop] = useState(true)
   const [isLoadingCategory, setIsLoadingCategory] = useState(false)
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [topError, setTopError] = useState(false)
+  const [categoryError, setCategoryError] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null)
+  // Stale request guard — incremented on each category selection, checked on completion
+  const categoryRequestId = useRef(0)
+
+  const loadTopPodcasts = useCallback(() => {
+    setIsLoadingTop(true)
+    setTopError(false)
+    getTopChart(undefined, 25).then(results => {
+      setTopPodcasts(results)
+      setIsLoadingTop(false)
+    }).catch(() => {
+      setIsLoadingTop(false)
+      setTopError(true)
+    })
+  }, [getTopChart])
 
   // Load categories + top podcasts on mount
   useEffect(() => {
     podcastGetCategories().then(setCategories).catch(() => {})
-    getTopChart(undefined, 25).then(results => {
-      setTopPodcasts(results)
-      setIsLoadingTop(false)
-    }).catch(() => setIsLoadingTop(false))
-  }, [getTopChart])
+    loadTopPodcasts()
+  }, [loadTopPodcasts])
 
   // Debounced search
   const handleSearch = useCallback((value: string) => {
     setQuery(value)
-    clearTimeout(debounceRef.current)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
     if (!value.trim()) {
       clearSearch()
       return
@@ -110,25 +147,56 @@ export function PodcastsPage() {
     }, 400)
   }, [searchPodcasts, clearSearch])
 
-  // Category selection
-  const handleCategory = useCallback((catId: number) => {
-    if (selectedCategory === catId) {
+  // Category selection with stale request guard
+  const handleCategory = useCallback((catName: string) => {
+    if (selectedCategory === catName) {
       setSelectedCategory(null)
       setCategoryPodcasts([])
+      setCategoryError(false)
       return
     }
-    setSelectedCategory(catId)
+    setSelectedCategory(catName)
     setIsLoadingCategory(true)
-    getTopChart(catId, 25).then(results => {
+    setCategoryError(false)
+    const reqId = ++categoryRequestId.current
+    getTopChart(catName, 25).then(results => {
+      // Ignore stale responses from superseded category selections
+      if (categoryRequestId.current !== reqId) return
       setCategoryPodcasts(results)
       setIsLoadingCategory(false)
-    }).catch(() => setIsLoadingCategory(false))
+    }).catch(() => {
+      if (categoryRequestId.current !== reqId) return
+      setIsLoadingCategory(false)
+      setCategoryError(true)
+    })
+  }, [selectedCategory, getTopChart])
+
+  const retryCategory = useCallback(() => {
+    if (selectedCategory) {
+      setIsLoadingCategory(true)
+      setCategoryError(false)
+      const reqId = ++categoryRequestId.current
+      getTopChart(selectedCategory, 25).then(results => {
+        if (categoryRequestId.current !== reqId) return
+        setCategoryPodcasts(results)
+        setIsLoadingCategory(false)
+      }).catch(() => {
+        if (categoryRequestId.current !== reqId) return
+        setIsLoadingCategory(false)
+        setCategoryError(true)
+      })
+    }
   }, [selectedCategory, getTopChart])
 
   const isSearchMode = query.trim().length > 0
 
   return (
     <div className="p-8">
+      {/* Error banner from store (rate limit / network errors) */}
+      {lastError && (
+        <ErrorBanner message={lastError} onDismiss={clearError} />
+      )}
+
       {/* Header */}
       <div className="mb-8 flex items-center gap-4">
         <h1 className="text-3xl font-bold">Podcasts</h1>
@@ -205,29 +273,40 @@ export function PodcastsPage() {
 
           {/* Top Podcasts */}
           <div className="mb-10">
-            <ScrollRow title="Top Podcasts" restoreKey="podcast-top">
-              {isLoadingTop ? (
-                Array.from({ length: 8 }).map((_, i) => (
-                  <div key={i} className="flex-shrink-0 animate-pulse" style={{ width: "var(--card-size, 160px)" }}>
-                    <div className="aspect-square w-full rounded-lg bg-white/5" />
-                    <div className="mt-2 h-3 w-3/4 rounded bg-white/5" />
-                    <div className="mt-1 h-2.5 w-1/2 rounded bg-white/5" />
-                  </div>
-                ))
-              ) : (
-                topPodcasts.map((p: PodcastTopChart, idx: number) => (
-                  <PodcastCard
-                    key={`${p.itunes_id}-${idx}`}
-                    title={p.name}
-                    author={p.artist_name}
-                    artworkUrl={p.artwork_url}
-                    feedUrl={p.feed_url || undefined}
-                    itunesId={p.itunes_id}
-                    scrollItem
-                  />
-                ))
-              )}
-            </ScrollRow>
+            {topError && !isLoadingTop ? (
+              <div>
+                <h2 className="mb-4 text-xl font-bold">Top Podcasts</h2>
+                <ErrorBanner
+                  message="Failed to load top podcasts."
+                  onDismiss={() => setTopError(false)}
+                  onRetry={loadTopPodcasts}
+                />
+              </div>
+            ) : (
+              <ScrollRow title="Top Podcasts" restoreKey="podcast-top">
+                {isLoadingTop ? (
+                  Array.from({ length: 8 }).map((_, i) => (
+                    <div key={i} className="flex-shrink-0 animate-pulse" style={{ width: "var(--card-size, 160px)" }}>
+                      <div className="aspect-square w-full rounded-lg bg-white/5" />
+                      <div className="mt-2 h-3 w-3/4 rounded bg-white/5" />
+                      <div className="mt-1 h-2.5 w-1/2 rounded bg-white/5" />
+                    </div>
+                  ))
+                ) : (
+                  topPodcasts.map((p: PodcastTopChart, idx: number) => (
+                    <PodcastCard
+                      key={`${p.itunes_id}-${idx}`}
+                      title={p.name}
+                      author={p.artist_name}
+                      artworkUrl={p.artwork_url}
+                      feedUrl={p.feed_url || undefined}
+                      itunesId={p.itunes_id}
+                      scrollItem
+                    />
+                  ))
+                )}
+              </ScrollRow>
+            )}
           </div>
 
           {/* Categories */}
@@ -237,9 +316,9 @@ export function PodcastsPage() {
               {categories.map(cat => (
                 <button
                   key={cat.id}
-                  onClick={() => handleCategory(cat.id)}
+                  onClick={() => handleCategory(cat.name)}
                   className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
-                    selectedCategory === cat.id
+                    selectedCategory === cat.name
                       ? "bg-accent text-black"
                       : "bg-white/10 text-white hover:bg-white/20"
                   }`}
@@ -254,9 +333,15 @@ export function PodcastsPage() {
           {selectedCategory && (
             <div>
               <h2 className="mb-4 text-xl font-bold">
-                {categories.find(c => c.id === selectedCategory)?.name ?? "Category"}
+                {selectedCategory}
               </h2>
-              {isLoadingCategory ? (
+              {categoryError && !isLoadingCategory ? (
+                <ErrorBanner
+                  message={`Failed to load ${selectedCategory} podcasts.`}
+                  onDismiss={() => setCategoryError(false)}
+                  onRetry={retryCategory}
+                />
+              ) : isLoadingCategory ? (
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-6">
                   {Array.from({ length: 12 }).map((_, i) => (
                     <div key={i} className="animate-pulse">
@@ -266,6 +351,8 @@ export function PodcastsPage() {
                     </div>
                   ))}
                 </div>
+              ) : categoryPodcasts.length === 0 ? (
+                <p className="text-gray-400">No podcasts found in this category.</p>
               ) : (
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-6">
                   {categoryPodcasts.map((p: PodcastTopChart, idx: number) => (

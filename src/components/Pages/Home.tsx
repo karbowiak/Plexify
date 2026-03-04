@@ -10,7 +10,7 @@ import { makeOnPlay } from "../../lib/mediaPlay"
 import { ScrollRow } from "../ScrollRow"
 import { MediaCard } from "../MediaCard"
 import { PriorityMediaCard } from "../PriorityMediaCard"
-import { selectMix } from "./Mix"
+import { selectMix, shuffleTracks } from "./Mix"
 
 /** Strip common mix suffixes to get the artist name: "Ado Mix" → "Ado" */
 export function mixTitleToArtistName(title: string): string {
@@ -215,8 +215,8 @@ export function Home() {
                   provider.getMixTracks(mixKey)
                     .then(tracks => {
                       if (tracks.length === 0) return
-                      const shuffled = [...tracks].sort(() => Math.random() - 0.5)
-                      void playTrack(shuffled[0], shuffled, item.title, "/mix")
+                      const sorted = shuffleTracks(tracks, item.title)
+                      void playTrack(sorted[0], sorted, item.title, "/mix")
                     })
                     .catch(() => {})
                 }}

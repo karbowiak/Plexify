@@ -550,6 +550,53 @@ body {
   overflow: visible;
 }
 
+/* ---------------------------------------------------------------------------
+   Easter egg: Vinyl Spin — album art rotates like a record
+   --------------------------------------------------------------------------- */
+@keyframes vinyl-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ---------------------------------------------------------------------------
+   Easter egg: Party Mode — beat-reactive border flash
+   --------------------------------------------------------------------------- */
+.party-mode::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  border: 3px solid var(--accent);
+  opacity: var(--party-pulse, 0);
+  transition: opacity 0.05s;
+}
+
+/* ---------------------------------------------------------------------------
+   Easter egg: Vaporwave — retro pink/cyan palette + CRT scanlines
+   --------------------------------------------------------------------------- */
+.vaporwave {
+  --accent: #ff6b9d;
+  --accent-rgb: 255 107 157;
+  --bg-base: #1a0a2e;
+  --bg-elevated: #221440;
+  --bg-surface: #2d1b4e;
+}
+.vaporwave::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.15) 2px,
+    rgba(0,0,0,0.15) 4px
+  );
+}
+
 .scroll-row-grid > * {
   width: 100% !important;
   flex-shrink: unset !important;

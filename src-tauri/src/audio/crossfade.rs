@@ -125,8 +125,20 @@ pub fn promote_crossfade(
     }
 
     let ch = cf.channels as i64;
+    // Convert elapsed device-rate frames to source-rate sample count.
+    // cf.elapsed_frames was computed at the device sample rate (out_rate),
+    // but position_samples is tracked in source-rate units. Without this
+    // conversion, position_ms() is inflated by device_rate/source_rate,
+    // which can cause the next crossfade to trigger prematurely.
+    let dev_rate = shared.device_sample_rate.load(Ordering::Relaxed) as u64;
+    let src_rate = cf.sample_rate as u64;
+    let source_frames = if dev_rate > 0 && src_rate > 0 && dev_rate != src_rate {
+        (cf.elapsed_frames as u64 * src_rate / dev_rate) as i64
+    } else {
+        cf.elapsed_frames as i64
+    };
     shared.position_samples.store(
-        (cf.elapsed_frames as i64).saturating_mul(ch),
+        source_frames.saturating_mul(ch),
         Ordering::Relaxed,
     );
     let nb = shared.next_bpm.swap(0, Ordering::Relaxed);

@@ -55,8 +55,8 @@ export function StarRating({ itemId, userRating, artist, track, size = 12, enabl
           title={`${inMenu ? "" : "Rate "}${star} star${star > 1 ? "s" : ""}`}
           className={`transition-colors ${
             visual >= star
-              ? hoverStar > 0 ? "text-accent/70" : "text-accent"
-              : inMenu ? "text-white/30 hover:text-accent/70" : "text-gray-600 hover:text-accent/70"
+              ? hoverStar > 0 ? "text-amber-600/70 dark:text-amber-400/70" : "text-amber-600 dark:text-amber-400"
+              : inMenu ? "text-white/30 hover:text-amber-600/70 dark:hover:text-amber-400/70" : "text-amber-800/30 dark:text-gray-600 hover:text-amber-600/70 dark:hover:text-amber-400/70"
           }`}
           onMouseEnter={() => setHoverStar(star)}
           onClick={e => {

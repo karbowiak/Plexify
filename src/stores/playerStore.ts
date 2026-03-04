@@ -8,6 +8,7 @@ import {
   audioResume,
   audioSeek,
   audioSetVolume,
+  audioStop,
   audioPreloadNext,
   audioPrefetch,
   audioAnalyzeTrack,
@@ -107,6 +108,7 @@ interface PlayerState {
   stopRadio: () => void
   /** Set the active DJ personality (null = off). Re-seeds the current station immediately. */
   setDjMode: (mode: DjMode | null) => void
+  stop: () => void
   pause: () => void
   resume: () => void
   next: () => void
@@ -1056,6 +1058,48 @@ export const usePlayerStore = create<PlayerState>()(
 
     // Immediately insert DJ tracks for the current track (works in any context)
     fireAndForget(insertDjTracks(get, set as never))
+  },
+
+  stop: () => {
+    fireAndForget(audioStop())
+    const { currentTrack, positionMs, isInternetRadioActive } = get()
+    // Stop internet radio if active
+    if (isInternetRadioActive) {
+      import("../lib/radioAudio").then(m => m.radioStop())
+      import("../stores/radioStreamStore").then(m => {
+        m.useRadioStreamStore.getState().stopStream()
+      })
+    }
+    // Report stopped to Plex server
+    if (currentTrack) {
+      _reportProgress(currentTrack.id, "stopped", positionMs, currentTrack.duration)
+    }
+    // Report stopped to OS media controls
+    const provider = getProvider()
+    if (provider?.setNowPlayingState) fireAndForget(provider.setNowPlayingState("stopped"))
+    // Reset all playback state
+    set({
+      currentTrack: null,
+      queue: [],
+      queueIndex: 0,
+      queueId: null,
+      isPlaying: false,
+      isBuffering: false,
+      positionMs: 0,
+      playlistKey: null,
+      playlistTotalCount: 0,
+      playlistLoadedCount: 0,
+      isRadioMode: false,
+      radioSeedKey: null,
+      radioType: null,
+      radioSeedArtist: null,
+      djMode: null,
+      waveformLevels: null,
+      lyricsLines: null,
+      isInternetRadioActive: false,
+      contextName: null,
+      contextHref: null,
+    })
   },
 
   pause: () => {

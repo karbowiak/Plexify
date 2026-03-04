@@ -7,17 +7,9 @@
 //! API docs: https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/iTuneSearchAPI/
 
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 const ITUNES_SEARCH: &str = "https://itunes.apple.com/search";
-
-static ITUNES_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("Failed to build iTunes HTTP client")
-});
 
 // ---------------------------------------------------------------------------
 // Private response models (deserialization only)
@@ -127,22 +119,20 @@ fn parse_date(s: &str) -> String {
 
 /// Search for an artist by name and return the best match with genre info.
 pub async fn search_artist(artist: &str) -> Result<Option<ItunesArtistInfo>> {
-    let resp = ITUNES_CLIENT
-        .get(ITUNES_SEARCH)
-        .query(&[
+    let resp = crate::itunes_throttle::itunes_get(
+        ITUNES_SEARCH,
+        &[
             ("term", artist),
             ("media", "music"),
             ("entity", "musicArtist"),
             ("limit", "5"),
-        ])
-        .send()
-        .await
-        .context("Failed to reach iTunes artist search")?
-        .error_for_status()
-        .context("iTunes artist search returned error status")?
-        .json::<ItunesResponse<ItunesArtistResult>>()
-        .await
-        .context("Failed to parse iTunes artist search response")?;
+        ],
+    )
+    .await
+    .context("Failed to reach iTunes artist search")?
+    .json::<ItunesResponse<ItunesArtistResult>>()
+    .await
+    .context("Failed to parse iTunes artist search response")?;
 
     if resp.results.is_empty() {
         return Ok(None);
@@ -167,22 +157,20 @@ pub async fn search_artist(artist: &str) -> Result<Option<ItunesArtistInfo>> {
 /// Search for an album and return enriched info (artwork, genre, release date).
 pub async fn search_album(artist: &str, album: &str) -> Result<Option<ItunesAlbumInfo>> {
     let query = format!("{} {}", artist, album);
-    let resp = ITUNES_CLIENT
-        .get(ITUNES_SEARCH)
-        .query(&[
+    let resp = crate::itunes_throttle::itunes_get(
+        ITUNES_SEARCH,
+        &[
             ("term", query.as_str()),
             ("media", "music"),
             ("entity", "album"),
             ("limit", "10"),
-        ])
-        .send()
-        .await
-        .context("Failed to reach iTunes album search")?
-        .error_for_status()
-        .context("iTunes album search returned error status")?
-        .json::<ItunesResponse<ItunesAlbumResult>>()
-        .await
-        .context("Failed to parse iTunes album search response")?;
+        ],
+    )
+    .await
+    .context("Failed to reach iTunes album search")?
+    .json::<ItunesResponse<ItunesAlbumResult>>()
+    .await
+    .context("Failed to parse iTunes album search response")?;
 
     if resp.results.is_empty() {
         return Ok(None);

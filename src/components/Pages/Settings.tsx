@@ -16,6 +16,7 @@ import { useCardSizeStore, CARD_SIZE_MIN, CARD_SIZE_MAX } from "../../stores/car
 import { useHighlightStore, HIGHLIGHT_DEFAULTS, type HighlightCategory } from "../../stores/highlightStore"
 import { useNotificationStore } from "../../stores/notificationStore"
 import { useDebugStore } from "../../stores/debugStore"
+import { useEasterEggStore } from "../../stores/easterEggStore"
 import { getBackends, getMetadataBackends, getMetadataBackend, getBackend } from "../../backends/registry"
 import type { ProviderCapabilities } from "../../providers/types"
 import type { MetadataCapabilities, MetadataBackendDefinition, BackendDefinition } from "../../backends/types"
@@ -27,7 +28,7 @@ import { useMetadataSourceStore, type MetadataSource, SOURCE_LABELS, SOURCE_DESC
 
 type Section =
   | "backends" | `backends/${string}`
-  | "playback" | "appearance" | "general" | "about"
+  | "playback" | "appearance" | "general" | "about" | "eastereggs"
 
 const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
   {
@@ -1317,11 +1318,53 @@ function AboutSection() {
 }
 
 // ---------------------------------------------------------------------------
+// Easter eggs section
+// ---------------------------------------------------------------------------
+
+function EasterEggsSection() {
+  const { rainbow, partyMode, vinylSpin, vaporwave, toggleRainbow, togglePartyMode, toggleVinylSpin, toggleVaporwave } =
+    useEasterEggStore()
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <SettingCard title="Easter Eggs" description="Hidden features unlocked by the secret code. Toggle them on and off as you please.">
+        <div className="space-y-4">
+          <SettingRow label="Rainbow Mode" description="Cycles the accent colour through the rainbow spectrum and adds rainbow gradients to the waveform and volume slider." inline>
+            <Toggle value={rainbow} onChange={toggleRainbow} />
+          </SettingRow>
+          <SettingRow label="Party Mode" description="Flashes the app border on each beat when music is playing." inline>
+            <Toggle value={partyMode} onChange={togglePartyMode} />
+          </SettingRow>
+          <SettingRow label="Vinyl Spin" description="Makes the album art in the player spin like a vinyl record." inline>
+            <Toggle value={vinylSpin} onChange={toggleVinylSpin} />
+          </SettingRow>
+          <SettingRow label="Vaporwave" description="A E S T H E T I C mode. Purple/pink palette with CRT scanlines. Overrides rainbow accent when active." inline>
+            <Toggle value={vaporwave} onChange={toggleVaporwave} />
+          </SettingRow>
+        </div>
+      </SettingCard>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main settings page
 // ---------------------------------------------------------------------------
 
+const EASTER_EGG_NAV = {
+  id: "eastereggs" as Section,
+  label: "Easter Eggs",
+  icon: (
+    <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 2C8 2 5 7.58 5 12.71 5 16.18 8.13 19 12 19s7-2.82 7-6.29C19 7.58 16 2 12 2zm0 15c-2.76 0-5-1.83-5-4.29C7 8.5 9.48 4 12 4s5 4.5 5 8.71c0 2.46-2.24 4.29-5 4.29z" />
+      <path d="M10 9.5c0 .83-.67 1.5-1.5 1.5S7 10.33 7 9.5 7.67 8 8.5 8s1.5.67 1.5 1.5zM14.5 13c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM12 14c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1z" />
+    </svg>
+  ),
+}
+
 export function SettingsPage({ section: sectionProp }: { section?: string }) {
   const [, navigate] = useLocation()
+  const easterEggsUnlocked = useEasterEggStore(s => s.unlocked)
 
   // Map old routes to new ones
   const mappedSection = (() => {
@@ -1337,6 +1380,8 @@ export function SettingsPage({ section: sectionProp }: { section?: string }) {
     navigate(s === "backends" ? "/settings" : `/settings/${s}`)
   }
 
+  const navItems = easterEggsUnlocked ? [...NAV, EASTER_EGG_NAV] : NAV
+
   return (
     <div className="flex h-full">
       {/* Inner sidebar */}
@@ -1344,7 +1389,7 @@ export function SettingsPage({ section: sectionProp }: { section?: string }) {
         <p className="mb-4 text-[11px] font-bold uppercase tracking-widest text-white/25">Settings</p>
         <nav>
           <ul className="space-y-0.5">
-            {NAV.map(item => {
+            {navItems.map(item => {
               const active = section === item.id || (item.id === "backends" && section.startsWith("backends/"))
               return (
                 <li key={item.id}>
@@ -1377,7 +1422,7 @@ export function SettingsPage({ section: sectionProp }: { section?: string }) {
       <main className="flex-1 overflow-auto p-10 pt-8">
         {!section.startsWith("backends/") && (
           <h1 className="mb-8 text-2xl font-bold">
-            {NAV.find(n => n.id === section)?.label}
+            {navItems.find(n => n.id === section)?.label}
           </h1>
         )}
 
@@ -1389,6 +1434,7 @@ export function SettingsPage({ section: sectionProp }: { section?: string }) {
         {section === "appearance" && <AppearanceSection />}
         {section === "general" && <GeneralSection />}
         {section === "about" && <AboutSection />}
+        {section === "eastereggs" && <EasterEggsSection />}
       </main>
     </div>
   )

@@ -17,8 +17,32 @@ function mixTitleToArtistName(title: string): string {
   return title.replace(/\s+(Mix|Radio|Station|Mix Radio)$/i, "").trim()
 }
 
-function shuffleTracks(arr: MusicTrack[]): MusicTrack[] {
-  return [...arr].sort(() => Math.random() - 0.5)
+function hashString(str: string): number {
+  let hash = 5381
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0
+  }
+  return hash >>> 0
+}
+
+function mulberry32(seed: number): () => number {
+  let s = seed | 0
+  return () => {
+    s = (s + 0x6d2b79f5) | 0
+    let t = Math.imul(s ^ (s >>> 15), 1 | s)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+export function shuffleTracks(arr: MusicTrack[], title: string): MusicTrack[] {
+  const result = [...arr]
+  const rng = mulberry32(hashString(title))
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]]
+  }
+  return result
 }
 
 const mixThumbCache = new Map<string, string>()
@@ -60,7 +84,7 @@ export function MixPage() {
   const [tracks, setTracks] = useState<MusicTrack[]>(() => {
     if (!mixKey) return []
     // Shuffle on mount so the displayed list is randomised immediately.
-    return shuffleTracks(useLibraryStore.getState().mixTracksCache[mixKey] ?? [])
+    return shuffleTracks(useLibraryStore.getState().mixTracksCache[mixKey] ?? [], mixItem?.title ?? mixKey)
   })
   const [isLoading, setIsLoading] = useState(() => {
     if (!mixKey) return false
@@ -97,7 +121,7 @@ export function MixPage() {
     const fetch = provider.getMixTracks?.(mixKey)
     if (!fetch) { setIsLoading(false); return }
     fetch
-      .then(t => setTracks(shuffleTracks(t)))
+      .then(t => setTracks(shuffleTracks(t, mixItem?.title ?? mixKey)))
       .catch(() => setTracks([]))
       .finally(() => setIsLoading(false))
   }, [mixKey, provider])

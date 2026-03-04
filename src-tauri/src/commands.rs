@@ -2144,10 +2144,10 @@ pub async fn podcast_search(
 
 #[tauri::command]
 pub async fn podcast_get_top(
-    genre_id: Option<u32>,
+    category: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<crate::podcast::PodcastTopChart>, String> {
-    crate::podcast::get_top_podcasts(genre_id, limit.unwrap_or(20))
+    crate::podcast::get_top_podcasts(category, limit.unwrap_or(20))
         .await
         .map_err(|e| format!("{:#}", e))
 }
@@ -2171,8 +2171,10 @@ pub async fn podcast_lookup(
 }
 
 #[tauri::command]
-pub fn podcast_get_categories() -> Vec<crate::podcast::PodcastCategory> {
+pub async fn podcast_get_categories() -> Result<Vec<crate::podcast::PodcastCategory>, String> {
     crate::podcast::get_podcast_categories()
+        .await
+        .map_err(|e| format!("{:#}", e))
 }
 
 // ---------------------------------------------------------------------------

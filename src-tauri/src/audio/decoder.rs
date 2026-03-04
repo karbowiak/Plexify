@@ -45,6 +45,19 @@ fn compute_smart_crossfade(
 
     let current_analysis = analyzer::get_analysis(current_rating_key)?;
 
+    // Sanity check: if analysis says audio ends before half the track's known
+    // duration, the analysis is likely from a partial decode (e.g. codec issue).
+    // Fall back to fixed-window crossfade rather than using bad data.
+    if current_analysis.audio_end_ms < duration_ms / 2 {
+        warn!(
+            rating_key = current_rating_key,
+            audio_end_ms = current_analysis.audio_end_ms,
+            duration_ms = duration_ms,
+            "Smart crossfade: analysis audio_end_ms < 50% of duration — ignoring bad analysis"
+        );
+        return None;
+    }
+
     // 1. Determine the effective end of audio (skip trailing silence)
     let audio_end = current_analysis.audio_end_ms.min(duration_ms);
 
@@ -248,6 +261,15 @@ pub fn decoder_thread(
                                     .unwrap_or(0);
                                 let pos_ms = shared.position_ms();
 
+                                // Guard: never trigger crossfade too early in a track.
+                                // This prevents premature skipping caused by wrong analysis,
+                                // incorrect probed duration, or position inflation after
+                                // crossfade promotion.
+                                let min_play_ms = (duration_ms * 3 / 10).max(15_000).min(duration_ms - cfade_ms);
+                                if pos_ms < min_play_ms {
+                                    // Skip crossfade check this iteration — too early
+                                } else {
+
                                 // Try smart crossfade first, fall back to fixed window
                                 let current_rk = state.current_track.as_ref().map(|m| m.rating_key).unwrap_or(0);
                                 let next_rk = state.next_meta.as_ref().map(|m| m.rating_key).unwrap_or(0);
@@ -426,7 +448,8 @@ pub fn decoder_thread(
                                         }
                                     }
                                 }
-                            }
+                            } // end else (min_play_ms guard)
+                            } // end crossfade trigger block
 
                             // ===============================================
                             // CROSSFADE MIXING (equal-power curves)

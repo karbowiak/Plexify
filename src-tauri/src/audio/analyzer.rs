@@ -161,8 +161,22 @@ pub fn analyze(
     // Check disk sidecar first — avoids re-decoding the full track
     if let Some(cached) = load_from_sidecar(cache_dir, url) {
         if cached.rating_key == rating_key {
-            store_in_memory(cached.clone());
-            return Some(cached);
+            // Validate: audio_end should be at least half the expected duration.
+            // A cached analysis from a partial decode would have a very low
+            // audio_end_ms — discard it and re-analyze.
+            if duration_ms > 0 && cached.audio_end_ms < duration_ms / 2 {
+                info!(
+                    rating_key = rating_key,
+                    audio_end_ms = cached.audio_end_ms,
+                    duration_ms = duration_ms,
+                    "Discarding stale analysis sidecar (audio_end < 50% of duration)"
+                );
+                // Delete the bad sidecar so it doesn't persist
+                let _ = std::fs::remove_file(sidecar_path(cache_dir, url));
+            } else {
+                store_in_memory(cached.clone());
+                return Some(cached);
+            }
         }
     }
 
