@@ -323,15 +323,12 @@ impl PlexClient {
 
         debug!("Fetching liked tracks for section {} from {}", section_id, url);
 
-        let container: MediaContainer<PlexMedia> = self
+        let container: MediaContainer<Track> = self
             .get_url(&url)
             .await
             .with_context(|| format!("Failed to fetch liked tracks for section {}", section_id))?;
 
-        Ok(container.metadata.into_iter().filter_map(|m| match m {
-            PlexMedia::Track(t) => Some(t),
-            _ => None,
-        }).collect())
+        Ok(container.metadata)
     }
 
     /// Fetch the tracks for a "Mix for You" hub item.
@@ -358,15 +355,12 @@ impl PlexClient {
         debug!("Fetching mix tracks from {}", path);
 
         let url = self.build_url(&path);
-        let container: MediaContainer<PlexMedia> = self
+        let container: MediaContainer<Track> = self
             .get_url(&url)
             .await
             .with_context(|| format!("Failed to fetch mix tracks from {}", path))?;
 
-        Ok(container.metadata.into_iter().filter_map(|m| match m {
-            PlexMedia::Track(t) => Some(t),
-            _ => None,
-        }).collect())
+        Ok(container.metadata)
     }
 
     /// Get available characters for browsing by first letter
@@ -660,5 +654,155 @@ mod tests {
 
         let query = build_query_string(&params);
         assert_eq!(query, "type=track&sort=addedAt:desc&limit=50");
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use crate::plex::client::{PlexClient, PlexClientConfig};
+
+    fn get_client() -> PlexClient {
+        let url = std::env::var("PLEX_URL")
+            .expect("PLEX_URL env var required for integration tests");
+        let token = std::env::var("PLEX_TOKEN")
+            .expect("PLEX_TOKEN env var required for integration tests");
+        PlexClient::new(PlexClientConfig {
+            base_url: url,
+            token,
+            accept_invalid_certs: true,
+            ..Default::default()
+        })
+        .expect("Failed to create PlexClient")
+    }
+
+    async fn get_music_section_id(c: &PlexClient) -> i64 {
+        let sections = c.get_all_sections().await.expect("get_all_sections failed");
+        sections
+            .iter()
+            .find(|s| s.title == "Music")
+            .map(|s| s.key)
+            .expect("No 'Music' section found")
+    }
+
+    /// Diagnostic: print raw JSON fields for a liked track to see what Plex returns.
+    ///
+    /// Run with:
+    ///   PLEX_URL=https://... PLEX_TOKEN=... cargo test -p plexify liked_tracks_raw -- --nocapture --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn test_liked_tracks_raw_json() {
+        let client = get_client();
+        let section_id = get_music_section_id(&client).await;
+
+        let path = format!(
+            "/library/sections/{}/all?type=10&sort=lastRatedAt:desc&userRating>>=0&limit=1",
+            section_id
+        );
+        let raw = client.get_raw(&path).await.expect("get_raw failed");
+
+        // Parse and pretty-print just the first track
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("invalid JSON");
+        let first_track = &json["MediaContainer"]["Metadata"][0];
+
+        println!("\n=== Raw Plex JSON for first liked track ===\n");
+
+        // Print all top-level keys
+        if let Some(obj) = first_track.as_object() {
+            println!("Top-level keys:");
+            for key in obj.keys() {
+                println!("  {}", key);
+            }
+        }
+
+        // Print audio-related fields
+        println!("\n--- Audio fields ---");
+        for key in &[
+            "audioBitrate", "audioChannels", "audioCodec",
+            "bitrate", "codec", "container",
+            "lastRatedAt", "userRating",
+        ] {
+            println!("  {}: {}", key, first_track[key]);
+        }
+
+        // Print Media array
+        println!("\n--- Media array ---");
+        let media = &first_track["Media"];
+        if media.is_null() {
+            println!("  Media: NULL / ABSENT");
+        } else if let Some(arr) = media.as_array() {
+            println!("  Media has {} entries", arr.len());
+            if let Some(m) = arr.first() {
+                if let Some(obj) = m.as_object() {
+                    println!("  Media[0] keys:");
+                    for key in obj.keys() {
+                        println!("    {}", key);
+                    }
+                    println!("  Media[0].bitrate: {}", m["bitrate"]);
+                    println!("  Media[0].audioCodec: {}", m["audioCodec"]);
+                    println!("  Media[0].audioChannels: {}", m["audioChannels"]);
+                    println!("  Media[0].container: {}", m["container"]);
+                }
+
+                // Print Part/Stream info
+                let parts = &m["Part"];
+                if let Some(parts_arr) = parts.as_array() {
+                    println!("\n  Media[0].Part has {} entries", parts_arr.len());
+                    if let Some(p) = parts_arr.first() {
+                        if let Some(obj) = p.as_object() {
+                            println!("  Part[0] keys:");
+                            for key in obj.keys() {
+                                println!("    {}", key);
+                            }
+                        }
+                        let streams = &p["Stream"];
+                        if streams.is_null() {
+                            println!("  Part[0].Stream: NULL / ABSENT");
+                        } else if let Some(streams_arr) = streams.as_array() {
+                            println!("  Part[0].Stream has {} entries", streams_arr.len());
+                            for (i, s) in streams_arr.iter().enumerate() {
+                                println!(
+                                    "    Stream[{}]: type={}, codec={}, bitrate={}, channels={}, samplingRate={}, bitDepth={}",
+                                    i,
+                                    s["streamType"],
+                                    s["codec"],
+                                    s["bitrate"],
+                                    s["channels"],
+                                    s["samplingRate"],
+                                    s["bitDepth"],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also test: what does our deserialized Track look like?
+        println!("\n--- Deserialized Track fields ---");
+        let tracks = client.liked_tracks(section_id, Some(1)).await.expect("liked_tracks failed");
+        if let Some(t) = tracks.first() {
+            println!("  title: {}", t.title);
+            println!("  audio_bitrate: {:?}", t.audio_bitrate);
+            println!("  audio_codec: {:?}", t.audio_codec);
+            println!("  audio_channels: {:?}", t.audio_channels);
+            println!("  last_rated_at: {:?}", t.last_rated_at);
+            println!("  user_rating: {:?}", t.user_rating);
+            println!("  media count: {}", t.media.len());
+            if let Some(m) = t.media.first() {
+                println!("  media[0].bitrate: {:?}", m.bitrate);
+                println!("  media[0].audio_codec: {:?}", m.audio_codec);
+                println!("  media[0].audio_channels: {:?}", m.audio_channels);
+                println!("  media[0].parts count: {}", m.parts.len());
+                if let Some(p) = m.parts.first() {
+                    println!("  media[0].parts[0].streams count: {}", p.streams.len());
+                    for (i, s) in p.streams.iter().enumerate() {
+                        println!(
+                            "    stream[{}]: type={:?}, codec={:?}, bitrate={:?}, channels={:?}",
+                            i, s.stream_type, s.codec, s.bitrate, s.channels
+                        );
+                    }
+                }
+            }
+        }
     }
 }

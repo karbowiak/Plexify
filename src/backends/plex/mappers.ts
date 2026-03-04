@@ -50,8 +50,9 @@ function resolveImg(
 // ---------------------------------------------------------------------------
 
 export function plexTrackToMusicTrack(t: Track, img: ImgResolver): MusicTrack {
-  const stream = t.media?.[0]?.parts?.[0]?.streams?.find(s => s.stream_type === 2)
-  const part = t.media?.[0]?.parts?.[0]
+  const media = t.media?.[0]
+  const stream = media?.parts?.[0]?.streams?.find(s => s.stream_type === 2)
+  const part = media?.parts?.[0]
   const trackId = String(t.rating_key)
   const albumId = t.parent_key ? String(t.parent_key.split("/").pop()) : null
   const artistId = t.grandparent_key ? String(t.grandparent_key.split("/").pop()) : null
@@ -75,9 +76,9 @@ export function plexTrackToMusicTrack(t: Track, img: ImgResolver): MusicTrack {
     addedAt: t.added_at ?? null,
     lastPlayedAt: t.last_viewed_at ?? null,
     guid: t.guid ?? null,
-    codec: stream?.codec ?? t.audio_codec ?? null,
-    bitrate: stream?.bitrate ?? t.audio_bitrate ?? null,
-    channels: stream?.channels ?? t.audio_channels ?? null,
+    codec: stream?.codec ?? media?.audio_codec ?? t.audio_codec ?? null,
+    bitrate: stream?.bitrate ?? media?.bitrate ?? t.audio_bitrate ?? null,
+    channels: stream?.channels ?? media?.audio_channels ?? t.audio_channels ?? null,
     bitDepth: stream?.bit_depth ?? null,
     samplingRate: stream?.sampling_rate ?? null,
     streamUrl: null, // resolved lazily by provider.getStreamUrl()
@@ -92,7 +93,7 @@ export function plexTrackToMusicTrack(t: Track, img: ImgResolver): MusicTrack {
     providerKey: t.key ?? null,
     rawThumbPath: t.thumb ?? t.parent_thumb ?? null,
     mediaInfo: {
-      container: t.media?.[0]?.container ?? null,
+      container: media?.container ?? null,
       fileSize: part?.size ?? null,
       audioStreamId: stream?.id ?? null,
       hasAudioStream: !!part?.key,
