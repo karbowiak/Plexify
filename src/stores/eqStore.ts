@@ -1,14 +1,6 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import { listen } from "@tauri-apps/api/event"
-import {
-  audioSetEq,
-  audioSetEqEnabled,
-  audioSetEqPostgain,
-  audioSetEqPostgainAuto,
-  audioGetCurrentDevice,
-} from "../lib/audio"
-import { fireAndForget } from "../lib/async"
+import { engine } from "../audio/WebAudioEngine"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -51,10 +43,10 @@ function computeAutoPostgainDb(gains: EqGains): number {
   return maxBoost
 }
 
-/** Send postgain state to the audio engine. */
+/** Send postgain state to the Web Audio engine. */
 function sendPostgain(db: number, auto: boolean) {
-  fireAndForget(audioSetEqPostgainAuto(auto))
-  fireAndForget(audioSetEqPostgain(db))
+  engine.setEqPostgainAuto(auto)
+  engine.setEqPostgain(db)
 }
 
 // ---------------------------------------------------------------------------
@@ -108,17 +100,16 @@ export const useEqStore = create<EqState>()(
         }
         set(updates)
         if (get().enabled) {
-          fireAndForget(audioSetEq(next))
-          // Engine auto-computes postgain in SetEq handler when auto mode is on
+          engine.setEq(next)
         }
       },
 
       setEnabled: (enabled) => {
         set({ enabled })
-        fireAndForget(audioSetEqEnabled(enabled))
+        engine.setEqEnabled(enabled)
         if (enabled) {
           const { gains, postgainDb, autoPostgain } = get()
-          fireAndForget(audioSetEq(gains))
+          engine.setEq(gains)
           sendPostgain(postgainDb, autoPostgain)
         }
       },
@@ -130,27 +121,24 @@ export const useEqStore = create<EqState>()(
         }
         set(updates)
         if (get().enabled) {
-          fireAndForget(audioSetEq(preset))
+          engine.setEq(preset)
         }
       },
 
       syncToEngine: () => {
         const { gains, enabled, postgainDb, autoPostgain } = get()
-        fireAndForget(audioSetEqEnabled(enabled))
+        engine.setEqEnabled(enabled)
         if (enabled) {
-          fireAndForget(audioSetEq(gains))
+          engine.setEq(gains)
           sendPostgain(postgainDb, autoPostgain)
         }
-        // Query actual device and set it
-        fireAndForget(audioGetCurrentDevice().then((name) => {
-          if (name) set({ currentDevice: name })
-        }))
+        // Web Audio API uses system default device — no device query needed
       },
 
       setPostgainDb: (db) => {
         set({ postgainDb: db, autoPostgain: false })
-        fireAndForget(audioSetEqPostgainAuto(false))
-        fireAndForget(audioSetEqPostgain(db))
+        engine.setEqPostgainAuto(false)
+        engine.setEqPostgain(db)
       },
 
       setAutoPostgain: (auto) => {
@@ -199,9 +187,9 @@ export const useEqStore = create<EqState>()(
           autoPostgain: profile.autoPostgain,
         })
         // Sync to engine
-        fireAndForget(audioSetEqEnabled(profile.enabled))
+        engine.setEqEnabled(profile.enabled)
         if (profile.enabled) {
-          fireAndForget(audioSetEq(profile.gains))
+          engine.setEq(profile.gains)
           sendPostgain(profile.postgainDb, profile.autoPostgain)
         }
       },
@@ -219,13 +207,4 @@ export const useEqStore = create<EqState>()(
   ),
 )
 
-// ---------------------------------------------------------------------------
-// Device change listener — set up once on import
-// ---------------------------------------------------------------------------
-
-fireAndForget(listen<{ name: string }>("audio-device-changed", (event) => {
-  const name = event.payload?.name
-  if (name) {
-    useEqStore.getState().setCurrentDevice(name)
-  }
-}))
+// No device change listener needed — Web Audio API uses system default

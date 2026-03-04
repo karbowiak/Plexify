@@ -1,18 +1,8 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { listen } from "@tauri-apps/api/event"
 import { fireAndForget } from "../lib/async"
-import {
-  audioPlay,
-  audioPause,
-  audioResume,
-  audioSeek,
-  audioSetVolume,
-  audioStop,
-  audioPreloadNext,
-  audioPrefetch,
-  audioAnalyzeTrack,
-} from "../lib/audio"
+import { engine } from "../audio/WebAudioEngine"
 import type { MusicTrack } from "../types/music"
 import type { LevelData, LyricLineData } from "../providers/types"
 import { useProviderStore } from "./providerStore"
@@ -414,18 +404,15 @@ async function insertDjTracks(
   }
 }
 
-/** Warm the audio disk cache for a track on hover. Deduped per part key. */
+/** Pre-resolve playback URL for a track on hover. Deduped per track id. */
 export function prefetchTrackAudio(track: MusicTrack): void {
   if (_prefetchedPartKeys.has(track.id)) return
   _prefetchedPartKeys.add(track.id)
-  if (track.streamUrl?.startsWith("http")) {
-    fireAndForget(audioPrefetch(track.streamUrl))
-    return
-  }
+  if (track.streamUrl?.startsWith("http")) return
   const provider = getProvider()
   if (!provider) return
-  fireAndForget(provider.getPlaybackInfo(track)
-    .then(info => audioPrefetch(info.url)))
+  // Just resolve the URL so it's cached by the provider — no disk cache needed
+  fireAndForget(provider.getPlaybackInfo(track).then(() => {}))
 }
 
 /**
@@ -520,13 +507,13 @@ function _isPodcastTrack(track: MusicTrack): boolean {
   return pd?.isPodcast === true
 }
 
-/** Send a track to the Rust audio engine for playback. */
+/** Send a track to the Web Audio engine for playback. */
 async function sendToAudioEngine(track: MusicTrack): Promise<void> {
   // Direct URL tracks (podcasts, external audio) bypass provider.getPlaybackInfo()
   if (track.streamUrl?.startsWith("http")) {
     const syntheticKey = Math.abs(hashCode(track.id))
     _ratingKeyToTrackId.set(syntheticKey, track.id)
-    await audioPlay(track.streamUrl, syntheticKey, track.duration, 0, "", track.trackNumber ?? 0, null, true)
+    await engine.play(track.streamUrl, syntheticKey, track.duration, "", null, true)
     return
   }
   const provider = getProvider()
@@ -534,15 +521,15 @@ async function sendToAudioEngine(track: MusicTrack): Promise<void> {
   const info = await provider.getPlaybackInfo(track)
   _ratingKeyToTrackId.set(info.trackKey, track.id)
   const gainDb = await fetchGainDb(track)
-  await audioPlay(
+  await engine.play(
     info.url,
     info.trackKey,
     track.duration,
-    info.partId,
     info.parentKey,
-    track.trackNumber ?? 0,
     gainDb,
   )
+  // Analyze the current track for smart crossfade (outro detection)
+  fireAndForget(engine.analyzeTrack(info.url, info.trackKey, track.duration))
 }
 
 /**
@@ -590,7 +577,7 @@ async function preloadNextTrack(queue: MusicTrack[], queueIndex: number, repeat:
     try {
       const syntheticKey = Math.abs(hashCode(nextTrack.id))
       _ratingKeyToTrackId.set(syntheticKey, nextTrack.id)
-      await audioPreloadNext(nextTrack.streamUrl, syntheticKey, nextTrack.duration, 0, "", nextTrack.trackNumber ?? 0, null, true)
+      await engine.preloadNext(nextTrack.streamUrl, syntheticKey, nextTrack.duration, "", null, true)
     } catch { /* non-critical */ }
     return
   }
@@ -602,13 +589,11 @@ async function preloadNextTrack(queue: MusicTrack[], queueIndex: number, repeat:
     const info = await provider.getPlaybackInfo(nextTrack)
     _ratingKeyToTrackId.set(info.trackKey, nextTrack.id)
     const gainDb = await fetchGainDb(nextTrack)
-    await audioPreloadNext(
+    await engine.preloadNext(
       info.url,
       info.trackKey,
       nextTrack.duration,
-      info.partId,
       info.parentKey,
-      nextTrack.trackNumber ?? 0,
       gainDb,
     )
   } catch {
@@ -760,19 +745,17 @@ function prefetchAhead(queue: MusicTrack[], fromIndex: number, count: number): v
   for (let i = 1; i <= count; i++) {
     const t = queue[fromIndex + i]
     if (!t) continue
-    // Direct URL tracks (podcasts) — prefetch without provider
+    // Direct URL tracks (podcasts) — analyze without provider
     if (t.streamUrl?.startsWith("http")) {
       const key = Math.abs(hashCode(t.id))
       _ratingKeyToTrackId.set(key, t.id)
-      fireAndForget(audioPrefetch(t.streamUrl))
-      fireAndForget(audioAnalyzeTrack(t.streamUrl, key, t.duration))
+      fireAndForget(engine.analyzeTrack(t.streamUrl, key, t.duration))
       continue
     }
     if (!provider) continue
     fireAndForget(provider.getPlaybackInfo(t).then(info => {
       _ratingKeyToTrackId.set(info.trackKey, t.id)
-      fireAndForget(audioPrefetch(info.url))
-      fireAndForget(audioAnalyzeTrack(info.url, info.trackKey, t.duration))
+      fireAndForget(engine.analyzeTrack(info.url, info.trackKey, t.duration))
     }))
   }
 }
@@ -1061,7 +1044,7 @@ export const usePlayerStore = create<PlayerState>()(
   },
 
   stop: () => {
-    fireAndForget(audioStop())
+    engine.stop()
     const { currentTrack, positionMs, isInternetRadioActive } = get()
     // Stop internet radio if active
     if (isInternetRadioActive) {
@@ -1103,7 +1086,7 @@ export const usePlayerStore = create<PlayerState>()(
   },
 
   pause: () => {
-    fireAndForget(audioPause())
+    engine.pause()
     set({ isPlaying: false })
     const { currentTrack, positionMs } = get()
     if (currentTrack) {
@@ -1114,7 +1097,7 @@ export const usePlayerStore = create<PlayerState>()(
   },
 
   resume: () => {
-    fireAndForget(audioResume())
+    engine.resume()
     set({ isPlaying: true })
     const { currentTrack, positionMs } = get()
     if (currentTrack) {
@@ -1167,7 +1150,7 @@ export const usePlayerStore = create<PlayerState>()(
   },
 
   seekTo: (ms: number) => {
-    fireAndForget(audioSeek(ms))
+    engine.seek(ms)
     set({ positionMs: ms })
     const { currentTrack } = get()
     if (currentTrack) {
@@ -1179,7 +1162,7 @@ export const usePlayerStore = create<PlayerState>()(
     const clamped = Math.max(0, Math.min(100, Math.round(v)))
     // Cubic curve: maps 0-100 slider to 0.0-1.0 gain matching human loudness perception
     const gain = clamped <= 0 ? 0 : clamped >= 100 ? 1 : Math.pow(clamped / 100, 3)
-    fireAndForget(audioSetVolume(gain))
+    engine.setVolume(gain)
     // Also route volume to the internet radio HTML5 audio element
     if (get().isInternetRadioActive) {
       import("../lib/radioAudio").then(m => m.radioSetVolume(clamped))
@@ -1252,17 +1235,15 @@ export const usePlayerStore = create<PlayerState>()(
     // Sync persisted volume to the audio engine on every startup.
     get().setVolume(get().volume)
 
-    // Register ALL listeners in parallel to minimize the race window where
-    // events can fire before handlers exist (fixes intermittent first-track-not-starting).
-    const unlisteners = await Promise.all([
-      // Position updates from the Rust audio engine (~4x/sec)
-      listen<{ position_ms: number; duration_ms: number }>("audio://position", (e) => {
+    // Initialize the Web Audio engine with callbacks that replace the Tauri listen("audio://...") calls
+    engine.init({
+      onPosition(positionMs, durationMs) {
         const { currentTrack, queue, queueIndex, repeat, isRadioMode, isPlaying, radioMinQueue } = get()
-        set({ positionMs: e.payload.position_ms })
+        set({ positionMs })
 
         // Trigger pre-load when approaching end of track (30s before end)
-        if (currentTrack && e.payload.duration_ms > 0) {
-          const remaining = e.payload.duration_ms - e.payload.position_ms
+        if (currentTrack && durationMs > 0) {
+          const remaining = durationMs - positionMs
           if (remaining > 0 && remaining < 30000 && remaining > 29500) {
             fireAndForget(preloadNextTrack(queue, queueIndex, repeat))
           }
@@ -1276,33 +1257,30 @@ export const usePlayerStore = create<PlayerState>()(
         // Periodic timeline report every 10s so Plex shows "Now Playing" on
         // other clients and correctly tracks resume position.
         if (isPlaying && currentTrack) {
-          const now = e.payload.position_ms
-          if (now - _lastTimelineReportMs >= TIMELINE_REPORT_INTERVAL_MS) {
-            _lastTimelineReportMs = now
-            _reportProgress(currentTrack.id, "playing", now, currentTrack.duration)
+          if (positionMs - _lastTimelineReportMs >= TIMELINE_REPORT_INTERVAL_MS) {
+            _lastTimelineReportMs = positionMs
+            _reportProgress(currentTrack.id, "playing", positionMs, currentTrack.duration)
           }
         }
-      }),
+      },
 
-      // Playback state changes
-      listen<{ type: string; state: string }>("audio://state", (e) => {
-        const state = e.payload.state
+      onState(state) {
         set({
           isPlaying: state === "playing",
           isBuffering: state === "buffering",
         })
-      }),
+      },
 
       // Track ended naturally — scrobble + handle repeat-one.
       // For gapless/crossfade: track-started fires quickly and cancels the fallback timeout.
-      // For non-gapless (Rust stopped without a preloaded next): the 500ms timeout calls next().
-      listen<{ type: string; rating_key: number }>("audio://track-ended", (e) => {
+      // For non-gapless: the 500ms timeout calls next().
+      onTrackEnded(ratingKey) {
         const { currentTrack, repeat, queueIndex } = get()
-        const endedId = resolveTrackId(e.payload.rating_key)
-        _ratingKeyToTrackId.delete(e.payload.rating_key)
+        const endedId = resolveTrackId(ratingKey)
+        _ratingKeyToTrackId.delete(ratingKey)
         // Only clear waveform/lyrics if this track is still the active one.
-        // If the user already switched tracks, preserve the new track's loaded state.
-        if (currentTrack?.id === endedId) {
+        const isStillActive = currentTrack?.id === endedId
+        if (isStillActive) {
           set({ waveformLevels: null, lyricsLines: null })
         }
         const isPodcast = currentTrack ? _isPodcastTrack(currentTrack) : false
@@ -1311,12 +1289,15 @@ export const usePlayerStore = create<PlayerState>()(
           if (!isPodcast) {
             _reportProgress(currentTrack.id, "stopped", currentTrack.duration, currentTrack.duration)
           }
-          // Notify provider of track end (scrobbling, external integrations) — skip for podcasts
           const provider = getProvider()
           if (provider?.onTrackEnd && !isPodcast) {
             provider.onTrackEnd(currentTrack, _trackStartedAtUnix, get().positionMs)
           }
         }
+
+        // If the queue already advanced (gapless/crossfade onTrackStarted fired first),
+        // don't set the fallback timeout — that would cause a double-skip.
+        if (!isStillActive) return
 
         // Repeat-one: restart the current track immediately
         if (repeat === 1) {
@@ -1330,29 +1311,25 @@ export const usePlayerStore = create<PlayerState>()(
           _gaplessTimeoutId = null
           get().next()
         }, 500)
-      }),
+      },
 
-      // Track started — fired for gapless transitions, crossfade completions, and user-initiated plays.
-      // For gapless/crossfade: advance queue state without calling audioPlay() (audio is already playing).
+      // Track started — fired for gapless transitions and crossfade completions.
       // For user-initiated plays: currentTrack already matches, so we skip.
-      listen<{ type: string; rating_key: number; duration_ms?: number }>("audio://track-started", (e) => {
-        // Cancel the non-gapless fallback timeout — Rust handled the transition
+      onTrackStarted(ratingKey, durationMs) {
+        // Cancel the non-gapless fallback timeout — engine handled the transition
         if (_gaplessTimeoutId !== null) {
           clearTimeout(_gaplessTimeoutId)
           _gaplessTimeoutId = null
         }
 
-        const startedId = resolveTrackId(e.payload.rating_key)
+        const startedId = resolveTrackId(ratingKey)
         const { currentTrack, queue, queueIndex, repeat, isRadioMode, radioMinQueue,
                 playlistKey, playlistLoadedCount, playlistTotalCount } = get()
 
-        // User-initiated play: playAtIndex() already updated state — nothing to do here,
-        // but still fetch waveform if it hasn't been loaded yet (playAtIndex fetches it too,
-        // this handles the rare race where track-started fires before the fetch completes).
+        // User-initiated play: playAtIndex() already updated state
         if (currentTrack?.id === startedId) {
-          // Apply corrected duration from Rust (e.g. Deezer preview ~30s vs API duration ~172s)
-          if (e.payload.duration_ms && e.payload.duration_ms !== currentTrack.duration) {
-            set({ currentTrack: { ...currentTrack, duration: e.payload.duration_ms } })
+          if (durationMs && durationMs !== currentTrack.duration) {
+            set({ currentTrack: { ...currentTrack, duration: durationMs } })
           }
           return
         }
@@ -1371,13 +1348,12 @@ export const usePlayerStore = create<PlayerState>()(
         const track = queue[nextIndex]
         if (!track) return
 
-        // Advance queue state — audio is already playing, do NOT call audioPlay()
+        // Advance queue state — audio is already playing
         _onTrackBecomesActive(track, nextIndex, get, set)
 
-        // Apply corrected duration from Rust (e.g. Deezer preview ~30s vs API duration ~172s)
-        if (e.payload.duration_ms && e.payload.duration_ms !== track.duration) {
-          const correctedMs = e.payload.duration_ms
-          const correctedTrack = { ...track, duration: correctedMs }
+        // Apply corrected duration
+        if (durationMs && durationMs !== track.duration) {
+          const correctedTrack = { ...track, duration: durationMs }
           set((s: PlayerState) => ({
             currentTrack: correctedTrack,
             queue: s.queue.map((t, i) => i === nextIndex ? correctedTrack : t),
@@ -1397,16 +1373,24 @@ export const usePlayerStore = create<PlayerState>()(
         if (isRadioMode && queue.length - nextIndex - 1 < radioMinQueue) {
           fireAndForget(appendRadioTracks(get, set as never))
         }
-      }),
+      },
 
-      // Audio errors — surface to UI so the user sees feedback instead of silent failure
-      listen<{ type: string; message: string }>("audio://error", (e) => {
-        console.error("Audio engine error:", e.payload.message)
-        set({ playerError: e.payload.message })
+      onError(message) {
+        console.error("Audio engine error:", message)
+        set({ playerError: message })
         setTimeout(() => set({ playerError: null }), 6000)
-      }),
+      },
 
-      // Media key / Now Playing events forwarded from the Rust souvlaki integration
+      onVisFrame(samples) {
+        // Dynamically import to avoid circular dependency
+        import("./visualizerStore").then(m => {
+          m.useVisualizerStore.getState().pushPcm(Array.from(samples))
+        })
+      },
+    })
+
+    // Media key / Now Playing events forwarded from the Rust souvlaki integration
+    const unlisteners = await Promise.all([
       listen("media://play-pause", () => {
         const { isPlaying, currentTrack } = get()
         if (!currentTrack) return

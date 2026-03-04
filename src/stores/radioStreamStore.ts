@@ -4,7 +4,7 @@ import { idbJSONStorage } from "./idbStorage"
 import type { RadioStation } from "../lib/radiobrowser"
 import { radiobrowserClick } from "../lib/radiobrowser"
 import { radioPlay, radioStop, radioPause, radioResume, radioSetVolume, radioOnEvents } from "../lib/radioAudio"
-import { audioStop } from "../lib/audio"
+import { engine } from "../audio/WebAudioEngine"
 import { usePlayerStore } from "./playerStore"
 
 const MAX_RECENT = 50
@@ -49,8 +49,8 @@ export const useRadioStreamStore = create<RadioStreamState>()(
         _unlisten?.()
         _unlisten = null
 
-        // Stop the Rust audio engine (Plex playback)
-        audioStop().catch(() => {})
+        // Stop the Web Audio engine (Plex playback)
+        engine.stop()
         // Clear Plex player state
         usePlayerStore.setState({
           isPlaying: false,

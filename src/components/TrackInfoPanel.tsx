@@ -5,7 +5,7 @@ import { formatMs, formatSize, formatSampleRate } from "../lib/formatters"
 import type { MusicTrack } from "../types/music"
 import { useTrackEnrichment } from "../hooks/useMetadataEnrichment"
 import { useDebugStore } from "../stores/debugStore"
-import { audioGetTrackAnalysis, type TrackAnalysis } from "../lib/audio"
+import { engine, type TrackAnalysis } from "../audio/WebAudioEngine"
 import { useAudioSettingsStore } from "../stores/audioSettingsStore"
 
 
@@ -39,11 +39,13 @@ export default function TrackInfoPanel({ onClose }: Props) {
     if (!currentTrack) return
     let cancelled = false
     const fetchAnalysis = () => {
-      audioGetTrackAnalysis(Number(currentTrack.id)).then(a => { if (!cancelled) setCurrentAnalysis(a) }).catch(() => {})
+      const a = engine.getTrackAnalysis(Number(currentTrack.id))
+      if (!cancelled) setCurrentAnalysis(a)
       if (nextTrack) {
-        audioGetTrackAnalysis(Number(nextTrack.id)).then(a => { if (!cancelled) setNextAnalysis(a) }).catch(() => {})
+        const na = engine.getTrackAnalysis(Number(nextTrack.id))
+        if (!cancelled) setNextAnalysis(na)
       } else {
-        setNextAnalysis(null)
+        if (!cancelled) setNextAnalysis(null)
       }
     }
     fetchAnalysis()

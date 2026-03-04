@@ -1,6 +1,4 @@
-import { useEffect, useState } from "react"
-import { useEqStore, EQ_LABELS, EQ_PRESETS, type EqGains } from "../stores/eqStore"
-import { audioGetOutputDevices } from "../lib/audio"
+import { useEqStore, EQ_LABELS, EQ_PRESETS } from "../stores/eqStore"
 
 const MIN_DB = -12
 const MAX_DB = 12
@@ -27,26 +25,8 @@ export default function EqPanel({ onClose }: Props) {
     currentDevice, deviceProfiles, saveProfileForDevice, deleteProfileForDevice,
   } = useEqStore()
 
-  const [devices, setDevices] = useState<{ name: string; connected: boolean }[]>([])
-
-  useEffect(() => {
-    audioGetOutputDevices().then((connected) => {
-      const connectedSet = new Set(connected)
-      // Union of currently connected devices + any devices with saved profiles
-      const profileDevices = Object.keys(deviceProfiles)
-      const allNames = new Set([...connected, ...profileDevices])
-      const list = [...allNames]
-        .map((name) => ({ name, connected: connectedSet.has(name) }))
-        .sort((a, b) => {
-          if (a.name === currentDevice) return -1
-          if (b.name === currentDevice) return 1
-          if (a.connected && !b.connected) return -1
-          if (!a.connected && b.connected) return 1
-          return a.name.localeCompare(b.name)
-        })
-      setDevices(list)
-    }).catch(() => {})
-  }, [currentDevice, deviceProfiles])
+  // Device profiles section — show saved profiles only (no OS device enumeration with Web Audio)
+  const profileDevices = Object.keys(deviceProfiles)
 
   return (
     <>
@@ -180,12 +160,12 @@ export default function EqPanel({ onClose }: Props) {
         )}
       </div>
 
-      {/* Device Profiles */}
-      {devices.length > 0 && (
+      {/* Device Profiles — only show if profiles exist */}
+      {profileDevices.length > 0 && (
         <div className={`px-4 py-2 border-t border-[var(--border)] transition-opacity ${!enabled ? "opacity-40 pointer-events-none" : ""}`}>
           <span className="text-[11px] text-white/40 font-semibold uppercase tracking-wider">Device Profiles</span>
           <div className="mt-1.5 flex flex-col gap-1">
-            {devices.map(({ name: dev, connected }) => {
+            {profileDevices.map((dev) => {
               const hasProfile = !!deviceProfiles[dev]
               const isActive = dev === currentDevice
               return (
@@ -195,13 +175,11 @@ export default function EqPanel({ onClose }: Props) {
                     isActive ? "bg-white/5" : ""
                   }`}
                 >
-                  {isActive ? (
+                  {isActive && (
                     <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
-                  ) : !connected ? (
-                    <span className="w-1.5 h-1.5 rounded-full bg-white/20 shrink-0" />
-                  ) : null}
+                  )}
                   <span className={`truncate flex-1 ${
-                    isActive ? "text-white" : connected ? "text-white/50" : "text-white/25 italic"
+                    isActive ? "text-white" : "text-white/50"
                   }`}>
                     {dev}
                   </span>

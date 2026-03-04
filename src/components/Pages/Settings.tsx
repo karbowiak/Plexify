@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react"
 import { useLocation } from "wouter"
 import { open } from "@tauri-apps/plugin-shell"
 import clsx from "clsx"
-import { audioCacheInfo, audioClearCache, audioSetCacheMaxBytes, audioGetOutputDevices } from "../../lib/audio"
+// Audio cache and device APIs removed — Web Audio engine uses browser-managed resources
 import { clearImageCache, getImageCacheInfo, type ImageCacheInfo } from "../../lib/imageCache"
 import { getVersion } from "@tauri-apps/api/app"
 import { useAudioSettingsStore } from "../../stores/audioSettingsStore"
@@ -207,17 +207,6 @@ function SettingCard({
 // Playback section
 // ---------------------------------------------------------------------------
 
-const CACHE_SIZE_KEY = "plexify-audio-cache-max-bytes"
-
-const CACHE_OPTIONS = [
-  { label: "256 MB", bytes: 268_435_456 },
-  { label: "512 MB", bytes: 536_870_912 },
-  { label: "1 GB", bytes: 1_073_741_824 },
-  { label: "2 GB", bytes: 2_147_483_648 },
-  { label: "4 GB", bytes: 4_294_967_296 },
-  { label: "Unlimited", bytes: 0 },
-] as const
-
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"
   const units = ["B", "KB", "MB", "GB"]
@@ -239,59 +228,15 @@ const CROSSFADE_OPTIONS = [
   { label: "30s",  ms: 30000 },
 ] as const
 
-const CROSSFADE_STYLE_OPTIONS = [
-  { value: 0, label: "Smooth" },
-  { value: 1, label: "DJ Filter" },
-  { value: 2, label: "Echo Out" },
-  { value: 3, label: "Hard Cut" },
-] as const
-
 function PlaybackSection() {
-  const [cacheInfo, setCacheInfo] = useState<{ size_bytes: number; file_count: number } | null>(null)
-  const [maxBytes, setMaxBytes] = useState<number>(1_073_741_824)
-  const [isClearing, setIsClearing] = useState(false)
-  const [outputDevices, setOutputDevices] = useState<string[]>([])
-  const [customCache, setCustomCache] = useState("")
-  const isCustomCacheSize = !CACHE_OPTIONS.some(o => o.bytes === maxBytes)
-
   const {
     normalizationEnabled, setNormalizationEnabled,
     crossfadeWindowMs, setCrossfadeWindowMs,
-    crossfadeStyle, setCrossfadeStyle,
     sameAlbumCrossfade, setSameAlbumCrossfade,
     smartCrossfade, setSmartCrossfade,
     preampDb, setPreampDb,
     albumGainMode, setAlbumGainMode,
-    preferredDevice, setPreferredDevice,
   } = useAudioSettingsStore()
-
-  useEffect(() => {
-    const saved = localStorage.getItem(CACHE_SIZE_KEY)
-    const savedBytes = saved !== null ? parseInt(saved, 10) : 1_073_741_824
-    if (!isNaN(savedBytes)) {
-      setMaxBytes(savedBytes)
-      void audioSetCacheMaxBytes(savedBytes).catch(() => {})
-    }
-    void audioCacheInfo().then(info => setCacheInfo(info)).catch(() => {})
-    void audioGetOutputDevices().then(devs => setOutputDevices(devs)).catch(() => {})
-  }, [])
-
-  async function handleMaxChange(bytes: number) {
-    setMaxBytes(bytes)
-    localStorage.setItem(CACHE_SIZE_KEY, String(bytes))
-    await audioSetCacheMaxBytes(bytes).catch(() => {})
-  }
-
-  async function handleClear() {
-    setIsClearing(true)
-    try {
-      await audioClearCache()
-      const info = await audioCacheInfo()
-      setCacheInfo(info)
-    } finally {
-      setIsClearing(false)
-    }
-  }
 
   return (
     <div className="flex flex-col gap-5 max-w-2xl">
@@ -337,18 +282,6 @@ function PlaybackSection() {
           </SettingRow>
 
           {crossfadeWindowMs > 0 && (
-            <SettingRow label="Style" description="Controls how the two tracks are blended during a crossfade transition.">
-              <PillGroup
-                options={CROSSFADE_STYLE_OPTIONS}
-                value={CROSSFADE_STYLE_OPTIONS.find(o => o.value === crossfadeStyle) ?? CROSSFADE_STYLE_OPTIONS[0]}
-                onChange={opt => setCrossfadeStyle(opt.value)}
-                getLabel={opt => opt.label}
-                isActive={(opt, val) => opt.value === val.value}
-              />
-            </SettingRow>
-          )}
-
-          {crossfadeWindowMs > 0 && (
             <SettingRow label="Smart crossfade" description="Analyses tracks to skip trailing silence, align crossfades to natural fade-outs, and adapt duration to each transition." inline>
               <Toggle value={smartCrossfade} onChange={setSmartCrossfade} />
             </SettingRow>
@@ -365,110 +298,6 @@ function PlaybackSection() {
         </div>
       </SettingCard>
 
-      {/* Output Device */}
-      <SettingCard title="Output Device" description="Select which audio device to use for playback. Takes effect on the next track.">
-        {outputDevices.length === 0 ? (
-          <p className="text-xs text-white/30">No output devices found.</p>
-        ) : (
-          <div className="flex gap-2 flex-wrap">
-            <button
-              onClick={() => setPreferredDevice(null)}
-              className={clsx(
-                "rounded-full px-4 py-1.5 text-sm transition-colors",
-                preferredDevice === null
-                  ? "bg-accent text-black font-semibold"
-                  : "bg-white/10 text-white hover:bg-white/20"
-              )}
-            >
-              System Default
-            </button>
-            {outputDevices.map(dev => (
-              <button
-                key={dev}
-                onClick={() => setPreferredDevice(dev)}
-                className={clsx(
-                  "rounded-full px-4 py-1.5 text-sm transition-colors",
-                  preferredDevice === dev
-                    ? "bg-accent text-black font-semibold"
-                    : "bg-white/10 text-white hover:bg-white/20"
-                )}
-              >
-                {dev}
-              </button>
-            ))}
-          </div>
-        )}
-      </SettingCard>
-
-      {/* Audio Cache */}
-      <SettingCard title="Audio Cache">
-        <div className="flex flex-col gap-5">
-          <SettingRow label="Cache Size Limit" description="Tracks are cached to disk for instant replay. Older files are removed automatically when the limit is reached.">
-            <div className="flex flex-col gap-3">
-              <div className="flex gap-2 flex-wrap">
-                {CACHE_OPTIONS.map(opt => (
-                  <button
-                    key={opt.bytes}
-                    onClick={() => { void handleMaxChange(opt.bytes); setCustomCache("") }}
-                    className={clsx(
-                      "rounded-full px-4 py-1.5 text-sm transition-colors",
-                      maxBytes === opt.bytes && !customCache
-                        ? "bg-accent text-black font-semibold"
-                        : "bg-white/10 text-white hover:bg-white/20"
-                    )}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <input
-                    type="number"
-                    value={customCache}
-                    onChange={e => {
-                      const raw = e.target.value
-                      setCustomCache(raw)
-                      const mb = parseInt(raw, 10)
-                      if (mb >= 64) void handleMaxChange(mb * 1024 * 1024)
-                    }}
-                    placeholder={isCustomCacheSize ? String(Math.round(maxBytes / (1024 * 1024))) : "Custom"}
-                    min={64}
-                    className={clsx(
-                      "w-28 rounded-lg bg-white/10 py-1.5 px-3 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:ring-1 transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
-                      isCustomCacheSize ? "ring-1 ring-accent" : "focus:ring-white/30"
-                    )}
-                  />
-                </div>
-                <span className="text-xs text-white/30">MB</span>
-                {isCustomCacheSize && (
-                  <span className="text-xs text-white/40">{formatBytes(maxBytes)}</span>
-                )}
-              </div>
-            </div>
-          </SettingRow>
-
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-white/80">Cache Usage</p>
-              {cacheInfo ? (
-                <p className="text-xs text-white/40 mt-0.5">
-                  {formatBytes(cacheInfo.size_bytes)} used · {cacheInfo.file_count} {cacheInfo.file_count === 1 ? "file" : "files"}
-                </p>
-              ) : (
-                <p className="text-xs text-white/30 mt-0.5">Loading…</p>
-              )}
-            </div>
-            <button
-              onClick={() => void handleClear()}
-              disabled={isClearing || cacheInfo?.file_count === 0}
-              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-            >
-              {isClearing ? "Clearing…" : "Clear Cache"}
-            </button>
-          </div>
-        </div>
-      </SettingCard>
     </div>
   )
 }

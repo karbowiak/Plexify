@@ -7,7 +7,7 @@ import { useUIStore } from "../stores/uiStore"
 import { useEqStore } from "../stores/eqStore"
 import { useAudioSettingsStore } from "../stores/audioSettingsStore"
 import { useVisualizerStore } from "../stores/visualizerStore"
-import { audioSetCacheMaxBytes, audioSetVisualizerEnabled } from "../lib/audio"
+import { engine } from "../audio/WebAudioEngine"
 import { formatMs } from "../lib/formatters"
 import { IconBlockquote, IconZzz, IconActivity, IconMaximize, IconAdjustments, IconPlaylist, IconVolume, IconVolume2, IconVolumeOff, IconHeadphones, IconArrowsCross } from "@tabler/icons-react"
 import { useCapability } from "../hooks/useCapability"
@@ -28,8 +28,6 @@ import { useEasterEggs } from "../hooks/useEasterEggs"
 import { useEasterEggStore } from "../stores/easterEggStore"
 import { ImageModal } from "./shared/ImageModal"
 import { IconChevronUp, IconChevronDown } from "@tabler/icons-react"
-
-const CACHE_SIZE_KEY = "plexify-audio-cache-max-bytes"
 
 // ---------------------------------------------------------------------------
 // RadioPlayerBar — shown when internet radio is active
@@ -343,9 +341,7 @@ export function Player() {
     toggleArtExpanded: s.toggleArtExpanded,
   })))
   const { enabled: eqEnabled, syncToEngine } = useEqStore(useShallow(s => ({ enabled: s.enabled, syncToEngine: s.syncToEngine })))
-  const { crossfadeStyle, crossfadeWindowMs: cfWindowMs, setCrossfadeStyle } = useAudioSettingsStore(
-    useShallow(s => ({ crossfadeStyle: s.crossfadeStyle, crossfadeWindowMs: s.crossfadeWindowMs, setCrossfadeStyle: s.setCrossfadeStyle }))
-  )
+  const cfWindowMs = useAudioSettingsStore(s => s.crossfadeWindowMs)
   const syncAudioSettings = useAudioSettingsStore(s => s.syncToEngine)
   const hasRadio = useCapability("radio")
   const hasDjModes = useCapability("djModes")
@@ -372,15 +368,8 @@ export function Player() {
     onLongPress: stop,
   })
 
-  // Initialize Rust audio engine event listeners on mount.
-  // Also apply any persisted cache size limit before playback starts.
+  // Initialize Web Audio engine event listeners on mount.
   useEffect(() => {
-    const saved = localStorage.getItem(CACHE_SIZE_KEY)
-    if (saved !== null) {
-      const bytes = parseInt(saved, 10)
-      if (!isNaN(bytes)) void audioSetCacheMaxBytes(bytes).catch(() => {})
-    }
-
     let cleanup: (() => void) | undefined
     hydrateSleepTimer()
     initAudioEvents().then((fn) => {
@@ -393,23 +382,14 @@ export function Player() {
     }
   }, [])
 
-  // Forward PCM frames from the Rust audio engine into the visualizer ring buffer.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined
-    void (async () => {
-      const { listen } = await import("@tauri-apps/api/event")
-      unlisten = await listen<number[]>("audio://vis-frame", (e) => {
-        useVisualizerStore.getState().pushPcm(e.payload)
-      })
-    })()
-    return () => { unlisten?.() }
-  }, [])
+  // The Web Audio engine sends vis frames via the onVisFrame callback set in initAudioEvents.
+  // No separate Tauri listener needed.
 
   // Gate PCM bridge — only run when a live-data visualizer mode or party mode is active
   const partyMode = useEasterEggStore(s => s.partyMode)
   useEffect(() => {
     const needsPcm = compactMode !== "waveform" || fullscreenOpen || partyMode
-    void audioSetVisualizerEnabled(needsPcm).catch(() => {})
+    engine.setVisualizerEnabled(needsPcm)
   }, [compactMode, fullscreenOpen, partyMode])
 
   // Media session action handlers — wire OS media keys / headphone controls / Control Center
@@ -520,15 +500,7 @@ export function Player() {
   // Short DJ name (strip "DJ " prefix) for inline display
   const djShortName = djMode ? DJ_MODES.find(d => d.key === djMode)?.name.replace("DJ ", "") ?? djMode : null
 
-  // Crossfade style labels & cycling
-  const CROSSFADE_STYLES = [
-    { value: 0, short: "Smooth", label: "Smooth crossfade" },
-    { value: 1, short: "Filter", label: "DJ Filter crossfade" },
-    { value: 2, short: "Echo", label: "Echo Out crossfade" },
-    { value: 3, short: "Cut", label: "Hard Cut crossfade" },
-  ] as const
-  const cfStyleInfo = CROSSFADE_STYLES.find(s => s.value === crossfadeStyle) ?? CROSSFADE_STYLES[0]
-  const cfActive = crossfadeStyle !== 0 && cfWindowMs > 0
+  const cfActive = cfWindowMs > 0
 
   // When internet radio is active, show the radio-specific player bar
   if (isInternetRadioActive) return <RadioPlayerBar />
@@ -819,22 +791,15 @@ export function Player() {
                   {(close) => <DjPanel onClose={close} />}
                 </PlayerPopover>}
 
-                {/* Crossfade style — cycle through Smooth/Filter/Echo/Cut */}
-                {cfWindowMs > 0 && (
-                  <button
-                    onClick={() => setCrossfadeStyle((crossfadeStyle + 1) % 4)}
-                    title={cfStyleInfo.label}
-                    className={`flex items-center gap-1 rounded-full transition-colors ${
-                      cfActive
-                        ? "bg-accent/15 px-2.5 h-7 text-accent"
-                        : "h-8 w-8 justify-center text-white/40 hover:text-white/70"
-                    }`}
+                {/* Crossfade indicator */}
+                {cfActive && (
+                  <div
+                    title={`Crossfade: ${cfWindowMs / 1000}s`}
+                    className="flex items-center gap-1 rounded-full bg-accent/15 px-2.5 h-7 text-accent"
                   >
-                    <IconArrowsCross size={cfActive ? 14 : 18} stroke={1.5} />
-                    {cfActive && (
-                      <span className="text-[0.6875rem] font-semibold">{cfStyleInfo.short}</span>
-                    )}
-                  </button>
+                    <IconArrowsCross size={14} stroke={1.5} />
+                    <span className="text-[0.6875rem] font-semibold">{cfWindowMs / 1000}s</span>
+                  </div>
                 )}
 
                 {/* Lyrics — only shown when lyrics are available */}
