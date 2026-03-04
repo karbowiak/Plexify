@@ -17,8 +17,8 @@
 
 import { IS_WINDOWS } from "./platform"
 
-// Tauri v2: WebView2 on Windows serves custom protocols as https://{scheme}.localhost/
-const IMAGE_BASE = IS_WINDOWS ? "https://image.localhost" : "image://localhost"
+// Tauri v2: WebView2 on Windows serves custom protocols as http://{scheme}.localhost/
+const IMAGE_BASE = IS_WINDOWS ? "http://image.localhost" : "image://localhost"
 
 type EntityType = "artist" | "album" | "track" | "playlist"
 
