@@ -144,7 +144,9 @@ export function Playlist({ playlistId }: { playlistId: string }) {
   const totalMs = currentPlaylistItems.reduce((sum, t) => sum + t.duration, 0)
 
   // URI for server-side play queue — enables full-playlist shuffle regardless of loaded count.
-  const playlistUri = provider?.buildItemUri?.(`/library/metadata/${playlistId}`) ?? null
+  const playlistUri = currentPlaylist?.providerKey && provider?.buildPlaylistUri
+    ? provider.buildPlaylistUri(currentPlaylist.providerKey)
+    : null
 
   // Height of the virtual spacer for unloaded tracks.
   // Zero when fully loaded — avoids leftover space when Plex's leaf_count

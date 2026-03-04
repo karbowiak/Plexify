@@ -131,6 +131,7 @@ export interface MusicProvider {
   // --- URI builders (needed by stores for queue creation) ---
   buildItemUri?(itemKey: string): string
   buildDirectoryUri?(itemKey: string): string
+  buildPlaylistUri?(playlistKey: string): string
   buildRadioUri?(stationKey: string): string
   buildTagFilterUri?(tagType: string, tagValue: string): string
 

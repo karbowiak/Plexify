@@ -244,9 +244,9 @@ export function ContextMenu() {
     const href = `/playlist/${playlist.id}`
 
     function doPlayPlaylist() {
-      if (!provider?.buildItemUri) return
+      if (!provider?.buildPlaylistUri || !playlist!.providerKey) return
       void playFromUri(
-        provider.buildItemUri(playlist!.providerKey ?? `/library/metadata/${playlist!.id}`),
+        provider.buildPlaylistUri(playlist!.providerKey),
         false,
         playlist!.title,
         href,
@@ -255,9 +255,9 @@ export function ContextMenu() {
     }
 
     function doShufflePlaylist() {
-      if (!provider?.buildItemUri) return
+      if (!provider?.buildPlaylistUri || !playlist!.providerKey) return
       void playFromUri(
-        provider.buildItemUri(playlist!.providerKey ?? `/library/metadata/${playlist!.id}`),
+        provider.buildPlaylistUri(playlist!.providerKey),
         true,
         playlist!.title,
         href,

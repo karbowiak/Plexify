@@ -62,11 +62,13 @@ export class PlexProvider implements MusicProvider {
   private _token = ""
   private _sectionId: number | null = null
   private _sectionUuid: string | null = null
+  private _machineIdentifier = ""
 
   get sectionId(): number | null { return this._sectionId }
   get sectionUuid(): string | null { return this._sectionUuid }
   get baseUrl(): string { return this._baseUrl }
   get token(): string { return this._token }
+  get machineIdentifier(): string { return this._machineIdentifier }
 
   /** Image resolver bound to current connection credentials. */
   private img: ImgResolver = () => ""
@@ -92,6 +94,7 @@ export class PlexProvider implements MusicProvider {
     this._token = token
     this._sectionId = sectionId
     this._sectionUuid = sectionUuid
+    this._machineIdentifier = (config.machineIdentifier as string) ?? ""
     this.rebuildImg()
     this._connected = true
   }
@@ -418,6 +421,11 @@ export class PlexProvider implements MusicProvider {
   buildRadioUri(stationKey: string): string {
     if (!this._sectionUuid) throw new Error("PlexProvider: no section UUID")
     return plex.buildRadioPlayQueueUri(this._sectionUuid, stationKey)
+  }
+
+  buildPlaylistUri(playlistKey: string): string {
+    if (!this._machineIdentifier) throw new Error("PlexProvider: no machine identifier")
+    return plex.buildPlaylistUri(this._machineIdentifier, playlistKey)
   }
 
   buildTagFilterUri(tagType: string, tagValue: string): string {

@@ -4,6 +4,7 @@ import { useProviderStore } from "../../stores/providerStore"
 import { useLibraryStore } from "../../stores/libraryStore"
 import {
   connectPlex,
+  getIdentity,
   getLibrarySections,
   loadSettings,
   saveSettings,
@@ -78,9 +79,12 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       const sectionId = musicSection?.key ?? null
       const sectionUuid = musicSection?.uuid ?? null
 
+      // Fetch machine identifier for server-level URIs (playlists)
+      const identity = await getIdentity()
+
       // Create and register the PlexProvider in the global provider store
       const provider = new PlexProvider()
-      await provider.connect({ baseUrl, token, sectionId, sectionUuid })
+      await provider.connect({ baseUrl, token, sectionId, sectionUuid, machineIdentifier: identity.machine_identifier })
       useProviderStore.getState().setProvider(provider)
 
       set({

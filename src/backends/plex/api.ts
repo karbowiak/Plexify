@@ -806,6 +806,11 @@ export function buildItemUri(sectionUuid: string, itemKey: string): string {
   return `library://${sectionUuid}/item/${itemKey}`
 }
 
+/** Build a server-level URI for playlists (which aren't scoped to a library section). */
+export function buildPlaylistUri(machineIdentifier: string, playlistKey: string): string {
+  return `server://${machineIdentifier}/com.plexapp.plugins.library${playlistKey}`
+}
+
 /** Build a library directory URI for an album or playlist's children. */
 export function buildDirectoryUri(sectionUuid: string, itemKey: string): string {
   return `library://${sectionUuid}/directory/${itemKey}/children`
