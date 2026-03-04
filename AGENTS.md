@@ -1,3 +1,11 @@
+## Project Configuration
+
+- **Language**: TypeScript
+- **Package Manager**: bun
+- **Add-ons**: prettier, sveltekit-adapter, devtools-json, eslint
+
+---
+
 Plex official API: https://developer.plex.tv/pms/
 (To access library api documentation for example use https://developer.plex.tv/pms/#tag/Library - so /pms/#tag/{thing you want})
 

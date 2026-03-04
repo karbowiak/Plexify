@@ -1,0 +1,114 @@
+@import 'tailwindcss';
+
+@theme {
+	--color-bg-base: #08080c;
+	--color-bg-surface: #0f1014;
+	--color-bg-elevated: #16161e;
+	--color-bg-highlight: #1e1e28;
+	--color-bg-hover: #262630;
+	--color-text-primary: #f0f0f0;
+	--color-text-secondary: #a8a8b3;
+	--color-text-muted: #5a5a6e;
+	--color-accent: #1db954;
+	--color-accent-hover: #1ed760;
+	--color-accent-secondary: #e8a849;
+	--color-accent-secondary-hover: #f0b85a;
+	--color-surface-tint: rgba(99, 74, 218, 0.07);
+	--color-glow-accent: rgba(29, 185, 84, 0.15);
+	--color-accent-tint: rgba(29, 185, 84, 0.1);
+	--color-accent-tint-subtle: rgba(29, 185, 84, 0.03);
+	--color-accent-tint-strong: rgba(29, 185, 84, 0.15);
+	--color-accent-tint-hover: rgba(29, 185, 84, 0.06);
+	--color-overlay: rgba(255, 255, 255, 0.06);
+	--color-overlay-hover: rgba(255, 255, 255, 0.1);
+	--color-overlay-subtle: rgba(255, 255, 255, 0.04);
+	--color-overlay-medium: rgba(255, 255, 255, 0.12);
+	--color-border: rgba(255, 255, 255, 0.06);
+	--color-scrollbar-thumb: rgba(160, 160, 190, 0.12);
+	--color-scrollbar-thumb-hover: rgba(160, 160, 190, 0.22);
+	--color-range-track: rgba(255, 255, 255, 0.2);
+	--spacing-sidebar: 260px;
+	--spacing-topbar: 64px;
+	--spacing-player: 90px;
+	--card-scale: 1;
+	--highlight-intensity: 1;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	height: 100%;
+	overflow: hidden;
+	background: var(--color-bg-base);
+	color: var(--color-text-primary);
+	font-family: var(
+		--font-family,
+		-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Fira Sans',
+		'Droid Sans', 'Helvetica Neue', sans-serif
+	);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+	width: 8px;
+}
+
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+	background: var(--color-scrollbar-thumb);
+	border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: var(--color-scrollbar-thumb-hover);
+}
+
+/* Range slider styling */
+input[type='range'] {
+	-webkit-appearance: none;
+	appearance: none;
+	height: 20px;
+	border-radius: 2px;
+	background: transparent;
+	background-size: 100% 4px;
+	background-repeat: no-repeat;
+	background-position: center;
+	background-image: linear-gradient(var(--color-range-track), var(--color-range-track));
+	outline: none;
+	cursor: pointer;
+}
+
+input[type='range']::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: var(--color-accent);
+	opacity: 0;
+	transition: opacity 0.15s;
+}
+
+input[type='range']:hover::-webkit-slider-thumb {
+	opacity: 1;
+}
+
+input[type='range']::-moz-range-thumb {
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: var(--color-accent);
+	border: none;
+	opacity: 0;
+	transition: opacity 0.15s;
+}
+
+input[type='range']:hover::-moz-range-thumb {
+	opacity: 1;
+}
