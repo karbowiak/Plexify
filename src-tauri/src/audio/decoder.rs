@@ -205,7 +205,8 @@ pub fn decoder_thread(
                                 state.sample_buf = Some(SampleBuffer::new(num_frames as u64, spec));
                             }
 
-                            let sb = state.sample_buf.as_mut().unwrap();
+                            let sb = state.sample_buf.as_mut()
+                                .expect("BUG: sample_buf should be initialized above");
                             sb.copy_interleaved_ref(audio_buf);
 
                             let raw_samples: Vec<f32> = sb.samples().to_vec();
@@ -319,8 +320,13 @@ pub fn decoder_thread(
                                 };
 
                                 if pos_ms >= crossfade_start {
-                                    let next_url =
-                                        state.next_meta.as_ref().unwrap().url.clone();
+                                    // Re-check next_meta — a Play command processed during the
+                                    // ring buffer push loop can clear it between iterations.
+                                    let Some(next_meta_ref) = state.next_meta.as_ref() else {
+                                        warn!("Crossfade trigger: next_meta vanished (likely preempted by Play command)");
+                                        continue;
+                                    };
+                                    let next_url = next_meta_ref.url.clone();
                                     let is_cached = shared
                                         .cache_dir
                                         .as_ref()
@@ -369,8 +375,10 @@ pub fn decoder_thread(
                                                     }
                                                 }
 
-                                                let next_meta_ref =
-                                                    state.next_meta.as_ref().unwrap();
+                                                let Some(next_meta_ref) = state.next_meta.as_ref() else {
+                                                    warn!("Crossfade init: next_meta vanished before normalization resolve");
+                                                    continue;
+                                                };
                                                 let next_norm = resolve_normalization_gain(
                                                     next_meta_ref, &mut nfmt, &shared, ncodec,
                                                 );
@@ -394,7 +402,10 @@ pub fn decoder_thread(
                                                     next_norm_gain = format!("{:.4}", next_norm),
                                                     "Crossfade initialized"
                                                 );
-                                                let meta = state.next_meta.take().unwrap();
+                                                let Some(meta) = state.next_meta.take() else {
+                                                    warn!("Crossfade init: next_meta vanished before CrossfadeState construction");
+                                                    continue;
+                                                };
                                                 // Snapshot crossfade style at transition start
                                                 let style = CrossfadeStyle::from_u64(
                                                     shared.crossfade_style.load(Ordering::Relaxed),

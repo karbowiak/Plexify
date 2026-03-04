@@ -104,7 +104,8 @@ pub fn compute_fallback_loudness(url: &str, shared: &Arc<DecoderShared>) -> f32 
                 if sb.as_ref().map_or(true, |s| s.capacity() < num_samples) {
                     sb = Some(SampleBuffer::new(frames as u64, spec));
                 }
-                let s = sb.as_mut().unwrap();
+                let s = sb.as_mut()
+                    .expect("BUG: sb should be initialized above");
                 s.copy_interleaved_ref(audio_buf);
                 for &sample in s.samples() {
                     let abs = sample.abs();

@@ -46,7 +46,8 @@ pub fn refill_crossfade_pending(cf: &mut CrossfadeState, needed: usize, dev_rate
                 {
                     cf.sample_buf = Some(SampleBuffer::new(num_frames as u64, spec));
                 }
-                let sb = cf.sample_buf.as_mut().unwrap();
+                let sb = cf.sample_buf.as_mut()
+                    .expect("BUG: cf.sample_buf should be initialized above");
                 sb.copy_interleaved_ref(audio_buf);
 
                 let chunk = if cf.sample_rate != dev_rate && dev_rate > 0 {

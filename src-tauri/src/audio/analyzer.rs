@@ -215,7 +215,8 @@ pub fn analyze(
                 if sb.as_ref().map_or(true, |s| s.capacity() < num_samples) {
                     sb = Some(SampleBuffer::new(frames as u64, spec));
                 }
-                let s = sb.as_mut().unwrap();
+                let s = sb.as_mut()
+                    .expect("BUG: sb should be initialized above");
                 s.copy_interleaved_ref(audio_buf);
                 let actual_ch = spec.channels.count().max(1);
                 for frame_samples in s.samples().chunks(actual_ch) {
@@ -501,8 +502,10 @@ mod tests {
 
         let envelope = make_envelope(&samples, window);
 
-        let start_idx = envelope.iter().position(|&e| e > silence_linear).unwrap();
-        let end_idx = envelope.iter().rposition(|&e| e > silence_linear).unwrap();
+        let start_idx = envelope.iter().position(|&e| e > silence_linear)
+            .expect("test data should contain samples above silence threshold");
+        let end_idx = envelope.iter().rposition(|&e| e > silence_linear)
+            .expect("test data should contain samples above silence threshold");
 
         let start_ms = start_idx as i64 * window_ms;
         let end_ms = (end_idx + 1) as i64 * window_ms;

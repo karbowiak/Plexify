@@ -281,7 +281,11 @@ pub(super) fn handle_command(
         }
 
         AudioCommand::SetPreferredDevice(name) => {
-            *shared.preferred_device_name.lock().unwrap() = name.clone();
+            if let Ok(mut guard) = shared.preferred_device_name.lock() {
+                *guard = name.clone();
+            } else {
+                warn!("Failed to lock preferred_device_name (mutex poisoned)");
+            }
             debug!(?name, "Preferred output device updated");
         }
 
