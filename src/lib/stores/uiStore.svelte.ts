@@ -2,15 +2,21 @@ const STORAGE_KEY = 'ui-state';
 
 export type SidePanel = 'queue' | 'lyrics' | null;
 export type PanelType = SidePanel; // backwards compat alias
+export type CompactVisMode = 'spectrum' | 'oscilloscope' | 'vu' | 'off';
+export type FullscreenVisMode = 'spectrum' | 'oscilloscope' | 'vu' | 'starfield' | 'milkdrop';
 
 interface UiState {
 	sidePanel: SidePanel;
 	artExpanded: boolean;
+	visualizerMode: CompactVisMode;
+	fullscreenVisMode: FullscreenVisMode;
 }
 
 const defaults: UiState = {
 	sidePanel: null,
-	artExpanded: false
+	artExpanded: false,
+	visualizerMode: 'spectrum',
+	fullscreenVisMode: 'spectrum'
 };
 
 function load(): UiState {
@@ -31,9 +37,12 @@ const initial = load();
 let sidePanel = $state<SidePanel>(initial.sidePanel);
 let artExpanded = $state(initial.artExpanded);
 let artFullscreen = $state(false); // never persisted
+let visualizerMode = $state<CompactVisMode>(initial.visualizerMode);
+let fullscreenVisualizer = $state(false); // never persisted
+let fullscreenVisMode = $state<FullscreenVisMode>(initial.fullscreenVisMode);
 
 function save() {
-	localStorage.setItem(STORAGE_KEY, JSON.stringify({ sidePanel, artExpanded }));
+	localStorage.setItem(STORAGE_KEY, JSON.stringify({ sidePanel, artExpanded, visualizerMode, fullscreenVisMode }));
 }
 
 // Side panel
@@ -98,4 +107,50 @@ export function toggleCreatePlaylist() {
 
 export function closeCreatePlaylist() {
 	showCreatePlaylist = false;
+}
+
+// Visualizer mode (compact seek bar)
+export function getVisualizerMode(): CompactVisMode {
+	return visualizerMode;
+}
+
+export function setVisualizerMode(mode: CompactVisMode) {
+	visualizerMode = mode;
+	save();
+}
+
+const visModeCycle: CompactVisMode[] = ['off', 'spectrum', 'oscilloscope', 'vu'];
+export function cycleVisualizerMode() {
+	const idx = visModeCycle.indexOf(visualizerMode);
+	visualizerMode = visModeCycle[(idx + 1) % visModeCycle.length];
+	save();
+}
+
+// Fullscreen visualizer
+export function getFullscreenVisualizer(): boolean {
+	return fullscreenVisualizer;
+}
+
+export function setFullscreenVisualizer(value: boolean) {
+	fullscreenVisualizer = value;
+}
+
+export function getFullscreenVisMode(): FullscreenVisMode {
+	return fullscreenVisMode;
+}
+
+export function setFullscreenVisMode(mode: FullscreenVisMode) {
+	fullscreenVisMode = mode;
+	save();
+}
+
+// Playlist version — bumped when playlists are created/deleted to trigger re-fetches
+let playlistVersion = $state(0);
+
+export function getPlaylistVersion(): number {
+	return playlistVersion;
+}
+
+export function bumpPlaylistVersion() {
+	playlistVersion++;
 }

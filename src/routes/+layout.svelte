@@ -11,6 +11,8 @@
 	import { scrollMemory, trackPath } from '$lib/actions/scrollMemory';
 	import { page } from '$app/state';
 	import { getAppearance } from '$lib/stores/configStore.svelte';
+	import { restoreBackends } from '$lib/stores/backendStore.svelte';
+	import { onMount } from 'svelte';
 
 	let compact = $derived(getAppearance().compactMode);
 
@@ -18,6 +20,10 @@
 
 	$effect(() => {
 		applyTheme();
+	});
+
+	onMount(() => {
+		restoreBackends();
 	});
 
 	$effect(() => {
@@ -36,7 +42,7 @@
 <div class="flex h-screen flex-col bg-bg-base">
 	<div class="flex min-h-0 flex-1">
 		<Sidebar />
-		<div class="relative flex min-h-0 flex-1 flex-col transition-all duration-200">
+		<div class="relative flex min-h-0 min-w-0 flex-1 flex-col transition-all duration-200">
 			<div class="absolute inset-x-0 top-0 z-30">
 				<TopBar />
 			</div>

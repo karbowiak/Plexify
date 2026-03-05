@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { scrollMemory } from '$lib/actions/scrollMemory';
 	import { getAll } from '$lib/backends/registry';
-	import { Cog, Server, Headphones, Palette, Tags, Info } from 'lucide-svelte';
+	import { Cog, Server, Headphones, Palette, Tags, Info, Database } from 'lucide-svelte';
 
 	let { children } = $props();
 
@@ -26,7 +26,19 @@
 		},
 		{ label: 'Metadata', href: '/settings/metadata', icon: Tags },
 		{ label: 'Playback', href: '/settings/playback', icon: Headphones },
-		{ label: 'Appearance', href: '/settings/appearance', icon: Palette }
+		{ label: 'Appearance', href: '/settings/appearance', icon: Palette },
+		{
+			label: 'Cache',
+			href: '/settings/cache',
+			icon: Database,
+			children: [
+				{ label: 'Image', href: '/settings/cache/image' },
+				{ label: 'Media', href: '/settings/cache/media' },
+				{ label: 'Metadata', href: '/settings/cache/metadata' },
+				{ label: 'Audio Analysis', href: '/settings/cache/audio-analysis' },
+				{ label: 'API', href: '/settings/cache/api' }
+			]
+		}
 	]);
 
 	function isActive(href: string): boolean {

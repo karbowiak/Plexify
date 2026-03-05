@@ -1,5 +1,13 @@
 const STORAGE_KEY = 'app-config';
 
+export interface CacheConfig {
+	directory: string;
+	maxSizeMB: number;
+	ttlDays: number;
+}
+
+export type CachesConfig = Record<string, CacheConfig>;
+
 export interface GeneralConfig {
 	language: string;
 	startPage: string;
@@ -27,6 +35,8 @@ export interface EQConfig {
 	enabled: boolean;
 	preset: string;
 	bands: number[];
+	preampDb: number;
+	postgainDb: number;
 }
 
 export type RepeatMode = 'off' | 'one' | 'all';
@@ -34,8 +44,11 @@ export type RepeatMode = 'off' | 'one' | 'all';
 export interface PlaybackConfig {
 	crossfadeEnabled: boolean;
 	crossfadeDuration: number;
+	smartCrossfade: boolean;
+	sameAlbumCrossfade: boolean;
 	gaplessPlayback: boolean;
 	normalizeVolume: boolean;
+	visualizerEnabled: boolean;
 	volume: VolumeConfig;
 	eq: EQConfig;
 	repeatMode: RepeatMode;
@@ -73,7 +86,25 @@ export interface AppConfig {
 	metadata: MetadataConfig;
 	playback: PlaybackConfig;
 	appearance: AppearanceConfig;
+	caches: CachesConfig;
 }
+
+const DEFAULT_IMAGE_CACHE: CacheConfig = {
+	directory: '.cache/img',
+	maxSizeMB: 500,
+	ttlDays: 7
+};
+
+const DEFAULT_MEDIA_CACHE: CacheConfig = {
+	directory: '.cache/media',
+	maxSizeMB: 2048,
+	ttlDays: 30
+};
+
+const CACHE_DEFAULTS: Record<string, CacheConfig> = {
+	image: DEFAULT_IMAGE_CACHE,
+	media: DEFAULT_MEDIA_CACHE
+};
 
 const defaults: AppConfig = {
 	general: {
@@ -82,7 +113,9 @@ const defaults: AppConfig = {
 		animationsEnabled: true
 	},
 	backends: {
-		demo: { enabled: true, config: {} }
+		demo: { enabled: true, config: {} },
+		'radio-browser': { enabled: true, config: {} },
+		'podcast-index': { enabled: true, config: {} }
 	},
 	metadata: {
 		preferredSource: 'plex'
@@ -90,10 +123,13 @@ const defaults: AppConfig = {
 	playback: {
 		crossfadeEnabled: false,
 		crossfadeDuration: 5,
+		smartCrossfade: true,
+		sameAlbumCrossfade: false,
 		gaplessPlayback: true,
 		normalizeVolume: false,
+		visualizerEnabled: false,
 		volume: { level: 70, muted: false, preMuteLevel: 70 },
-		eq: { enabled: true, preset: 'flat', bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+		eq: { enabled: true, preset: 'flat', bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], preampDb: 0, postgainDb: 0 },
 		repeatMode: 'off',
 		shuffled: false
 	},
@@ -105,6 +141,10 @@ const defaults: AppConfig = {
 		highlightIntensity: 100,
 		compactMode: false,
 		customColors: null
+	},
+	caches: {
+		image: DEFAULT_IMAGE_CACHE,
+		media: DEFAULT_MEDIA_CACHE
 	}
 };
 
@@ -119,6 +159,27 @@ function mergeBackends(parsed: Record<string, any> | undefined): BackendsConfig 
 		};
 	}
 	return result;
+}
+
+/**
+ * Migrate old flat `cache` key to keyed `caches.image`.
+ */
+function migrateCaches(parsed: Record<string, any>): CachesConfig {
+	// New format already present
+	if (parsed.caches && typeof parsed.caches === 'object') {
+		const result: CachesConfig = { image: { ...DEFAULT_IMAGE_CACHE } };
+		for (const [id, val] of Object.entries(parsed.caches)) {
+			result[id] = { ...DEFAULT_IMAGE_CACHE, ...(val as any) };
+		}
+		return result;
+	}
+	// Old flat format — migrate
+	if (parsed.cache && typeof parsed.cache === 'object') {
+		return {
+			image: { ...DEFAULT_IMAGE_CACHE, ...parsed.cache }
+		};
+	}
+	return structuredClone(defaults.caches);
 }
 
 function load(): AppConfig {
@@ -136,7 +197,8 @@ function load(): AppConfig {
 					volume: { ...defaults.playback.volume, ...parsed.playback?.volume },
 					eq: { ...defaults.playback.eq, ...parsed.playback?.eq }
 				},
-				appearance: { ...defaults.appearance, ...parsed.appearance }
+				appearance: { ...defaults.appearance, ...parsed.appearance },
+				caches: migrateCaches(parsed)
 			};
 		}
 	} catch {
@@ -152,11 +214,12 @@ let backends = $state<BackendsConfig>(initial.backends);
 let metadata = $state<MetadataConfig>(initial.metadata);
 let playback = $state<PlaybackConfig>(initial.playback);
 let appearance = $state<AppearanceConfig>(initial.appearance);
+let caches = $state<CachesConfig>(initial.caches);
 
 function save() {
 	localStorage.setItem(
 		STORAGE_KEY,
-		JSON.stringify({ general, backends, metadata, playback, appearance })
+		JSON.stringify({ general, backends, metadata, playback, appearance, caches })
 	);
 }
 
@@ -238,6 +301,33 @@ export function getAppearance(): AppearanceConfig {
 
 export function setAppearance(patch: Partial<AppearanceConfig>) {
 	appearance = { ...appearance, ...patch };
+	save();
+}
+
+// Caches (keyed by provider id)
+export function getCaches(): CachesConfig {
+	return caches;
+}
+
+export function getCache(id: string = 'image'): CacheConfig {
+	return caches[id] ?? CACHE_DEFAULTS[id] ?? DEFAULT_IMAGE_CACHE;
+}
+
+export function setCache(id: string, patch: Partial<CacheConfig>): void;
+export function setCache(patch: Partial<CacheConfig>): void;
+export function setCache(idOrPatch: string | Partial<CacheConfig>, maybePatch?: Partial<CacheConfig>) {
+	let id: string;
+	let patch: Partial<CacheConfig>;
+	if (typeof idOrPatch === 'string') {
+		id = idOrPatch;
+		patch = maybePatch!;
+	} else {
+		// Backward compat: setCache({ maxSizeMB: 100 }) → updates 'image'
+		id = 'image';
+		patch = idOrPatch;
+	}
+	const current = caches[id] ?? CACHE_DEFAULTS[id] ?? DEFAULT_IMAGE_CACHE;
+	caches = { ...caches, [id]: { ...current, ...patch } };
 	save();
 }
 

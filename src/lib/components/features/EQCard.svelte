@@ -79,6 +79,11 @@
 		bands[index] = 0;
 		persistBands();
 	}
+
+	function resetFlat() {
+		bands = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+		setEQ({ preset: 'flat', bands: [...bands], preampDb: 0, postgainDb: 0 });
+	}
 </script>
 
 <FloatingCard bind:open position="above" align="end">
@@ -89,15 +94,24 @@
 		<div class="w-[480px] p-4">
 			<div class="mb-3 flex items-center justify-between">
 				<h3 class="text-sm font-bold">Equalizer</h3>
-				<button
-					type="button"
-					class="rounded-full px-3 py-1 text-xs font-medium transition-colors {enabled
-						? 'bg-accent text-bg-base'
-						: 'bg-bg-highlight text-text-muted'}"
-					onclick={() => setEQ({ enabled: !enabled })}
-				>
-					{enabled ? 'On' : 'Off'}
-				</button>
+				<div class="flex items-center gap-2">
+					<button
+						type="button"
+						class="rounded-full px-2 py-0.5 text-[10px] font-medium text-text-muted hover:text-text-secondary transition-colors"
+						onclick={resetFlat}
+					>
+						Reset
+					</button>
+					<button
+						type="button"
+						class="rounded-full px-3 py-1 text-xs font-medium transition-colors {enabled
+							? 'bg-accent text-bg-base'
+							: 'bg-bg-highlight text-text-muted'}"
+						onclick={() => setEQ({ enabled: !enabled })}
+					>
+						{enabled ? 'On' : 'Off'}
+					</button>
+				</div>
 			</div>
 
 			<div class="mb-4 grid grid-cols-3 gap-1.5">
@@ -172,6 +186,46 @@
 					</div>
 				{/each}
 			</div>
+
+			<!-- Gain controls -->
+			<div class="mt-4 space-y-2 transition-opacity {enabled ? '' : 'pointer-events-none opacity-40'}">
+				{#each [
+					{ label: 'Preamp', value: eqConfig.preampDb, key: 'preampDb' as const },
+					{ label: 'Postgain', value: eqConfig.postgainDb, key: 'postgainDb' as const }
+				] as ctrl}
+					<div class="flex items-center gap-3">
+						<span class="w-16 shrink-0 text-[10px] text-text-muted">{ctrl.label}</span>
+						<div class="relative flex flex-1 items-center" style="height: 20px;">
+							<!-- Track background -->
+							<div class="absolute inset-x-0 h-[3px] rounded-full bg-border"></div>
+							<!-- Filled portion -->
+							<div
+								class="absolute left-0 h-[3px] rounded-full bg-accent/40"
+								style="width: {((ctrl.value + 12) / 24) * 100}%"
+							></div>
+							<!-- Native range input on top -->
+							<input
+								type="range"
+								min={-12}
+								max={12}
+								step={0.5}
+								value={ctrl.value}
+								oninput={(e) => setEQ({ [ctrl.key]: Number(e.currentTarget.value) })}
+								class="absolute inset-0 w-full cursor-pointer opacity-0"
+							/>
+							<!-- Visual thumb -->
+							<div
+								class="pointer-events-none absolute h-3 w-3 rounded-full bg-accent shadow-[0_0_6px_var(--color-glow-accent)]"
+								style="left: calc({((ctrl.value + 12) / 24) * 100}% - 6px)"
+							></div>
+						</div>
+						<span class="w-12 shrink-0 text-right text-[10px] tabular-nums text-text-muted">
+							{ctrl.value > 0 ? '+' : ''}{ctrl.value} dB
+						</span>
+					</div>
+				{/each}
+			</div>
 		</div>
 	{/snippet}
 </FloatingCard>
+

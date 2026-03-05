@@ -16,6 +16,15 @@
 	let query = $state('');
 	let focused = $state(false);
 	let showDropdown = $derived(query.trim().length > 0 && focused);
+	let searchInput = $state<HTMLInputElement | undefined>();
+
+	function onGlobalKeydown(e: KeyboardEvent) {
+		if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+			e.preventDefault();
+			searchInput?.focus();
+			searchInput?.select();
+		}
+	}
 
 	function onSettingsClick() {
 		if (isSettings) {
@@ -38,6 +47,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={onGlobalKeydown} />
+
 <header
 	class="relative z-30 flex h-(--spacing-topbar) items-center gap-4 bg-transparent px-4"
 >
@@ -54,6 +65,7 @@
 			type="text"
 			placeholder="Search..."
 			bind:value={query}
+			bind:this={searchInput}
 			onfocus={() => focused = true}
 			onblur={() => setTimeout(() => focused = false, 200)}
 			onkeydown={onSearchKeydown}

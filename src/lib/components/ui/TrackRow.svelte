@@ -8,13 +8,19 @@
 		albumId?: string;
 		duration: string;
 		compact?: boolean;
+		onclick?: () => void;
 	}
 
-	let { number, title, artist, artistId, album, albumId, duration, compact = false }: Props = $props();
+	let { number, title, artist, artistId, album, albumId, duration, compact = false, onclick }: Props = $props();
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-	class="group grid items-center rounded px-3 text-sm transition-colors hover:bg-bg-hover {compact ? 'h-9 grid-cols-[1.5rem_1fr_4rem]' : 'h-10 grid-cols-[2rem_1fr_1fr_4rem]'}"
+	{onclick}
+	role={onclick ? 'button' : undefined}
+	tabindex={onclick ? 0 : undefined}
+	onkeydown={onclick ? (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onclick!(); } } : undefined}
+	class="group grid items-center rounded px-3 text-sm transition-colors hover:bg-bg-hover {compact ? 'h-9 grid-cols-[1.5rem_1fr_4rem]' : 'h-10 grid-cols-[2rem_1fr_1fr_4rem]'} {onclick ? 'cursor-pointer' : ''}"
 >
 	<span class="text-text-muted text-right pr-3 text-xs">{number}</span>
 	<div class="min-w-0">

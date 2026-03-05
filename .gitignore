@@ -22,6 +22,12 @@ Thumbs.db
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
+# Cache
+.cache/
+
 # Extras
 TODO.md
 oldbackend/
+
+# Claude
+.claude/

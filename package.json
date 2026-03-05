@@ -36,6 +36,10 @@
 		"vite-plugin-devtools-json": "^1.0.0"
 	},
 	"dependencies": {
-		"lucide-svelte": "^0.577.0"
+		"butterchurn": "^2.6.7",
+		"butterchurn-presets": "^2.4.7",
+		"fast-xml-parser": "^5.4.2",
+		"lucide-svelte": "^0.577.0",
+		"sveltekit-sse": "^0.14.3"
 	}
 }

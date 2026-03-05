@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { get } from '$lib/backends/registry';
 	import { getBackendConfig, setBackend } from '$lib/stores/configStore.svelte';
+	import { connectBackend, disconnectBackend } from '$lib/stores/backendStore.svelte';
 	import { Capability } from '$lib/backends/types';
 	import { Check, X } from 'lucide-svelte';
 
@@ -18,8 +19,14 @@
 			.join(' ');
 	}
 
-	function toggleEnabled() {
-		setBackend(backendId, { enabled: !config.enabled });
+	async function toggleEnabled() {
+		const newEnabled = !config.enabled;
+		setBackend(backendId, { enabled: newEnabled });
+		if (newEnabled) {
+			await connectBackend(backendId, config.config);
+		} else {
+			await disconnectBackend(backendId);
+		}
 	}
 
 	function setConfigValue(key: string, value: unknown) {

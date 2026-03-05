@@ -1,23 +1,61 @@
 <script lang="ts">
-	import { X, GripVertical } from 'lucide-svelte';
+	import { X, GripVertical, Podcast, Radio, Trash2 } from 'lucide-svelte';
 	import { fly } from 'svelte/transition';
 	import { getSidePanel, setSidePanel, closeSidePanel } from '$lib/stores/uiStore.svelte';
 	import IconButton from '$lib/components/ui/IconButton.svelte';
+	import CachedImage from '$lib/components/ui/CachedImage.svelte';
 	import Slider from '$lib/components/ui/Slider.svelte';
-	import { getQueueTracks, getNowPlaying, reorderQueue } from '$lib/stores/queueStore.svelte';
+	import {
+		getCurrentItem,
+		getItems,
+		getCurrentIndex,
+		toDisplay,
+		getActiveMediaType,
+		reorderQueue,
+		setCurrentIndex,
+		clearQueue
+	} from '$lib/stores/unifiedQueue.svelte';
+	import { playCurrentItem, getState, stopPlayback } from '$lib/stores/playerStore.svelte';
 	import { lyricsData } from '$lib/data/lyrics';
 	import { getLyricsState, loadTrackOffset, updateOffset } from '$lib/stores/lyricsOffsetStore.svelte';
 	import { getAppearance } from '$lib/stores/configStore.svelte';
+	import { formatDuration } from '$lib/utils/format';
 
 	import type { SidePanel } from '$lib/stores/uiStore.svelte';
 
 	let compact = $derived(getAppearance().compactMode);
 
 	let activePanel = $derived(getSidePanel());
+
+	// Unified queue
+	let currentItem = $derived(getCurrentItem());
+	let currentDisplay = $derived(currentItem ? toDisplay(currentItem) : null);
+	let mediaType = $derived(getActiveMediaType());
+	let allItems = $derived(getItems());
+	let curIndex = $derived(getCurrentIndex());
+	let upNext = $derived(allItems.slice(curIndex + 1));
+	let upNextCount = $derived(upNext.length);
+	let playState = $derived(getState());
+
+	function playFromQueue(index: number) {
+		setCurrentIndex(index);
+		playCurrentItem();
+	}
+
+	function handleNowPlayingClick() {
+		// If stopped (e.g. radio was stopped), re-play the current item
+		if (playState === 'stopped' && currentItem) {
+			playCurrentItem();
+		}
+	}
+
+	function handleClearQueue() {
+		stopPlayback();
+		clearQueue();
+	}
+
 	let activeLine = $state(9);
 
-	// Load offset for demo track on mount
-	// TODO: replace 'demo-track' with actual track ID from player state
 	$effect(() => {
 		loadTrackOffset('demo-track');
 	});
@@ -28,8 +66,9 @@
 	];
 
 	// --- Queue drag-to-reorder state ---
-	let queue = $derived(getQueueTracks());
-	let nowPlaying = $derived(getNowPlaying());
+	const DRAG_THRESHOLD = 5; // px movement before entering drag mode
+	let pendingIndex = $state(-1); // index of item being pressed (not yet dragging)
+	let pendingStartY = $state(0); // Y position at pointerdown
 	let dragIndex = $state(-1);
 	let overIndex = $state(-1);
 	let dragY = $state(0);
@@ -37,7 +76,8 @@
 	let listEl = $state<HTMLDivElement | undefined>(undefined);
 	let scrollContainerEl = $state<HTMLDivElement | undefined>(undefined);
 
-	let draggedTrack = $derived(dragIndex >= 0 ? queue[dragIndex] : null);
+	let draggedItem = $derived(dragIndex >= 0 && dragIndex < upNext.length ? upNext[dragIndex] : null);
+	let draggedDisplay = $derived(draggedItem ? toDisplay(draggedItem) : null);
 	let listRect = $derived.by(() => {
 		if (dragIndex >= 0 && scrollContainerEl) {
 			return scrollContainerEl.getBoundingClientRect();
@@ -45,16 +85,31 @@
 		return null;
 	});
 
-	function onDragStart(e: PointerEvent, index: number) {
+	function onPointerDown(e: PointerEvent, index: number) {
 		const target = e.currentTarget as HTMLElement;
 		target.setPointerCapture(e.pointerId);
-		dragIndex = index;
-		overIndex = index;
+		pendingIndex = index;
+		pendingStartY = e.clientY;
 		dragOffsetY = e.clientY - target.getBoundingClientRect().top;
-		dragY = e.clientY;
 	}
 
-	function onDragMove(e: PointerEvent) {
+	function onPointerMove(e: PointerEvent) {
+		// Not pressed on anything
+		if (pendingIndex < 0 && dragIndex < 0) return;
+
+		// If still in pending state, check if we exceeded threshold
+		if (pendingIndex >= 0 && dragIndex < 0) {
+			if (Math.abs(e.clientY - pendingStartY) >= DRAG_THRESHOLD) {
+				// Promote to drag
+				dragIndex = pendingIndex;
+				overIndex = pendingIndex;
+				dragY = e.clientY;
+				pendingIndex = -1;
+			}
+			return;
+		}
+
+		// Active drag
 		if (dragIndex < 0 || !listEl || !scrollContainerEl) return;
 		dragY = e.clientY;
 
@@ -73,7 +128,6 @@
 		}
 		overIndex = closest;
 
-		// Auto-scroll when near edges
 		const containerRect = scrollContainerEl.getBoundingClientRect();
 		const edgeZone = 40;
 		if (y < containerRect.top + edgeZone) {
@@ -83,13 +137,25 @@
 		}
 	}
 
-	function onDragEnd() {
+	function onPointerUp() {
+		// If still pending (no drag started), treat as click → play
+		if (pendingIndex >= 0 && dragIndex < 0) {
+			const absIndex = curIndex + 1 + pendingIndex;
+			playFromQueue(absIndex);
+			pendingIndex = -1;
+			return;
+		}
+
+		// End drag
 		if (dragIndex < 0) return;
 		if (dragIndex !== overIndex) {
-			reorderQueue(dragIndex, overIndex);
+			const fromAbs = curIndex + 1 + dragIndex;
+			const toAbs = curIndex + 1 + overIndex;
+			reorderQueue(fromAbs, toAbs);
 		}
 		dragIndex = -1;
 		overIndex = -1;
+		pendingIndex = -1;
 	}
 
 	// --- Lyrics timing offset (IndexedDB-backed) ---
@@ -113,6 +179,12 @@
 
 	function resetTiming() {
 		updateOffset(0);
+	}
+
+	function typeIcon(type: string) {
+		if (type === 'podcast') return Podcast;
+		if (type === 'radio') return Radio;
+		return null;
 	}
 </script>
 
@@ -140,28 +212,69 @@
 
 	<!-- Queue content -->
 	{#if activePanel === 'queue'}
+		<!-- Now Playing -->
 		<div class="px-4 py-3">
 			<p class="mb-2 text-[10px] font-medium uppercase tracking-wider text-text-muted">
 				Now Playing
 			</p>
-			<div class="flex items-center gap-3 rounded-lg border border-accent/10 p-3" style="background: var(--color-accent-tint-subtle)">
-				<div class="{compact ? 'h-8 w-8' : 'h-10 w-10'} shrink-0 rounded bg-gradient-to-br from-bg-highlight via-bg-elevated to-bg-highlight"></div>
-				<div class="min-w-0 flex-1">
-					<p class="truncate text-sm font-medium text-accent">{nowPlaying.title}</p>
-					<p class="truncate text-xs text-text-secondary">{nowPlaying.artist}</p>
+			{#if currentDisplay}
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="flex items-center gap-3 rounded-lg border border-accent/10 p-3 {playState === 'stopped' ? 'cursor-pointer hover:border-accent/30' : ''}"
+					style="background: var(--color-accent-tint-subtle)"
+					onclick={handleNowPlayingClick}
+					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleNowPlayingClick(); }}
+					role={playState === 'stopped' ? 'button' : undefined}
+					tabindex={playState === 'stopped' ? 0 : undefined}
+				>
+					{#if currentDisplay.artwork}
+						<CachedImage src={currentDisplay.artwork} alt="" class="{compact ? 'h-8 w-8' : 'h-10 w-10'} shrink-0 rounded object-cover" />
+					{:else}
+						{@const Icon = typeIcon(mediaType ?? '') ?? Podcast}
+						<div class="{compact ? 'h-8 w-8' : 'h-10 w-10'} flex shrink-0 items-center justify-center rounded bg-bg-highlight">
+							<Icon size={16} class="text-text-muted" />
+						</div>
+					{/if}
+					<div class="min-w-0 flex-1">
+						<p class="truncate text-sm font-medium text-accent">{currentDisplay.title}</p>
+						<p class="truncate text-xs text-text-secondary">{currentDisplay.subtitle}</p>
+					</div>
+					{#if currentDisplay.durationMs > 0}
+						<span class="text-xs tabular-nums text-text-muted">{formatDuration(currentDisplay.durationMs)}</span>
+					{/if}
+					{#if currentDisplay.isStream}
+						<span class="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none text-red-400">LIVE</span>
+					{/if}
 				</div>
-				<span class="text-xs tabular-nums text-text-muted">{nowPlaying.duration}</span>
-			</div>
+			{:else}
+				<p class="text-xs text-text-muted">Nothing playing</p>
+			{/if}
 		</div>
 
-		<div class="flex-1 overflow-y-auto px-4 pb-3" bind:this={scrollContainerEl}>
-			<p class="mb-2 text-[10px] font-medium uppercase tracking-wider text-text-muted">
-				Next Up
+		<!-- Up Next -->
+		<div class="flex items-center justify-between px-4 pb-1">
+			<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">
+				Next Up · {upNextCount} item{upNextCount !== 1 ? 's' : ''}
 			</p>
+			{#if upNextCount > 0}
+				<button
+					type="button"
+					class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-text-muted transition-colors hover:bg-bg-hover hover:text-text-secondary"
+					onclick={handleClearQueue}
+					title="Clear queue"
+				>
+					<Trash2 size={10} />
+					Clear
+				</button>
+			{/if}
+		</div>
+		<div class="flex-1 overflow-y-auto px-4 pb-3" bind:this={scrollContainerEl}>
 			<div class="flex flex-col gap-0.5" bind:this={listEl}>
-				{#each queue as track, i}
+				{#each upNext as queueItem, i (toDisplay(queueItem).id + '-' + i)}
+					{@const d = toDisplay(queueItem)}
 					{@const isDragging = dragIndex === i}
 					{@const isOver = dragIndex >= 0 && overIndex === i && dragIndex !== i}
+					{@const absIndex = curIndex + 1 + i}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="group relative flex cursor-grab items-center gap-3 rounded-lg border px-2 {compact ? 'py-1' : 'py-1.5'} transition-all select-none active:cursor-grabbing
@@ -169,10 +282,10 @@
 							? 'border-accent/20 bg-accent/5 opacity-30'
 							: 'border-transparent hover:border-border hover:bg-accent-tint-hover'}"
 						style="touch-action: none"
-						onpointerdown={(e) => onDragStart(e, i)}
-						onpointermove={onDragMove}
-						onpointerup={onDragEnd}
-						onpointercancel={onDragEnd}
+						onpointerdown={(e) => onPointerDown(e, i)}
+						onpointermove={onPointerMove}
+						onpointerup={onPointerUp}
+						onpointercancel={onPointerUp}
 					>
 						{#if isOver && overIndex < dragIndex}
 							<div
@@ -184,12 +297,26 @@
 						>
 							<GripVertical size={14} />
 						</div>
-						<div class="{compact ? 'h-8 w-8' : 'h-10 w-10'} shrink-0 rounded bg-gradient-to-br from-bg-highlight via-bg-elevated to-bg-highlight"></div>
+						{#if d.artwork}
+							<CachedImage src={d.artwork} alt="" class="{compact ? 'h-8 w-8' : 'h-10 w-10'} shrink-0 rounded object-cover" />
+						{:else}
+							{@const TypeIcon = typeIcon(queueItem.type)}
+							<div class="{compact ? 'h-8 w-8' : 'h-10 w-10'} flex shrink-0 items-center justify-center rounded bg-gradient-to-br from-bg-highlight via-bg-elevated to-bg-highlight">
+								{#if TypeIcon}
+									<TypeIcon size={14} class="text-text-muted" />
+								{/if}
+							</div>
+						{/if}
 						<div class="min-w-0 flex-1">
-							<p class="truncate text-sm text-text-primary">{track.title}</p>
-							<p class="truncate text-xs text-text-secondary">{track.artist}</p>
+							<p class="truncate text-sm text-text-primary">{d.title}</p>
+							<p class="truncate text-xs text-text-secondary">{d.subtitle}</p>
 						</div>
-						<span class="text-xs tabular-nums text-text-muted">{track.duration}</span>
+						{#if d.durationMs > 0}
+							<span class="text-xs tabular-nums text-text-muted">{formatDuration(d.durationMs)}</span>
+						{/if}
+						{#if d.isStream}
+							<span class="shrink-0 rounded bg-red-500/20 px-1 py-0.5 text-[8px] font-bold uppercase leading-none text-red-400">LIVE</span>
+						{/if}
 						{#if isOver && overIndex >= dragIndex}
 							<div
 								class="absolute -bottom-[1px] right-2 left-2 h-0.5 rounded-full bg-accent"
@@ -201,7 +328,7 @@
 		</div>
 
 		<!-- Floating ghost card -->
-		{#if draggedTrack && listRect}
+		{#if draggedDisplay && listRect}
 			<div
 				class="pointer-events-none fixed z-50 flex items-center gap-3 rounded-lg border border-accent/40 bg-bg-elevated px-2 py-1.5 shadow-xl shadow-black/50"
 				style="top: {dragY - dragOffsetY}px; left: {listRect.left}px; width: {listRect.width}px; transform: scale(1.02);"
@@ -209,12 +336,18 @@
 				<div class="flex shrink-0 items-center text-accent">
 					<GripVertical size={14} />
 				</div>
-				<div class="h-10 w-10 shrink-0 rounded bg-bg-highlight"></div>
+				{#if draggedDisplay.artwork}
+					<CachedImage src={draggedDisplay.artwork} alt="" class="h-10 w-10 shrink-0 rounded object-cover" />
+				{:else}
+					<div class="h-10 w-10 shrink-0 rounded bg-bg-highlight"></div>
+				{/if}
 				<div class="min-w-0 flex-1">
-					<p class="truncate text-sm font-medium text-text-primary">{draggedTrack.title}</p>
-					<p class="truncate text-xs text-text-secondary">{draggedTrack.artist}</p>
+					<p class="truncate text-sm font-medium text-text-primary">{draggedDisplay.title}</p>
+					<p class="truncate text-xs text-text-secondary">{draggedDisplay.subtitle}</p>
 				</div>
-				<span class="text-xs tabular-nums text-text-muted">{draggedTrack.duration}</span>
+				{#if draggedDisplay.durationMs > 0}
+					<span class="text-xs tabular-nums text-text-muted">{formatDuration(draggedDisplay.durationMs)}</span>
+				{/if}
 			</div>
 		{/if}
 	{/if}

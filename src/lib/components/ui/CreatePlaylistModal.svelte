@@ -1,13 +1,18 @@
 <script lang="ts">
-	import { closeCreatePlaylist } from '$lib/stores/uiStore.svelte';
+	import { closeCreatePlaylist, bumpPlaylistVersion } from '$lib/stores/uiStore.svelte';
+	import { getBackend } from '$lib/stores/backendStore.svelte';
 
 	let name = $state('');
 
-	function handleCreate() {
-		if (name.trim()) {
-			closeCreatePlaylist();
-			name = '';
+	async function handleCreate() {
+		if (!name.trim()) return;
+		const b = getBackend();
+		if (b?.createPlaylist) {
+			await b.createPlaylist(name.trim());
+			bumpPlaylistVersion();
 		}
+		closeCreatePlaylist();
+		name = '';
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
