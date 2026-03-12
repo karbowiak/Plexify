@@ -13,7 +13,7 @@ import { MediaCard } from "../MediaCard"
 import { ScrollRow } from "../ScrollRow"
 import { UltraBlur } from "../UltraBlur"
 import { getCachedArtist, prefetchAlbum, prefetchArtist, setArtistCache } from "../../stores/metadataCache"
-import { useDeezerMetadataStore } from "../../backends/deezer/store"
+import { useDeezerMetadataStore } from "../../metadata/deezer/store"
 import { useArtistEnrichment } from "../../hooks/useMetadataEnrichment"
 import { buildImageUrl, buildExternalImageUrl } from "../../lib/imageUrl"
 import { formatMs } from "../../lib/formatters"
@@ -750,8 +750,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
           </ScrollRow>
         )}
 
-        {/* When Last.fm is top priority, hide Plex sonic similar (Last.fm similar shown below) */}
-        {hasSonicSimilarity && priority[0] !== "lastfm" && sonicallySimilar.length > 0 && (
+        {hasSonicSimilarity && sonicallySimilar.length > 0 && (
           <ScrollRow title="Sonically Similar Artists" restoreKey={`artist-${artistId}-sonic`}>
             {sonicallySimilar.map(a => {
               const distance = a.distance

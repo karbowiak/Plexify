@@ -540,8 +540,8 @@ export function loadSettings(): Promise<PlexSettings> {
 }
 
 /** Persist connection settings to disk. `allUrls` stores every known URL for fallback. */
-export function saveSettings(baseUrl: string, token: string, allUrls?: string[]): Promise<void> {
-  return invoke("save_settings", { baseUrl, token, allUrls: allUrls ?? null })
+export function saveSettings(baseUrl: string, token: string, allUrls?: string[], sectionId?: number, sectionUuid?: string): Promise<void> {
+  return invoke("save_settings", { baseUrl, token, allUrls: allUrls ?? null, sectionId: sectionId ?? null, sectionUuid: sectionUuid ?? null })
 }
 
 /**

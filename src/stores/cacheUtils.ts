@@ -1,10 +1,11 @@
-const EVICTION_TTL_MS = 14 * 24 * 60 * 60_000 // 14 days
+const DEFAULT_EVICTION_TTL_MS = 14 * 24 * 60 * 60_000 // 14 days
 
-/** Prune entries older than 14 days. Returns the same object if nothing was evicted. */
+/** Prune entries older than the given TTL. Returns the same object if nothing was evicted. */
 export function evictStaleEntries<T>(
   record: Record<string, { data: T; cachedAt: number }>,
+  ttlMs: number = DEFAULT_EVICTION_TTL_MS,
 ): Record<string, { data: T; cachedAt: number }> {
-  const cutoff = Date.now() - EVICTION_TTL_MS
+  const cutoff = Date.now() - ttlMs
   const entries = Object.entries(record)
   const fresh = entries.filter(([, v]) => v.cachedAt >= cutoff)
   if (fresh.length === entries.length) return record // nothing to evict

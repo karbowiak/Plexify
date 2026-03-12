@@ -8,16 +8,27 @@ interface Activity {
 }
 
 export function ActivityIndicator() {
-  const { prefetchStatus, isLoading, isFetchingMore } = useLibraryStore(useShallow(s => ({
+  const { prefetchStatus, isLoading, isFetchingMore, libraryScanning, libraryScanProgress } = useLibraryStore(useShallow(s => ({
     prefetchStatus: s.prefetchStatus,
     isLoading: s.isLoading,
     isFetchingMore: s.isFetchingMore,
+    libraryScanning: s.libraryScanning,
+    libraryScanProgress: s.libraryScanProgress,
   })))
   const [isOpen, setIsOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
 
   const activities: Activity[] = []
+
+  if (libraryScanning) {
+    activities.push({
+      id: "library-scan",
+      label: libraryScanProgress != null
+        ? `Library scanning – ${Math.round(libraryScanProgress)}%`
+        : "Library scanning…",
+    })
+  }
 
   if (prefetchStatus) {
     activities.push({
@@ -55,10 +66,28 @@ export function ActivityIndicator() {
         ref={buttonRef}
         onClick={() => setIsOpen(o => !o)}
         title={isActive ? `${activities.length} active operation${activities.length > 1 ? "s" : ""}` : "No active operations"}
-        className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+        className={`relative flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
           isOpen ? "bg-white/15" : "bg-app-surface hover:bg-app-surface-hover"
         }`}
       >
+        {/* Spinning ring around button when active */}
+        {isActive && (
+          <svg
+            className="absolute inset-0 h-full w-full animate-spin"
+            viewBox="0 0 32 32"
+            fill="none"
+            style={{ animationDuration: "1.5s" }}
+          >
+            <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="1.5" className="text-white/10" />
+            <path
+              d="M16 1a15 15 0 0 1 15 15"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              className="text-accent"
+            />
+          </svg>
+        )}
         {/* Vinyl-disc icon — spins when active */}
         <svg
           viewBox="0 0 24 24"

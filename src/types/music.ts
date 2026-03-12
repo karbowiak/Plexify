@@ -59,6 +59,8 @@ export interface MusicTrack {
   lastRatedAt?: string | null
   providerKey?: string | null
   rawThumbPath?: string | null
+  startRamp?: string | null
+  endRamp?: string | null
   mediaInfo?: MediaInfo | null
   /** Opaque provider-specific data (e.g. full Plex Track object). */
   _providerData?: unknown
@@ -127,11 +129,14 @@ export type MusicItem =
   | (MusicArtist & { type: "artist" })
   | (MusicPlaylist & { type: "playlist" })
 
+export type HubLayout = "scroller" | "list" | "hero" | "pills"
+
 export interface MusicHub {
   title: string
   identifier: string
   items: MusicItem[]
   style: string | null
+  layout: HubLayout
 }
 
 export interface PagedResult<T> {

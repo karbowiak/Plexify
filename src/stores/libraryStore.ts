@@ -106,21 +106,32 @@ interface LibraryState {
   /** Last 5 custom mixes built by the user in the Mix Builder. Persisted. */
   recentMixes: RecentMix[]
 
+  // WebSocket-driven state
+  libraryScanning: boolean
+  libraryScanProgress: number | null
+  wsConnected: boolean
+
+  setLibraryScanning: (scanning: boolean, progress: number | null) => void
+  setWsConnected: (connected: boolean) => void
+
   // TTL timestamps (null = never fetched)
   _playlistsFetchedAt: number | null
   _recentlyAddedFetchedAt: number | null
   _hubsFetchedAt: number | null
   _likedTracksFetchedAt: number | null
+  _likedTracksLimit: number | undefined
   _likedArtistsFetchedAt: number | null
+  _likedArtistsLimit: number | undefined
   _likedAlbumsFetchedAt: number | null
+  _likedAlbumsLimit: number | undefined
   _tagsFetchedAt: number | null
 
   fetchPlaylists: (opts?: FetchOpts) => Promise<void>
   fetchRecentlyAdded: (limit?: number, opts?: FetchOpts) => Promise<void>
   fetchHubs: (opts?: FetchOpts) => Promise<void>
   fetchLikedTracks: (limit?: number, opts?: FetchOpts) => Promise<void>
-  fetchLikedArtists: (opts?: FetchOpts) => Promise<void>
-  fetchLikedAlbums: (opts?: FetchOpts) => Promise<void>
+  fetchLikedArtists: (limit?: number, opts?: FetchOpts) => Promise<void>
+  fetchLikedAlbums: (limit?: number, opts?: FetchOpts) => Promise<void>
   fetchTags: (opts?: FetchOpts) => Promise<void>
   addRecentMix: (seeds: SeedItem[], tabType: "artist" | "album" | "track") => void
   fetchPlaylistItems: (playlistId: string) => Promise<void>
@@ -139,6 +150,8 @@ interface LibraryState {
   onItemRated: (id: string, itemType: "track" | "album" | "artist", newRating: number | null) => void
   /** Null out all TTL timestamps and playlist caches so the next fetch hits the network. */
   invalidateCache: () => void
+  /** Null out only library content TTLs (playlists/recentlyAdded/hubs). Does NOT wipe item caches. */
+  invalidateLibraryTTLs: () => void
   /** Wipe all library data and caches. Call on disconnect / backend switch. */
   clearAll: () => void
 }
@@ -169,12 +182,26 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
   tagsStyle: [],
   recentMixes: [],
   prefetchStatus: null,
+  libraryScanning: false,
+  libraryScanProgress: null,
+  wsConnected: false,
+
+  setLibraryScanning: (scanning, progress) => set({
+    libraryScanning: scanning,
+    libraryScanProgress: scanning ? progress : null,
+  }),
+
+  setWsConnected: (connected) => set({ wsConnected: connected }),
+
   _playlistsFetchedAt: null,
   _recentlyAddedFetchedAt: null,
   _hubsFetchedAt: null,
   _likedTracksFetchedAt: null,
+  _likedTracksLimit: undefined,
   _likedArtistsFetchedAt: null,
+  _likedArtistsLimit: undefined,
   _likedAlbumsFetchedAt: null,
+  _likedAlbumsLimit: undefined,
   _tagsFetchedAt: null,
 
   fetchPlaylists: async (opts: FetchOpts = {}) => {
@@ -217,39 +244,42 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
   },
 
   fetchLikedTracks: async (limit = 500, opts: FetchOpts = {}) => {
-    const { _likedTracksFetchedAt } = get()
-    if (!opts.force && _likedTracksFetchedAt !== null && Date.now() - _likedTracksFetchedAt < TTL_MS.likedTracks) return
+    const { _likedTracksFetchedAt, _likedTracksLimit } = get()
+    const needsMore = _likedTracksLimit !== undefined && limit > _likedTracksLimit
+    if (!opts.force && !needsMore && _likedTracksFetchedAt !== null && Date.now() - _likedTracksFetchedAt < TTL_MS.likedTracks) return
     const provider = getProvider()
     if (!provider) return
     try {
       const likedTracks = await provider.getLikedTracks(limit)
-      set({ likedTracks, _likedTracksFetchedAt: Date.now() })
+      set({ likedTracks, _likedTracksFetchedAt: Date.now(), _likedTracksLimit: limit })
     } catch (err) {
       set({ error: String(err) })
     }
   },
 
-  fetchLikedArtists: async (opts: FetchOpts = {}) => {
-    const { _likedArtistsFetchedAt } = get()
-    if (!opts.force && _likedArtistsFetchedAt !== null && Date.now() - _likedArtistsFetchedAt < TTL_MS.likedArtists) return
+  fetchLikedArtists: async (limit = 500, opts: FetchOpts = {}) => {
+    const { _likedArtistsFetchedAt, _likedArtistsLimit } = get()
+    const needsMore = _likedArtistsLimit !== undefined && limit > _likedArtistsLimit
+    if (!opts.force && !needsMore && _likedArtistsFetchedAt !== null && Date.now() - _likedArtistsFetchedAt < TTL_MS.likedArtists) return
     const provider = getProvider()
     if (!provider) return
     try {
-      const likedArtists = await provider.getLikedArtists()
-      set({ likedArtists, _likedArtistsFetchedAt: Date.now() })
+      const likedArtists = await provider.getLikedArtists(limit)
+      set({ likedArtists, _likedArtistsFetchedAt: Date.now(), _likedArtistsLimit: limit })
     } catch (err) {
       set({ error: String(err) })
     }
   },
 
-  fetchLikedAlbums: async (opts: FetchOpts = {}) => {
-    const { _likedAlbumsFetchedAt } = get()
-    if (!opts.force && _likedAlbumsFetchedAt !== null && Date.now() - _likedAlbumsFetchedAt < TTL_MS.likedAlbums) return
+  fetchLikedAlbums: async (limit = 500, opts: FetchOpts = {}) => {
+    const { _likedAlbumsFetchedAt, _likedAlbumsLimit } = get()
+    const needsMore = _likedAlbumsLimit !== undefined && limit > _likedAlbumsLimit
+    if (!opts.force && !needsMore && _likedAlbumsFetchedAt !== null && Date.now() - _likedAlbumsFetchedAt < TTL_MS.likedAlbums) return
     const provider = getProvider()
     if (!provider) return
     try {
-      const likedAlbums = await provider.getLikedAlbums()
-      set({ likedAlbums, _likedAlbumsFetchedAt: Date.now() })
+      const likedAlbums = await provider.getLikedAlbums(limit)
+      set({ likedAlbums, _likedAlbumsFetchedAt: Date.now(), _likedAlbumsLimit: limit })
     } catch (err) {
       set({ error: String(err) })
     }
@@ -542,12 +572,21 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     _recentlyAddedFetchedAt: null,
     _hubsFetchedAt: null,
     _likedTracksFetchedAt: null,
+    _likedTracksLimit: undefined,
     _likedArtistsFetchedAt: null,
+    _likedArtistsLimit: undefined,
     _likedAlbumsFetchedAt: null,
+    _likedAlbumsLimit: undefined,
     _tagsFetchedAt: null,
     playlistItemsCache: {},
     playlistIsFullyLoaded: {},
     mixTracksCache: {},
+  }),
+
+  invalidateLibraryTTLs: () => set({
+    _playlistsFetchedAt: null,
+    _recentlyAddedFetchedAt: null,
+    _hubsFetchedAt: null,
   }),
 
   /** Wipe all library data and caches. Call on disconnect / backend switch. */
@@ -568,13 +607,19 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     playlistIsFullyLoaded: {},
     mixTracksCache: {},
     prefetchStatus: null,
+    libraryScanning: false,
+    libraryScanProgress: null,
+    wsConnected: false,
     error: null,
     _playlistsFetchedAt: null,
     _recentlyAddedFetchedAt: null,
     _hubsFetchedAt: null,
     _likedTracksFetchedAt: null,
+    _likedTracksLimit: undefined,
     _likedArtistsFetchedAt: null,
+    _likedArtistsLimit: undefined,
     _likedAlbumsFetchedAt: null,
+    _likedAlbumsLimit: undefined,
     _tagsFetchedAt: null,
   }),
 }), {

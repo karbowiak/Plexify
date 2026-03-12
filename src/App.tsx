@@ -11,24 +11,28 @@ import LyricsPanel from "./components/LyricsPanel"
 import { UpdateDialog } from "./components/UpdateDialog"
 import { ContextMenu } from "./components/ContextMenu"
 import { DebugPanel } from "./components/DebugPanel"
+import { HotkeyHelpModal } from "./components/HotkeyHelpModal"
 import { useDebugPanelStore } from "./stores/debugPanelStore"
 import { createAppMenu } from "./lib/appMenu"
 import { recordRecentPlaylist } from "./lib/recentPlaylists"
 import { useProviderStore } from "./stores/providerStore"
 import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, useLibraryStore, useUIStore } from "./stores"
-import { useLastfmStore } from "./backends/lastfm/authStore"
+import { useLastfmStore } from "./metadata/lastfm/authStore"
 import "./stores/accentStore"    // import so the module runs applyAccent() on load
 import "./stores/themeStore"    // import so the module runs applyTheme() on load
 import "./stores/fontStore"     // import so the module runs applyFont() on load
 import "./stores/cardSizeStore" // import so the module sets --card-size CSS var on load
 import "./stores/highlightStore" // import so the module sets --hl-* CSS vars on load
-import "./backends/init"         // registers all backends (side-effect import)
 import { IS_WINDOWS } from "./lib/platform"
 import { WindowTitleBar } from "./components/WindowTitleBar"
+import { useGlobalHotkeys } from "./hooks/useGlobalHotkeys"
+import LiveAnnouncer from "./components/LiveAnnouncer"
+import "./i18n" // Initialize i18n on app load
 
 function App() {
   const debugPanelOpen = useDebugPanelStore(s => s.open)
+  const { hotkeyHelpOpen, setHotkeyHelpOpen } = useGlobalHotkeys()
   const { isConnected, musicSectionId, isLoading, loadAndConnect } = useConnectionStore(
     useShallow(s => ({ isConnected: s.isConnected, musicSectionId: s.musicSectionId, isLoading: s.isLoading, loadAndConnect: s.loadAndConnect }))
   )
@@ -84,11 +88,11 @@ function App() {
       <div className="flex h-screen flex-col overflow-hidden text-white">
         {IS_WINDOWS && <WindowTitleBar />}
         {/* Sidebar + main content + optional pinned queue */}
-        <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
+        <div className="relative z-0 flex min-h-0 flex-1 flex-row overflow-hidden">
           <SideBar onCreatePlaylist={() => setShowCreatePlaylist(true)} />
-          <div className="min-w-0 flex-1">
+          <main className="min-w-0 flex-1" role="main">
             <Page />
-          </div>
+          </main>
           {/* QueuePanel lives here so pinned mode becomes a natural flex column.
               In overlay mode it uses fixed positioning and escapes this layout. */}
           <QueuePanel />
@@ -120,7 +124,9 @@ function App() {
 
       <UpdateDialog />
       <ContextMenu />
+      {hotkeyHelpOpen && <HotkeyHelpModal onClose={() => setHotkeyHelpOpen(false)} />}
       {debugPanelOpen && <DebugPanel />}
+      <LiveAnnouncer />
     </div>
   )
 }

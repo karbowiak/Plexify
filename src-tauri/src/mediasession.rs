@@ -75,8 +75,8 @@ impl MediaSessionState {
                 };
 
                 let config = PlatformConfig {
-                    dbus_name: "plexify",
-                    display_name: "Plexify",
+                    dbus_name: "hibiki",
+                    display_name: "Hibiki",
                     hwnd,
                 };
 

@@ -4,7 +4,8 @@ import { useLocation } from "wouter"
 import { useLibraryStore, useConnectionStore, usePlayerStore } from "../../stores"
 import { useProviderStore } from "../../stores/providerStore"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
-import type { MusicItem, MusicPlaylist } from "../../types/music"
+import type { MusicItem, MusicPlaylist, MusicTrack } from "../../types/music"
+import type { MusicProvider } from "../../providers/types"
 import { useContextMenu } from "../../hooks/useContextMenu"
 import { makeOnPlay } from "../../lib/mediaPlay"
 import { ScrollRow } from "../ScrollRow"
@@ -29,6 +30,28 @@ function getItemYear(item: MusicItem): number {
   if (item.type === "album") return item.year
   if (item.type === "track") return item.year
   return 0
+}
+
+async function resolveItemsToTracks(items: MusicItem[], provider: MusicProvider): Promise<MusicTrack[]> {
+  const results = await Promise.all(items.map(async (item) => {
+    switch (item.type) {
+      case "track": return [item as MusicTrack]
+      case "album": return provider.getAlbumTracks(item.id)
+      case "artist": return provider.getArtistPopularTracks(item.id, 10)
+      case "playlist": return provider.getPlaylistItems(item.id, 0, 100).then(r => r.items)
+      default: return []
+    }
+  }))
+  return results.flat()
+}
+
+function shuffleArray<T>(arr: T[]): T[] {
+  const shuffled = [...arr]
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+  }
+  return shuffled
 }
 
 export function getMediaInfo(item: MusicItem, opts?: { showYear?: boolean }) {
@@ -229,7 +252,23 @@ export function Home() {
       )}
 
       {recentlyAdded.length > 0 && (
-        <ScrollRow title="Recently Added" titleHref="/recently-added" restoreKey="home-recently-added">
+        <ScrollRow
+          title="Recently Added"
+          titleHref="/recently-added"
+          restoreKey="home-recently-added"
+          onPlayAll={provider ? () => {
+            resolveItemsToTracks(recentlyAdded.slice(0, 30), provider).then(tracks => {
+              if (tracks.length > 0) playTrack(tracks[0], tracks, "Recently Added", null)
+            })
+          } : undefined}
+          onShuffleAll={provider ? () => {
+            resolveItemsToTracks(recentlyAdded.slice(0, 30), provider).then(tracks => {
+              if (tracks.length === 0) return
+              const shuffled = shuffleArray(tracks)
+              playTrack(shuffled[0], shuffled, "Recently Added", null)
+            })
+          } : undefined}
+        >
           {recentlyAdded.slice(0, 30).map((item, idx) => {
             const info = getMediaInfo(item)
             if (!info) return null
@@ -270,12 +309,95 @@ export function Home() {
         const items = isAnniversary
           ? [...hub.items].sort((a, b) => getItemYear(a) - getItemYear(b))
           : hub.items
+        const layout = hub.layout ?? "scroller"
+
+        // Pills layout — flex-wrap of rounded pill buttons
+        if (layout === "pills") {
+          return (
+            <div key={hub.identifier}>
+              <h2 className="text-base font-semibold text-white mb-3">{hub.title}</h2>
+              <div className="flex flex-wrap gap-2">
+                {items.slice(0, 30).map((item, idx) => {
+                  const info = getMediaInfo(item)
+                  if (!info) return null
+                  return (
+                    <button
+                      key={`${item.id}-${idx}`}
+                      onClick={() => info.href && navigate(info.href)}
+                      className="rounded-full bg-white/10 px-4 py-1.5 text-sm text-white/70 hover:bg-white/20 hover:text-white transition-colors"
+                    >
+                      {info.title}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        }
+
+        // Hero layout — larger cards with image overlay
+        if (layout === "hero") {
+          return (
+            <ScrollRow
+              key={hub.identifier}
+              title={hub.title}
+              titleHref={"/hub/" + encodeURIComponent(hub.identifier)}
+              restoreKey={`home-hub-${hub.identifier}`}
+              onPlayAll={provider ? () => {
+                resolveItemsToTracks(items.slice(0, 30), provider).then(tracks => {
+                  if (tracks.length > 0) playTrack(tracks[0], tracks, hub.title, null)
+                })
+              } : undefined}
+              onShuffleAll={provider ? () => {
+                resolveItemsToTracks(items.slice(0, 30), provider).then(tracks => {
+                  if (tracks.length === 0) return
+                  const shuffled = shuffleArray(tracks)
+                  playTrack(shuffled[0], shuffled, hub.title, null)
+                })
+              } : undefined}
+            >
+              {items.slice(0, 30).map((item, idx) => {
+                const info = getMediaInfo(item, { showYear: isAnniversary })
+                if (!info) return null
+                return (
+                  <MediaCard
+                    key={`${item.id}-${idx}`}
+                    title={info.title}
+                    desc={info.desc}
+                    thumb={info.thumb}
+                    isArtist={info.isArtist}
+                    href={info.href ?? undefined}
+                    prefetch={makePrefetch(info)}
+                    onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, provider })}
+                    onContextMenu={makeOnContextMenu(item)}
+                    scrollItem
+                    large
+                  />
+                )
+              })}
+            </ScrollRow>
+          )
+        }
+
+        // Default scroller layout
         return (
           <ScrollRow
             key={hub.identifier}
             title={hub.title}
             titleHref={"/hub/" + encodeURIComponent(hub.identifier)}
             restoreKey={`home-hub-${hub.identifier}`}
+            onPlayAll={provider ? () => {
+              resolveItemsToTracks(items.slice(0, 30), provider).then(tracks => {
+                if (tracks.length > 0) playTrack(tracks[0], tracks, hub.title, null)
+              })
+            } : undefined}
+            onShuffleAll={provider ? () => {
+              resolveItemsToTracks(items.slice(0, 30), provider).then(tracks => {
+                if (tracks.length === 0) return
+                const shuffled = shuffleArray(tracks)
+                playTrack(shuffled[0], shuffled, hub.title, null)
+              })
+            } : undefined}
           >
             {items.slice(0, 30).map((item, idx) => {
               const info = getMediaInfo(item, { showYear: isAnniversary })

@@ -11,7 +11,7 @@ use tracing::{debug, instrument};
 
 use crate::plex::models::PlexApiResponse;
 
-const PRODUCT_NAME: &str = "Plexify";
+const PRODUCT_NAME: &str = "Hibiki";
 const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Configuration for the PlexClient
@@ -37,7 +37,7 @@ impl Default for PlexClientConfig {
         Self {
             base_url: String::from("http://localhost:32400"),
             token: String::new(),
-            client_id: String::from("plexify-client"),
+            client_id: String::from("hibiki-client"),
             max_connections: 100,
             debug: false,
             accept_invalid_certs: false,
@@ -467,7 +467,13 @@ impl PlexClient {
     pub fn build_url(&self, path: &str) -> String {
         let base = self.base_url.trim_end_matches('/');
         let path = path.trim_start_matches('/');
-        format!("{}/{}", base, path)
+        let url = format!("{}/{}", base, path);
+        // Always request loudness ramps so crossfade data is available
+        if url.contains('?') {
+            format!("{}&includeLoudnessRamps=1", url)
+        } else {
+            format!("{}?includeLoudnessRamps=1", url)
+        }
     }
 }
 
@@ -483,8 +489,10 @@ mod tests {
             ..Default::default()
         }).unwrap();
 
-        assert_eq!(client.build_url("/library/sections"), "http://localhost:32400/library/sections");
-        assert_eq!(client.build_url("library/sections"), "http://localhost:32400/library/sections");
+        assert_eq!(client.build_url("/library/sections"), "http://localhost:32400/library/sections?includeLoudnessRamps=1");
+        assert_eq!(client.build_url("library/sections"), "http://localhost:32400/library/sections?includeLoudnessRamps=1");
+        // Paths with existing query params get & instead of ?
+        assert_eq!(client.build_url("/library/metadata/123?type=audio"), "http://localhost:32400/library/metadata/123?type=audio&includeLoudnessRamps=1");
     }
 
     #[test]

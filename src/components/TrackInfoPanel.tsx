@@ -5,7 +5,7 @@ import { formatMs, formatSize, formatSampleRate } from "../lib/formatters"
 import type { MusicTrack } from "../types/music"
 import { useTrackEnrichment } from "../hooks/useMetadataEnrichment"
 import { useDebugStore } from "../stores/debugStore"
-import { engine, type TrackAnalysis } from "../audio/WebAudioEngine"
+import { parseRamp, engine } from "../audio/WebAudioEngine"
 import { useAudioSettingsStore } from "../stores/audioSettingsStore"
 
 
@@ -13,45 +13,20 @@ interface Props {
   onClose: () => void
 }
 
-function formatAnalysisMs(ms: number, durationMs: number): string {
-  const secs = (ms / 1000).toFixed(1)
-  const pct = durationMs > 0 ? ((ms / durationMs) * 100).toFixed(0) : "?"
-  return `${secs}s (${pct}%)`
-}
-
 export default function TrackInfoPanel({ onClose }: Props) {
   const currentTrack = usePlayerStore(s => s.currentTrack)
   const queue = usePlayerStore(s => s.queue)
   const queueIndex = usePlayerStore(s => s.queueIndex)
   const [fullTrack, setFullTrack] = useState<MusicTrack | null>(null)
+  const [fullNextTrack, setFullNextTrack] = useState<MusicTrack | null>(null)
   const { lastfm: lastfmData, deezer: deezerArtistData } = useTrackEnrichment(
     currentTrack?.artistName ?? null,
     currentTrack?.title ?? null,
   )
-  const [currentAnalysis, setCurrentAnalysis] = useState<TrackAnalysis | null>(null)
-  const [nextAnalysis, setNextAnalysis] = useState<TrackAnalysis | null>(null)
   const smartCrossfade = useAudioSettingsStore(s => s.smartCrossfade)
   const crossfadeWindowMs = useAudioSettingsStore(s => s.crossfadeWindowMs)
-
-  // Fetch analysis for current + next track (poll every 3s since analysis runs in background)
-  const nextTrack = queue[queueIndex + 1] ?? null
-  useEffect(() => {
-    if (!currentTrack) return
-    let cancelled = false
-    const fetchAnalysis = () => {
-      const a = engine.getTrackAnalysis(Number(currentTrack.id))
-      if (!cancelled) setCurrentAnalysis(a)
-      if (nextTrack) {
-        const na = engine.getTrackAnalysis(Number(nextTrack.id))
-        if (!cancelled) setNextAnalysis(na)
-      } else {
-        if (!cancelled) setNextAnalysis(null)
-      }
-    }
-    fetchAnalysis()
-    const interval = setInterval(fetchAnalysis, 3000)
-    return () => { cancelled = true; clearInterval(interval) }
-  }, [currentTrack?.id, nextTrack?.id])
+  const mixrampDb = useAudioSettingsStore(s => s.mixrampDb)
+  const nextTrackShallow = queue[queueIndex + 1] ?? null
 
   // Fetch full metadata to get stream details (bit depth, sample rate, etc.)
   useEffect(() => {
@@ -64,6 +39,19 @@ export default function TrackInfoPanel({ onClose }: Props) {
     }).catch(() => {})
     return () => { cancelled = true }
   }, [currentTrack?.id])
+
+  // Fetch full metadata for next track to get ramp data from stream details
+  useEffect(() => {
+    setFullNextTrack(null)
+    if (!nextTrackShallow) return
+    const provider = useProviderStore.getState().provider
+    if (!provider) return
+    let cancelled = false
+    provider.getTrack(nextTrackShallow.id).then(t => {
+      if (!cancelled) setFullNextTrack(t)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [nextTrackShallow?.id])
 
   const debugEnabled = useDebugStore(s => s.debugEnabled)
 
@@ -123,41 +111,53 @@ export default function TrackInfoPanel({ onClose }: Props) {
     setTimeout(() => setCopied(false), 1500)
   }, [track])
 
-  // Smart crossfade analysis rows
+  // Smart crossfade ramp rows — parse directly from MusicTrack to avoid engine cache race
+  const nextTrack = fullNextTrack ?? nextTrackShallow
   const analysisRows: [string, string][] = []
-  if (crossfadeWindowMs > 0) {
-    const dur = track.duration
-    if (currentAnalysis) {
-      analysisRows.push(["Analysed", "Yes"])
-      analysisRows.push(["Audio Start", formatAnalysisMs(currentAnalysis.audio_start_ms, dur)])
-      analysisRows.push(["Audio End", formatAnalysisMs(currentAnalysis.audio_end_ms, dur)])
-      const silenceMs = dur - currentAnalysis.audio_end_ms + currentAnalysis.audio_start_ms
-      if (silenceMs > 100) analysisRows.push(["Silence", `${(silenceMs / 1000).toFixed(1)}s total`])
-      analysisRows.push(["Outro Start", formatAnalysisMs(currentAnalysis.outro_start_ms, dur)])
-      const outroLen = currentAnalysis.audio_end_ms - currentAnalysis.outro_start_ms
-      analysisRows.push(["Outro Length", `${(outroLen / 1000).toFixed(1)}s`])
-      analysisRows.push(["BPM", currentAnalysis.bpm > 0 ? currentAnalysis.bpm.toFixed(1) : "—"])
-      analysisRows.push(["Median Energy", currentAnalysis.median_energy.toFixed(4)])
-      if (smartCrossfade) {
-        const adaptiveMs = Math.min(outroLen > 500 ? outroLen : 2000, crossfadeWindowMs)
-        const cfStart = Math.max(currentAnalysis.audio_end_ms - adaptiveMs, 0)
-        analysisRows.push(["Crossfade At", `${(cfStart / 1000).toFixed(1)}s → ${(currentAnalysis.audio_end_ms / 1000).toFixed(1)}s (${(adaptiveMs / 1000).toFixed(1)}s)`])
+  if (crossfadeWindowMs > 0 || smartCrossfade) {
+    const endRamp = parseRamp(track.endRamp)
+    const startRamp = parseRamp(track.startRamp)
+    const nextStartRamp = nextTrack ? parseRamp(nextTrack.startRamp) : []
+
+    if (endRamp.length > 0 || startRamp.length > 0) {
+      analysisRows.push(["Ramps", "Yes"])
+      if (endRamp.length > 0) {
+        const rampWindowSec = endRamp[endRamp.length - 1].timeSec
+        analysisRows.push(["End Ramp Window", `${rampWindowSec.toFixed(1)}s`])
+      }
+      if (startRamp.length > 0) {
+        const rampWindowSec = startRamp[startRamp.length - 1].timeSec
+        analysisRows.push(["Start Ramp Window", `${rampWindowSec.toFixed(1)}s`])
+      }
+
+      // Show MixRamp overlap calculation
+      if (smartCrossfade && endRamp.length > 0 && nextStartRamp.length > 0) {
+        const overlap = engine.getMixrampOverlap(endRamp, nextStartRamp)
+        if (overlap) {
+          analysisRows.push(["MixRamp Threshold", `${mixrampDb} dB`])
+          analysisRows.push(["End crosses at", `${overlap.endOverlapSec.toFixed(1)}s before end`])
+          analysisRows.push(["Start crosses at", `${overlap.startOverlapSec.toFixed(1)}s into track`])
+          analysisRows.push(["Overlap", `${(overlap.endOverlapSec + overlap.startOverlapSec).toFixed(1)}s`])
+        } else {
+          analysisRows.push(["MixRamp", "Fallback (threshold not reached)"])
+        }
+      } else if (smartCrossfade && endRamp.length > 0) {
+        const rampWindowMs = endRamp[endRamp.length - 1].timeSec * 1000
+        const adaptiveMs = rampWindowMs > 500 ? rampWindowMs : 2000
+        const cfStartMs = track.duration - adaptiveMs
+        analysisRows.push(["Crossfade At", `${(cfStartMs / 1000).toFixed(1)}s (${(adaptiveMs / 1000).toFixed(1)}s)`])
       }
     } else {
-      analysisRows.push(["Analysed", "Pending..."])
+      analysisRows.push(["Ramps", "None"])
     }
 
     if (nextTrack) {
-      if (nextAnalysis) {
-        analysisRows.push(["Next: Intro End", formatAnalysisMs(nextAnalysis.intro_end_ms, nextTrack.duration)])
-        const introLen = nextAnalysis.intro_end_ms - nextAnalysis.audio_start_ms
-        analysisRows.push(["Next: Intro Length", `${(introLen / 1000).toFixed(1)}s`])
-        if (nextAnalysis.audio_start_ms > 50) {
-          analysisRows.push(["Next: Skip Silence", `${(nextAnalysis.audio_start_ms / 1000).toFixed(1)}s`])
-        }
-        analysisRows.push(["Next: BPM", nextAnalysis.bpm > 0 ? nextAnalysis.bpm.toFixed(1) : "—"])
+      if (nextStartRamp.length > 0) {
+        analysisRows.push(["Next: Start Ramp", `${nextStartRamp.length} points`])
+      } else if (!fullNextTrack && nextTrackShallow) {
+        analysisRows.push(["Next Track", "Loading ramps..."])
       } else {
-        analysisRows.push(["Next Track", "Analysis pending..."])
+        analysisRows.push(["Next Track", "No ramps"])
       }
     }
   }

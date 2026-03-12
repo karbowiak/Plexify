@@ -5,6 +5,7 @@ use super::{PlexClient, MediaContainer, Hub, LibrarySection, PlexMedia, Track};
 use super::playlist::SearchFilter;
 use anyhow::{Result, Context};
 use serde::{Serialize, Deserialize};
+use serde::de::DeserializeOwned;
 use tracing::{debug, instrument};
 
 /// Character for browsing by first letter
@@ -226,109 +227,84 @@ impl PlexClient {
         Ok(container.hub.into_iter().flat_map(|h| h.metadata).collect())
     }
 
+    /// Fetch all items from a paginated Plex endpoint.
+    /// Loops with X-Plex-Container-Start/Size until all items are collected.
+    async fn fetch_all_paged<T: DeserializeOwned + Default>(
+        &self,
+        section_id: i64,
+        base_params: &[(String, String)],
+        page_size: i32,
+    ) -> Result<Vec<T>> {
+        let mut all_items = Vec::new();
+        let mut offset: i32 = 0;
+
+        loop {
+            let mut params = base_params.to_vec();
+            params.push(("X-Plex-Container-Size".to_string(), page_size.to_string()));
+            params.push(("X-Plex-Container-Start".to_string(), offset.to_string()));
+
+            let path = format!("/library/sections/{}/all", section_id);
+            let url = build_url_from_params(&self.build_url(&path), &params);
+
+            debug!("Fetching paged items (offset={}, size={}) from {}", offset, page_size, url);
+
+            let container: MediaContainer<T> = self
+                .get_url(&url)
+                .await
+                .with_context(|| format!("Failed to fetch paged items from section {}", section_id))?;
+
+            let count = container.metadata.len() as i32;
+            all_items.extend(container.metadata);
+
+            let total = container.total_size.unwrap_or(all_items.len() as i64);
+            if all_items.len() as i64 >= total || count < page_size {
+                break;
+            }
+            offset += count;
+        }
+
+        Ok(all_items)
+    }
+
     /// Get artists with a user rating set (liked/rated artists)
-    ///
-    /// # Arguments
-    /// * `section_id` - Library section ID
-    /// * `limit` - Optional limit on number of results
-    ///
-    /// # Returns
-    /// * `Result<Vec<super::models::Artist>>` - List of rated artists, sorted by most recently rated
     #[instrument(skip(self))]
-    pub async fn liked_artists(&self, section_id: i64, limit: Option<i32>) -> Result<Vec<super::models::Artist>> {
-        let mut params = vec![
+    pub async fn liked_artists(&self, section_id: i64, _limit: Option<i32>) -> Result<Vec<super::models::Artist>> {
+        let params = vec![
             ("type".to_string(), "8".to_string()),
             ("sort".to_string(), "lastRatedAt:desc".to_string()),
             ("userRating>>".to_string(), "0".to_string()),
         ];
-
-        if let Some(limit) = limit {
-            params.push(("limit".to_string(), limit.to_string()));
-        }
-
-        let path = format!("/library/sections/{}/all", section_id);
-        let url = build_url_from_params(&self.build_url(&path), &params);
-
-        debug!("Fetching liked artists for section {} from {}", section_id, url);
-
-        let container: MediaContainer<PlexMedia> = self
-            .get_url(&url)
-            .await
-            .with_context(|| format!("Failed to fetch liked artists for section {}", section_id))?;
-
-        Ok(container.metadata.into_iter().filter_map(|m| match m {
+        let all: Vec<PlexMedia> = self.fetch_all_paged(section_id, &params, 100).await?;
+        Ok(all.into_iter().filter_map(|m| match m {
             PlexMedia::Artist(a) => Some(a),
             _ => None,
         }).collect())
     }
 
     /// Get albums with a user rating set (liked/rated albums)
-    ///
-    /// # Arguments
-    /// * `section_id` - Library section ID
-    /// * `limit` - Optional limit on number of results
-    ///
-    /// # Returns
-    /// * `Result<Vec<super::models::Album>>` - List of rated albums, sorted by most recently rated
     #[instrument(skip(self))]
-    pub async fn liked_albums(&self, section_id: i64, limit: Option<i32>) -> Result<Vec<super::models::Album>> {
-        let mut params = vec![
+    pub async fn liked_albums(&self, section_id: i64, _limit: Option<i32>) -> Result<Vec<super::models::Album>> {
+        let params = vec![
             ("type".to_string(), "9".to_string()),
             ("sort".to_string(), "lastRatedAt:desc".to_string()),
             ("userRating>>".to_string(), "0".to_string()),
         ];
-
-        if let Some(limit) = limit {
-            params.push(("limit".to_string(), limit.to_string()));
-        }
-
-        let path = format!("/library/sections/{}/all", section_id);
-        let url = build_url_from_params(&self.build_url(&path), &params);
-
-        debug!("Fetching liked albums for section {} from {}", section_id, url);
-
-        let container: MediaContainer<PlexMedia> = self
-            .get_url(&url)
-            .await
-            .with_context(|| format!("Failed to fetch liked albums for section {}", section_id))?;
-
-        Ok(container.metadata.into_iter().filter_map(|m| match m {
+        let all: Vec<PlexMedia> = self.fetch_all_paged(section_id, &params, 100).await?;
+        Ok(all.into_iter().filter_map(|m| match m {
             PlexMedia::Album(a) => Some(a),
             _ => None,
         }).collect())
     }
 
     /// Get tracks with a user rating set (liked/rated tracks)
-    ///
-    /// # Arguments
-    /// * `section_id` - Library section ID
-    /// * `limit` - Optional limit on number of results
-    ///
-    /// # Returns
-    /// * `Result<Vec<Track>>` - List of rated tracks, sorted by most recently rated
     #[instrument(skip(self))]
-    pub async fn liked_tracks(&self, section_id: i64, limit: Option<i32>) -> Result<Vec<Track>> {
-        let mut params = vec![
+    pub async fn liked_tracks(&self, section_id: i64, _limit: Option<i32>) -> Result<Vec<Track>> {
+        let params = vec![
             ("type".to_string(), "10".to_string()),
             ("sort".to_string(), "lastRatedAt:desc".to_string()),
             ("userRating>>".to_string(), "0".to_string()),
         ];
-
-        if let Some(limit) = limit {
-            params.push(("limit".to_string(), limit.to_string()));
-        }
-
-        let path = format!("/library/sections/{}/all", section_id);
-        let url = build_url_from_params(&self.build_url(&path), &params);
-
-        debug!("Fetching liked tracks for section {} from {}", section_id, url);
-
-        let container: MediaContainer<Track> = self
-            .get_url(&url)
-            .await
-            .with_context(|| format!("Failed to fetch liked tracks for section {}", section_id))?;
-
-        Ok(container.metadata)
+        self.fetch_all_paged(section_id, &params, 100).await
     }
 
     /// Fetch the tracks for a "Mix for You" hub item.
@@ -627,7 +603,8 @@ pub(super) fn build_url_from_params(base_url: &str, params: &[(String, String)])
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("&");
-        format!("{}?{}", base_url, query)
+        let separator = if base_url.contains('?') { "&" } else { "?" };
+        format!("{}{}{}", base_url, separator, query)
     }
 }
 
@@ -685,9 +662,6 @@ mod integration_tests {
     }
 
     /// Diagnostic: print raw JSON fields for a liked track to see what Plex returns.
-    ///
-    /// Run with:
-    ///   PLEX_URL=https://... PLEX_TOKEN=... cargo test -p plexify liked_tracks_raw -- --nocapture --ignored
     #[tokio::test]
     #[ignore]
     async fn test_liked_tracks_raw_json() {

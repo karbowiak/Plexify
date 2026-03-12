@@ -1,13 +1,20 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
+import { listen } from "@tauri-apps/api/event"
 import { idbJSONStorage } from "./idbStorage"
 import type { RadioStation } from "../lib/radiobrowser"
 import { radiobrowserClick } from "../lib/radiobrowser"
 import { radioPlay, radioStop, radioPause, radioResume, radioSetVolume, radioOnEvents } from "../lib/radioAudio"
 import { engine } from "../audio/WebAudioEngine"
 import { usePlayerStore } from "./playerStore"
+import { parseIcyString } from "../lib/icyParser"
 
 const MAX_RECENT = 50
+
+export interface IcyNowPlaying {
+  artist: string | null
+  title: string | null
+}
 
 interface RadioStreamState {
   /** Currently playing station (null when no radio is active). */
@@ -18,6 +25,8 @@ interface RadioStreamState {
   isStreamBuffering: boolean
   /** Error message when a stream fails. */
   streamError: string | null
+  /** ICY metadata now-playing info from the current stream. */
+  icyNowPlaying: IcyNowPlaying | null
   /** Favorited stations (persisted). */
   favorites: RadioStation[]
   /** Recently played stations (persisted, max 50). */
@@ -30,6 +39,7 @@ interface RadioStreamState {
   toggleFavorite: (station: RadioStation) => void
   isFavorite: (uuid: string) => boolean
   clearRecent: () => void
+  setIcyNowPlaying: (info: IcyNowPlaying | null) => void
 }
 
 let _unlisten: (() => void) | null = null
@@ -41,6 +51,7 @@ export const useRadioStreamStore = create<RadioStreamState>()(
       isStreamPlaying: false,
       isStreamBuffering: false,
       streamError: null,
+      icyNowPlaying: null,
       favorites: [],
       recentStations: [],
 
@@ -77,8 +88,17 @@ export const useRadioStreamStore = create<RadioStreamState>()(
           isStreamPlaying: true,
           isStreamBuffering: true,
           streamError: null,
+          icyNowPlaying: null,
           recentStations: recent,
         })
+
+        // Listen for ICY metadata events from the Rust proxy (if available)
+        listen<string>("radio://icy-metadata", (e) => {
+          const parsed = parseIcyString(e.payload)
+          if (parsed.title || parsed.artist) {
+            useRadioStreamStore.setState({ icyNowPlaying: parsed })
+          }
+        }).catch(() => {})
 
         // Listen for audio events
         _unlisten = radioOnEvents({
@@ -97,7 +117,7 @@ export const useRadioStreamStore = create<RadioStreamState>()(
         _unlisten = null
         radioStop()
         usePlayerStore.setState({ isInternetRadioActive: false })
-        set({ currentStation: null, isStreamPlaying: false, isStreamBuffering: false, streamError: null })
+        set({ currentStation: null, isStreamPlaying: false, isStreamBuffering: false, streamError: null, icyNowPlaying: null })
       },
 
       pauseStream: () => {
@@ -123,6 +143,8 @@ export const useRadioStreamStore = create<RadioStreamState>()(
       isFavorite: (uuid: string) => get().favorites.some(s => s.uuid === uuid),
 
       clearRecent: () => set({ recentStations: [] }),
+
+      setIcyNowPlaying: (info) => set({ icyNowPlaying: info }),
     }),
     {
       name: "radio-stream-v1",

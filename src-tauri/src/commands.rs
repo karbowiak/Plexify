@@ -56,7 +56,6 @@ pub async fn connect_plex(
     base_url: String,
     token: String,
     state: State<'_, PlexState>,
-    audio_state: State<'_, AudioEngineState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     use tauri::Manager;
@@ -65,14 +64,14 @@ pub async fn connect_plex(
     let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
     let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
     let client_id = if settings.client_id.is_empty() {
-        "plexify-client".to_string()
+        "hibiki-client".to_string()
     } else {
         settings.client_id.clone()
     };
     let config = PlexClientConfig {
         base_url,
-        token: token.clone(),
-        client_id: client_id.clone(),
+        token,
+        client_id,
         // Plex servers on the LAN commonly use self-signed or Plex-issued
         // certificates that may not validate against the system trust store.
         accept_invalid_certs: true,
@@ -85,39 +84,6 @@ pub async fn connect_plex(
     }
     let mut guard = state.0.lock().await;
     *guard = Some(client);
-
-    // Build a matching HTTP client for audio fetching with the same Plex
-    // identification headers. This makes the audio cache layer backend-agnostic —
-    // it uses whatever client the active backend provides.
-    {
-        use reqwest::header::{HeaderMap, HeaderValue};
-
-        let platform = std::env::consts::OS;
-        let mut headers = HeaderMap::new();
-        headers.insert("X-Plex-Product",     HeaderValue::from_static("Plexify"));
-        headers.insert("X-Plex-Version",     HeaderValue::from_static(env!("CARGO_PKG_VERSION")));
-        headers.insert("X-Plex-Platform",    HeaderValue::from_str(platform).unwrap_or(HeaderValue::from_static("Desktop")));
-        headers.insert("X-Plex-Device",      HeaderValue::from_static("Desktop"));
-        headers.insert("X-Plex-Device-Name", HeaderValue::from_static("Plexify"));
-        if let Ok(v) = HeaderValue::from_str(&client_id) {
-            headers.insert("X-Plex-Client-Identifier", v);
-        }
-        if let Ok(v) = HeaderValue::from_str(&token) {
-            headers.insert("X-Plex-Token", v);
-        }
-
-        let audio_client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(std::time::Duration::from_secs(120))
-            .default_headers(headers)
-            .build()
-            .map_err(|e| format!("Failed to build audio HTTP client: {e}"))?;
-
-        let guard = audio_state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-        if let Some(engine) = guard.as_ref() {
-            engine.set_backend_http(audio_client);
-        }
-    }
 
     Ok(())
 }
@@ -629,7 +595,7 @@ pub async fn create_smart_shuffle_queue(
     let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
     let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
     let client_id = if settings.client_id.is_empty() {
-        "plexify-client".to_string()
+        "hibiki-client".to_string()
     } else {
         settings.client_id
     };
@@ -899,6 +865,8 @@ pub async fn save_settings(
     base_url: String,
     token: String,
     all_urls: Option<Vec<String>>,
+    section_id: Option<i64>,
+    section_uuid: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     use tauri::Manager;
@@ -908,6 +876,12 @@ pub async fn save_settings(
     settings.token = token;
     if let Some(urls) = all_urls {
         settings.all_urls = urls;
+    }
+    if let Some(id) = section_id {
+        settings.section_id = id;
+    }
+    if let Some(uuid) = section_uuid {
+        settings.section_uuid = uuid;
     }
     crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
 }
@@ -1004,366 +978,6 @@ pub async fn plex_get_resources(
         .map_err(|e| format!("{:#}", e))
 }
 
-// ---------------------------------------------------------------------------
-// Audio engine
-// ---------------------------------------------------------------------------
-
-/// Audio engine state managed by Tauri.
-pub struct AudioEngineState(pub std::sync::Mutex<Option<crate::audio::AudioEngine>>);
-
-impl AudioEngineState {
-    pub fn new() -> Self {
-        Self(std::sync::Mutex::new(None))
-    }
-}
-
-/// Helper: lock the audio engine and send a command.
-fn audio_send(
-    state: &AudioEngineState,
-    cmd: crate::audio::AudioCommand,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => engine.send(cmd),
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Start playing a track from the given URL.
-#[tauri::command]
-pub fn audio_play(
-    url: String,
-    rating_key: i64,
-    duration_ms: i64,
-    part_id: i64,
-    parent_key: String,
-    track_index: i64,
-    gain_db: Option<f32>,
-    skip_crossfade: Option<bool>,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => engine.send_play(crate::audio::TrackMeta {
-            url,
-            rating_key,
-            duration_ms,
-            part_id,
-            parent_key,
-            track_index,
-            gain_db,
-            skip_crossfade: skip_crossfade.unwrap_or(false),
-        }),
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Pause audio playback.
-#[tauri::command]
-pub fn audio_pause(
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    audio_send(&state, crate::audio::AudioCommand::Pause)
-}
-
-/// Resume audio playback.
-#[tauri::command]
-pub fn audio_resume(
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    audio_send(&state, crate::audio::AudioCommand::Resume)
-}
-
-/// Stop audio playback and clear the current track.
-#[tauri::command]
-pub fn audio_stop(
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => engine.send_stop(),
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Seek to a position in the current track.
-#[tauri::command]
-pub fn audio_seek(
-    position_ms: i64,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    audio_send(&state, crate::audio::AudioCommand::Seek(position_ms))
-}
-
-/// Set the playback volume (0.0 - 1.0).
-#[tauri::command]
-pub fn audio_set_volume(
-    volume: f32,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    audio_send(&state, crate::audio::AudioCommand::SetVolume(volume))
-}
-
-/// Pre-buffer the next track for gapless playback.
-#[tauri::command]
-pub fn audio_preload_next(
-    url: String,
-    rating_key: i64,
-    duration_ms: i64,
-    part_id: i64,
-    parent_key: String,
-    track_index: i64,
-    gain_db: Option<f32>,
-    skip_crossfade: Option<bool>,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    audio_send(&state, crate::audio::AudioCommand::PreloadNext(crate::audio::TrackMeta {
-        url,
-        rating_key,
-        duration_ms,
-        part_id,
-        parent_key,
-        track_index,
-        gain_db,
-        skip_crossfade: skip_crossfade.unwrap_or(false),
-    }))
-}
-
-/// Warm the audio disk cache for a URL in the background.
-/// Returns immediately — the fetch happens asynchronously.
-#[tauri::command]
-pub fn audio_prefetch(url: String, state: State<'_, AudioEngineState>) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.prefetch_url(url); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Serializable audio cache stats.
-#[derive(serde::Serialize)]
-pub struct AudioCacheInfo {
-    pub size_bytes: u64,
-    pub file_count: u32,
-}
-
-/// Return current audio cache usage (size in bytes + file count).
-#[tauri::command]
-pub fn audio_cache_info(state: State<'_, AudioEngineState>) -> Result<AudioCacheInfo, String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => {
-            let (size_bytes, file_count) = engine.cache_info();
-            Ok(AudioCacheInfo { size_bytes, file_count })
-        }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Delete all audio cache files from disk.
-#[tauri::command]
-pub fn audio_clear_cache(state: State<'_, AudioEngineState>) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.clear_cache(); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Set the maximum audio cache size in bytes.
-/// Pass 0 for unlimited. Default is 1 GB (1_073_741_824).
-#[tauri::command]
-pub fn audio_set_cache_max_bytes(
-    max_bytes: u64,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_max_cache_bytes(max_bytes); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Set the crossfade window duration in milliseconds.
-/// Pass 0 to disable crossfade. Default is 8000 ms (8 s).
-/// Maximum recommended value is 30000 ms (30 s).
-#[tauri::command]
-pub fn audio_set_crossfade_window(
-    ms: u64,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_crossfade_window(ms); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Set the crossfade mixing style.
-/// 0 = Smooth, 1 = DJ Filter, 2 = Echo Out, 3 = Hard Cut.
-#[tauri::command]
-pub fn audio_set_crossfade_style(
-    style: u64,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_crossfade_style(style); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Enable or disable ReplayGain audio normalization.
-/// When enabled (default), tracks are volume-levelled using embedded REPLAYGAIN_TRACK_GAIN tags.
-#[tauri::command]
-pub fn audio_set_normalization_enabled(
-    enabled: bool,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_normalization_enabled(enabled); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Set all 10 EQ band gains in dB (±12 dB per band).
-/// Recomputes biquad coefficients in the audio thread immediately.
-#[tauri::command]
-pub fn audio_set_eq(
-    gains_db: [f32; 10],
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_eq(gains_db); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Enable or disable the 10-band graphic EQ.
-/// When disabled the EQ processing is bypassed entirely (zero CPU cost).
-#[tauri::command]
-pub fn audio_set_eq_enabled(
-    enabled: bool,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_eq_enabled(enabled); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Set the pre-amp gain in dB (range −12..+3, default 0).
-/// Applied before EQ in the output callback. Use this to recover headroom
-/// after EQ boosts to prevent clipping.
-#[tauri::command]
-pub fn audio_set_preamp_gain(
-    db: f32,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_preamp_gain(db); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Set post-EQ makeup gain in dB (0..+18). Restores volume lost to pregain.
-#[tauri::command]
-pub fn audio_set_eq_postgain(
-    db: f32,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_eq_postgain(db); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Enable or disable automatic post-EQ makeup gain.
-/// When enabled, postgain automatically compensates for pregain (postgain = 1/pregain).
-#[tauri::command]
-pub fn audio_set_eq_postgain_auto(
-    auto_mode: bool,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_eq_postgain_auto(auto_mode); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Get the name of the actual OS audio device currently in use.
-#[tauri::command]
-pub fn audio_get_current_device(
-    state: State<'_, AudioEngineState>,
-) -> Result<String, String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => Ok(engine.get_current_device()),
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Enable or disable crossfade for consecutive same-album tracks.
-/// When disabled (default), same-album tracks play gaplessly without any crossfade.
-#[tauri::command]
-pub fn audio_set_same_album_crossfade(
-    enabled: bool,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_same_album_crossfade(enabled); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Get the track analysis for a given rating key. Returns null if not yet analysed.
-#[tauri::command]
-pub fn audio_get_track_analysis(
-    rating_key: i64,
-) -> Option<crate::audio::analyzer::TrackAnalysis> {
-    crate::audio::analyzer::get_analysis(rating_key)
-}
-
-/// Trigger background analysis for a lookahead track (cache warm + analyze).
-/// Fire-and-forget — doesn't affect the current/next track BPM state.
-#[tauri::command]
-pub fn audio_analyze_track(
-    url: String,
-    rating_key: i64,
-    duration_ms: i64,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => {
-            engine.analyze_track(url, rating_key, duration_ms);
-            Ok(())
-        }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Enable or disable smart crossfade (adaptive timing based on track analysis).
-/// When enabled (default), crossfade skips trailing silence and adapts duration.
-#[tauri::command]
-pub fn audio_set_smart_crossfade(
-    enabled: bool,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_smart_crossfade(enabled); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
 /// Fetch parsed lyrics for a track. Returns an empty list if the track has no lyrics.
 /// Prefers TTML over LRC; falls back to plain text.
 #[tauri::command]
@@ -1375,42 +989,6 @@ pub async fn get_lyrics(
     crate::plex::lyrics::get_lyrics(&c, rating_key)
         .await
         .map_err(|e| e.to_string())
-}
-
-/// List available audio output device names for the default CPAL host.
-#[tauri::command]
-pub fn audio_get_output_devices() -> Vec<String> {
-    crate::audio::engine::AudioEngine::get_output_devices()
-}
-
-/// Set the preferred audio output device by name.
-/// Pass `null` to revert to the system default.
-/// The change takes effect on the next Play command.
-#[tauri::command]
-pub fn audio_set_output_device(
-    name: Option<String>,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_preferred_device(name); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
-}
-
-/// Enable or disable the PCM IPC bridge for the visualizer.
-/// When enabled, emits `audio://vis-frame` events with mono PCM chunks.
-/// Disable when the visualizer is closed to avoid unnecessary IPC overhead.
-#[tauri::command]
-pub fn audio_set_visualizer_enabled(
-    enabled: bool,
-    state: State<'_, AudioEngineState>,
-) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
-    match guard.as_ref() {
-        Some(engine) => { engine.set_visualizer_enabled(enabled); Ok(()) }
-        None => Err("Audio engine not initialized.".to_string()),
-    }
 }
 
 // ---------------------------------------------------------------------------

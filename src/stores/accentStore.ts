@@ -6,15 +6,30 @@ export interface AccentPreset {
 }
 
 export const ACCENT_PRESETS: AccentPreset[] = [
-  { name: "Magenta",  hex: "#d946ef" },
-  { name: "Violet",   hex: "#8b5cf6" },
-  { name: "Cobalt",   hex: "#3b82f6" },
-  { name: "Cyan",     hex: "#06b6d4" },
-  { name: "Emerald",  hex: "#10b981" },
-  { name: "Green",    hex: "#1db954" },
-  { name: "Amber",    hex: "#f59e0b" },
-  { name: "Orange",   hex: "#f97316" },
-  { name: "Rose",     hex: "#f43f5e" },
+  { name: "Red",       hex: "#ef4444" },
+  { name: "Rose",      hex: "#f43f5e" },
+  { name: "Pink",      hex: "#ec4899" },
+  { name: "Fuchsia",   hex: "#d946ef" },
+  { name: "Purple",    hex: "#a855f7" },
+  { name: "Violet",    hex: "#8b5cf6" },
+  { name: "Indigo",    hex: "#6366f1" },
+  { name: "Blue",      hex: "#3b82f6" },
+  { name: "Sky",       hex: "#0ea5e9" },
+  { name: "Cyan",      hex: "#06b6d4" },
+  { name: "Teal",      hex: "#14b8a6" },
+  { name: "Emerald",   hex: "#10b981" },
+  { name: "Green",     hex: "#1db954" },
+  { name: "Lime",      hex: "#84cc16" },
+  { name: "Yellow",    hex: "#eab308" },
+  { name: "Amber",     hex: "#f59e0b" },
+  { name: "Orange",    hex: "#f97316" },
+  { name: "Coral",     hex: "#ff6b6b" },
+  { name: "Peach",     hex: "#fb923c" },
+  { name: "Sand",      hex: "#d4a574" },
+  { name: "Bronze",    hex: "#cd7f32" },
+  { name: "Slate",     hex: "#64748b" },
+  { name: "Zinc",      hex: "#71717a" },
+  { name: "Stone",     hex: "#78716c" },
 ]
 
 const DEFAULT_ACCENT = "#d946ef"
@@ -28,8 +43,14 @@ function hexToRgb(hex: string): string {
 }
 
 export function applyAccent(hex: string) {
-  document.documentElement.style.setProperty("--accent", hex)
-  document.documentElement.style.setProperty("--accent-rgb", hexToRgb(hex))
+  const rgb = hexToRgb(hex)
+  const s = document.documentElement.style
+  s.setProperty("--accent", hex)
+  s.setProperty("--accent-rgb", rgb)
+  s.setProperty("--accent-tint", `rgb(${rgb} / 0.08)`)
+  s.setProperty("--accent-tint-subtle", `rgb(${rgb} / 0.04)`)
+  s.setProperty("--accent-tint-strong", `rgb(${rgb} / 0.15)`)
+  s.setProperty("--accent-tint-hover", `rgb(${rgb} / 0.12)`)
 }
 
 // Apply immediately on module load so the colour is set before first render

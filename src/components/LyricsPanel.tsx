@@ -2,14 +2,56 @@ import { useEffect, useMemo, useRef } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
+import { useLyricsOffsetStore } from "../stores/lyricsOffsetStore"
 import { useResizable } from "../hooks/useResizable"
 import { useCapability } from "../hooks/useCapability"
+
+/** Format offset for display: 0ms, +200ms, -1.5s, etc. */
+function formatOffset(ms: number): string {
+  if (ms === 0) return "0ms"
+  const sign = ms > 0 ? "+" : ""
+  if (Math.abs(ms) >= 1000 && ms % 1000 === 0) return `${sign}${ms / 1000}s`
+  if (Math.abs(ms) >= 1000) return `${sign}${(ms / 1000).toFixed(1)}s`
+  return `${sign}${ms}ms`
+}
+
+/** Lyrics timing offset bar — centered drag slider rendered as a footer beneath lyrics. */
+function LyricsOffsetBar() {
+  const { offsetMs, setOffset, resetOffset } = useLyricsOffsetStore()
+  return (
+    <div className="flex items-center gap-2 px-4 py-2 border-t border-[var(--border)] shrink-0">
+      <span className="text-[10px] text-[color:var(--text-muted)] flex-shrink-0">-5s</span>
+      <input
+        type="range"
+        min={-5000}
+        max={5000}
+        step={100}
+        value={offsetMs}
+        onChange={e => setOffset(parseInt(e.target.value, 10))}
+        className="flex-1 range-styled accent-[var(--accent)] cursor-pointer"
+      />
+      <span className="text-[10px] text-[color:var(--text-muted)] flex-shrink-0">+5s</span>
+      <button
+        onClick={resetOffset}
+        title="Reset offset"
+        className={`flex-shrink-0 px-1.5 h-5 flex items-center justify-center rounded text-[10px] font-mono transition-colors ${
+          offsetMs !== 0
+            ? "text-accent hover:text-accent/70 cursor-pointer"
+            : "text-[color:var(--text-muted)]"
+        }`}
+      >
+        {formatOffset(offsetMs)}
+      </button>
+    </div>
+  )
+}
 
 /** Shared lyrics body used both in the standalone panel and the queue's Lyrics tab. */
 export function LyricsContent() {
   const { lyricsLines, positionMs } = usePlayerStore(
     useShallow(s => ({ lyricsLines: s.lyricsLines, positionMs: s.positionMs }))
   )
+  const offsetMs = useLyricsOffsetStore(s => s.offsetMs)
   const activeRef = useRef<HTMLParagraphElement>(null)
   const lastIndexRef = useRef(0)
 
@@ -18,16 +60,17 @@ export function LyricsContent() {
 
   const activeIndex = useMemo(() => {
     if (!lyricsLines || lyricsLines.length === 0) return -1
+    const adjustedPos = positionMs + offsetMs
 
     // Forward scan from last known position — O(1) amortized during normal playback
     let i = Math.max(0, lastIndexRef.current)
     while (i < lyricsLines.length) {
       const line = lyricsLines[i]
-      if (positionMs >= line.startMs && (positionMs < line.endMs || i === lyricsLines.length - 1)) {
+      if (adjustedPos >= line.startMs && (adjustedPos < line.endMs || i === lyricsLines.length - 1)) {
         lastIndexRef.current = i
         return i
       }
-      if (positionMs < line.startMs) break
+      if (adjustedPos < line.startMs) break
       i++
     }
 
@@ -35,7 +78,7 @@ export function LyricsContent() {
     let lo = 0, hi = lyricsLines.length - 1
     while (lo <= hi) {
       const mid = (lo + hi) >> 1
-      if (positionMs >= lyricsLines[mid].startMs) lo = mid + 1
+      if (adjustedPos >= lyricsLines[mid].startMs) lo = mid + 1
       else hi = mid - 1
     }
     if (hi >= 0) {
@@ -43,7 +86,7 @@ export function LyricsContent() {
       return hi
     }
     return -1
-  }, [lyricsLines, positionMs])
+  }, [lyricsLines, positionMs, offsetMs])
 
   useEffect(() => {
     if (activeRef.current) {
@@ -52,35 +95,38 @@ export function LyricsContent() {
   }, [activeIndex])
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3 scrollbar scrollbar-w-1 scrollbar-track-transparent scrollbar-thumb-[var(--bg-surface)] hover:scrollbar-thumb-[var(--bg-surface-hover)]">
-      {!lyricsLines ? (
-        <div className="flex items-center justify-center h-full">
-          <p className="text-[color:var(--text-muted)] text-sm text-center">Loading lyrics…</p>
-        </div>
-      ) : lyricsLines.length === 0 ? (
-        <div className="flex items-center justify-center h-full">
-          <p className="text-[color:var(--text-muted)] text-sm text-center">No lyrics available</p>
-        </div>
-      ) : (
-        lyricsLines.map((line, i) => {
-          const isActive = i === activeIndex
-          return (
-            <p
-              key={i}
-              ref={isActive ? activeRef : undefined}
-              className={`transition-all duration-300 leading-relaxed cursor-pointer select-text ${
-                isActive
-                  ? "text-[color:var(--text-primary)] text-base font-semibold"
-                  : "text-[color:var(--text-muted)] text-sm hover:text-[color:var(--text-secondary)]"
-              }`}
-              onClick={() => usePlayerStore.getState().seekTo(line.startMs)}
-            >
-              {line.text}
-            </p>
-          )
-        })
-      )}
-    </div>
+    <>
+      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3 scrollbar scrollbar-w-1 scrollbar-track-transparent scrollbar-thumb-[var(--bg-surface)] hover:scrollbar-thumb-[var(--bg-surface-hover)]">
+        {!lyricsLines ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-[color:var(--text-muted)] text-sm text-center">Loading lyrics…</p>
+          </div>
+        ) : lyricsLines.length === 0 ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-[color:var(--text-muted)] text-sm text-center">No lyrics available</p>
+          </div>
+        ) : (
+          lyricsLines.map((line, i) => {
+            const isActive = i === activeIndex
+            return (
+              <p
+                key={i}
+                ref={isActive ? activeRef : undefined}
+                className={`transition-all duration-300 leading-relaxed cursor-pointer select-text ${
+                  isActive
+                    ? "text-[color:var(--text-primary)] text-base font-semibold"
+                    : "text-[color:var(--text-muted)] text-sm hover:text-[color:var(--text-secondary)]"
+                }`}
+                onClick={() => usePlayerStore.getState().seekTo(line.startMs)}
+              >
+                {line.text}
+              </p>
+            )
+          })
+        )}
+      </div>
+      <LyricsOffsetBar />
+    </>
   )
 }
 

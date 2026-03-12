@@ -1,7 +1,6 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod audio;
 mod commands;
 mod db;
 mod deezer;
@@ -15,7 +14,7 @@ mod podcast;
 mod podcastindex;
 mod radiobrowser;
 
-use commands::{AudioEngineState, PlexState};
+use commands::PlexState;
 use mediasession::MediaSessionState;
 use once_cell::sync::Lazy;
 use tauri::Manager;
@@ -205,7 +204,7 @@ async fn resolve_image(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialise tracing so debug!/warn! calls produce output.
-    // RUST_LOG controls the level (e.g. RUST_LOG=plexify=debug).
+    // RUST_LOG controls the level (e.g. RUST_LOG=hibiki=debug).
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -231,7 +230,6 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .manage(PlexState::new())
-        .manage(AudioEngineState::new())
         .setup(|app| {
             // Open (or create) the local SQLite database.
             let db_path = app
@@ -245,15 +243,6 @@ pub fn run() {
             let db_state = db::DbState::open(&db_path)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             app.manage(db_state);
-
-            // Compute audio cache directory alongside the image cache.
-            let audio_cache_dir = app.path().app_cache_dir().ok().map(|d| d.join("plexaudio"));
-
-            // Start the audio engine — spawns decoder + output threads.
-            let engine = audio::AudioEngine::start(app.handle().clone(), audio_cache_dir)
-                .expect("Failed to start audio engine");
-            let state = app.state::<AudioEngineState>();
-            *state.0.lock().unwrap() = Some(engine);
 
             // Start the system Now Playing / media-key integration.
             // Must be called from setup (main thread) so macOS can register
@@ -391,36 +380,7 @@ pub fn run() {
             commands::plex_auth_poll,
             commands::plex_get_resources,
             commands::test_server_connection,
-            // Audio engine
-            commands::audio_play,
-            commands::audio_pause,
-            commands::audio_resume,
-            commands::audio_stop,
-            commands::audio_seek,
-            commands::audio_set_volume,
-            commands::audio_preload_next,
-            // Audio cache
-            commands::audio_prefetch,
-            commands::audio_cache_info,
-            commands::audio_clear_cache,
-            commands::audio_set_cache_max_bytes,
-            commands::audio_set_crossfade_window,
-            commands::audio_set_crossfade_style,
-            commands::audio_set_normalization_enabled,
-            commands::audio_set_eq,
-            commands::audio_set_eq_enabled,
-            commands::audio_set_preamp_gain,
-            commands::audio_set_eq_postgain,
-            commands::audio_set_eq_postgain_auto,
-            commands::audio_get_current_device,
-            commands::audio_set_same_album_crossfade,
-            commands::audio_get_track_analysis,
-            commands::audio_analyze_track,
-            commands::audio_set_smart_crossfade,
             commands::get_lyrics,
-            commands::audio_get_output_devices,
-            commands::audio_set_output_device,
-            commands::audio_set_visualizer_enabled,
             // Now Playing / media controls
             commands::update_now_playing,
             commands::set_now_playing_state,

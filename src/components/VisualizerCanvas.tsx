@@ -131,6 +131,13 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
+function lerpHex(a: string, b: string, t: number): string {
+  const r = Math.round(parseInt(a.slice(1, 3), 16) * (1 - t) + parseInt(b.slice(1, 3), 16) * t)
+  const g = Math.round(parseInt(a.slice(3, 5), 16) * (1 - t) + parseInt(b.slice(3, 5), 16) * t)
+  const bl = Math.round(parseInt(a.slice(5, 7), 16) * (1 - t) + parseInt(b.slice(5, 7), 16) * t)
+  return `rgb(${r},${g},${bl})`
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -241,6 +248,7 @@ export default function VisualizerCanvas({
         const α = raw[i] > smoothed[i] ? 0.4 : 0.18
         smoothed[i] += α * (raw[i] - smoothed[i])
       }
+      const { vizColorLow, vizColorMid, vizColorHigh } = useVisualizerStore.getState()
       const barW = W / BINS
       const maxVal = Math.max(...Array.from(smoothed), 0.001)
       for (let i = 0; i < BINS; i++) {
@@ -248,11 +256,18 @@ export default function VisualizerCanvas({
         const barH = Math.max(2, (smoothed[i] / maxVal) * H * 0.9)
         const barX = x + barW * 0.1
         const barWidth = barW * 0.8
-        ctx.fillStyle = rainbow
-          ? `hsl(${(rainbowPhase + (i / BINS) * 360) % 360}, 85%, 60%)`
-          : x + barW / 2 < splitX
-            ? (isHovering ? hexToRgba(accent, 0.5) : accent)
-            : "#404040"
+        if (rainbow) {
+          ctx.fillStyle = `hsl(${(rainbowPhase + (i / BINS) * 360) % 360}, 85%, 60%)`
+        } else if (x + barW / 2 >= splitX) {
+          ctx.fillStyle = "#404040"
+        } else {
+          // Vertical gradient per bar: green (bottom) → yellow (mid) → red (top)
+          const grad = ctx.createLinearGradient(barX, H, barX, H - barH)
+          grad.addColorStop(0, vizColorLow)
+          grad.addColorStop(0.5, vizColorMid)
+          grad.addColorStop(1, vizColorHigh)
+          ctx.fillStyle = grad
+        }
         ctx.fillRect(barX, H - barH, barWidth, barH)
       }
       // Progress indicator
@@ -304,6 +319,7 @@ export default function VisualizerCanvas({
       }
       const rmsL = countLR > 0 ? Math.sqrt(sumL / countLR) : 0
       const rmsR = countLR > 0 ? Math.sqrt(sumR / countLR) : 0
+      const { vizColorLow: vuLow, vizColorMid: vuMid, vizColorHigh: vuHigh } = useVisualizerStore.getState()
       const drawVU = (rms: number, y: number, h: number) => {
         const db = rms > 0 ? 20 * Math.log10(rms) : -60
         const pctFill = Math.max(0, Math.min(1, (db + 60) / 60)) * W
@@ -314,10 +330,10 @@ export default function VisualizerCanvas({
             grad2.addColorStop(j / 6, `hsl(${hue}, 85%, 60%)`)
           }
         } else {
-          grad2.addColorStop(0, accent)
-          grad2.addColorStop(0.7, accent)
-          grad2.addColorStop(0.85, "#f0c040")
-          grad2.addColorStop(1, "#e04040")
+          grad2.addColorStop(0, vuLow)
+          grad2.addColorStop(0.5, vuMid)
+          grad2.addColorStop(0.85, vuMid)
+          grad2.addColorStop(1, vuHigh)
         }
         ctx.fillStyle = "#333"
         ctx.fillRect(0, y, W, h)

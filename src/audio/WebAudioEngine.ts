@@ -1,22 +1,43 @@
 /**
- * Web Audio API engine — replaces the Rust audio engine.
+ * Web Audio API engine — Hibiki v3 architecture.
  *
- * Uses HTMLAudioElement for streaming playback (instant start, no full-file download)
- * connected via MediaElementAudioSourceNode into the processing chain.
- *
- * Module-level singleton: `import { engine } from "../audio/WebAudioEngine"`
+ * Thin facade that delegates to modular engine internals:
+ * - DeckManager: dual-deck orchestration with role swapping
+ * - SignalChain: DSP block pipeline (preamp → EQ → postgain → limiter)
+ * - Scheduler: event-driven transition timing
+ * - AnalyserBridge: visualizer data delivery
  *
  * Node graph (per deck):
- *   HTMLAudioElement → MediaElementSource → GainNode (norm)
+ *   HTMLAudioElement → MediaElementSource → normGain → fadeGain (output)
  *
  * Shared chain:
- *   [deck norm gains] → preamp → EQ×10 → postgain → limiter → analyser → master → destination
+ *   [deck outputs] → preamp → EQ×10 → postgain → limiter → analyser → master → destination
+ *
+ * Key v3 improvements:
+ * - Crossfade curves on fadeGain (not normGain) — no volume pumping
+ * - Permanent dual-deck with reset() reuse — no GC pressure
+ * - Modular DSP blocks — each stage is a standalone file
+ *
+ * Module-level singleton: `import { engine } from "../audio/WebAudioEngine"`
  */
 
-import AnalyzerWorker from "./analyzer.worker?worker"
+import { getAudioContext, closeAudioContext } from "./engine/context"
+import { DeckManager } from "./engine/deckManager"
+import { SignalChain } from "./engine/signalChain"
+import { AnalyserBridge } from "./engine/analyserBridge"
+import { Scheduler } from "./engine/scheduler"
+import { createPreamp } from "./engine/dsp/preamp"
+import { createEqualizer } from "./engine/dsp/equalizer"
+import { createPostgain } from "./engine/dsp/postgain"
+import { createLimiter } from "./engine/dsp/limiter"
+import { shouldSuppressCrossfade } from "./engine/crossfade/albumAware"
+import { computeMixrampTransition, mixrampInterpolate } from "./engine/crossfade/mixramp"
+import { computeTimedTransition } from "./engine/crossfade/timeBased"
+import { generateFadeOut, generateFadeIn } from "./engine/crossfade/curves"
+import type { TransitionPlan } from "./engine/crossfade/types"
 
 // ---------------------------------------------------------------------------
-// Debug logging — only in dev mode
+// Debug logging
 // ---------------------------------------------------------------------------
 
 const DEBUG = import.meta.env.DEV
@@ -30,7 +51,7 @@ function warn(...args: unknown[]): void {
 }
 
 // ---------------------------------------------------------------------------
-// Types
+// Types (public API — unchanged)
 // ---------------------------------------------------------------------------
 
 export interface AudioEngineCallbacks {
@@ -42,36 +63,23 @@ export interface AudioEngineCallbacks {
   onVisFrame?(samples: Float32Array): void
 }
 
-export interface TrackAnalysis {
-  rating_key: number
-  audio_start_ms: number
-  audio_end_ms: number
-  outro_start_ms: number
-  intro_end_ms: number
-  median_energy: number
-  bpm: number
+export interface RampPoint { db: number; timeSec: number }
+export interface TrackRamps { startRamp: RampPoint[]; endRamp: RampPoint[] }
+
+export function parseRamp(raw: string | null | undefined): RampPoint[] {
+  if (!raw) return []
+  return raw.split(";").filter(Boolean).map(pair => {
+    const [db, time] = pair.trim().split(" ").map(Number)
+    return { db, timeSec: time }
+  })
 }
 
-// EQ band center frequencies (Hz)
-const EQ_FREQS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-
 // ---------------------------------------------------------------------------
-// Deck — represents one audio source (current or preloaded next)
+// Helpers
 // ---------------------------------------------------------------------------
 
-interface Deck {
-  audio: HTMLAudioElement
-  sourceNode: MediaElementAudioSourceNode
-  normGain: GainNode
-  ratingKey: number
-  durationMs: number
-  parentKey: string
-  gainDb: number | null
-  skipCrossfade: boolean
-  /** True once the audio element has fired 'playing' at least once. */
-  hasStartedPlaying: boolean
-  /** Cleanup function for event listeners. */
-  cleanup: () => void
+function dbToGain(db: number): number {
+  return Math.pow(10, db / 20)
 }
 
 // ---------------------------------------------------------------------------
@@ -79,61 +87,56 @@ interface Deck {
 // ---------------------------------------------------------------------------
 
 class WebAudioEngine {
-  // AudioContext & shared processing chain
+  // Core engine components
   private ctx: AudioContext | null = null
-  private preampNode: GainNode | null = null
-  private eqNodes: BiquadFilterNode[] = []
-  private postgainNode: GainNode | null = null
-  private limiterNode: DynamicsCompressorNode | null = null
-  private analyserNode: AnalyserNode | null = null
+  private deckManager: DeckManager | null = null
+  private signalChain: SignalChain | null = null
+  private analyser: AnalyserBridge | null = null
+  private scheduler: Scheduler | null = null
   private masterNode: GainNode | null = null
 
-  // Decks
-  private activeDeck: Deck | null = null
-  private preloadedDeck: Deck | null = null
+  // DSP blocks
+  private preamp: ReturnType<typeof createPreamp> | null = null
+  private equalizer: ReturnType<typeof createEqualizer> | null = null
+  private postgain: ReturnType<typeof createPostgain> | null = null
+  private limiter: ReturnType<typeof createLimiter> | null = null
 
   // Callbacks
   private cb: AudioEngineCallbacks | null = null
-
-  // Position polling
-  private positionTimer: ReturnType<typeof setInterval> | null = null
-
-  // Visualizer RAF
-  private visEnabled = false
-  private visRafId: number | null = null
-  private visSamples: Float32Array<ArrayBuffer> | null = null
 
   // Settings
   private eqEnabled = false
   private eqGains: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
   private preampDb = 0
   private postgainDb = 0
-  private postgainAuto = false
   private normalizationEnabled = true
-  private crossfadeWindowMs = 8000
-  private sameAlbumCrossfade = false
+  private crossfadeWindowMs = 4000
+  private sameAlbumCrossfadeEnabled = false
   private smartCrossfadeEnabled = true
-  private volume = 1.0 // 0–1 (already cubic-curved by caller)
+  private smartCrossfadeMaxMs = 20000
+  private mixrampDb = -17
+  private volume = 1.0
+  private skipCrossfadeMs = 500 // short duck for user-initiated skips
+  private visualizerDesired = false
 
-  // Crossfade scheduling
-  private crossfadeTimer: ReturnType<typeof setTimeout> | null = null
-  private isCrossfading = false
+  // Ramp cache
+  private rampCache = new Map<number, TrackRamps>()
 
-  // Track analysis (from Web Worker)
-  private analysisCache = new Map<number, TrackAnalysis>()
-  private worker: Worker | null = null
-  private pendingAnalyses = new Map<number, (a: TrackAnalysis) => void>()
-  private analysisQueue: Array<{ url: string; ratingKey: number; durationMs: number }> = []
-  private analysisRunning = false
+  // Deferred preload
+  private pendingPreload: {
+    url: string; ratingKey: number; durationMs: number; parentKey: string
+    gainDb: number | null; skipCrossfade: boolean
+    startRamp: string | null; endRamp: string | null
+  } | null = null
 
-  // Deferred preload — waits for active deck to start playing before fetching
-  private pendingPreload: { url: string; ratingKey: number; durationMs: number; parentKey: string; gainDb: number | null; skipCrossfade: boolean } | null = null
-
-  // Preload retry tracking
+  // Preload retry
   private preloadRetried = false
 
-  // Monotonic play generation — prevents stale async callbacks from interfering
+  // Play generation (monotonic counter for stale callback protection)
   private playGeneration = 0
+
+  // Position polling
+  private positionTimer: ReturnType<typeof setInterval> | null = null
 
   // ---------------------------------------------------------------------------
   // Init
@@ -142,26 +145,6 @@ class WebAudioEngine {
   init(callbacks: AudioEngineCallbacks): void {
     log("init()")
     this.cb = callbacks
-    try {
-      this.worker = new AnalyzerWorker()
-      this.worker.onmessage = (e: MessageEvent) => {
-        const data = e.data as TrackAnalysis
-        log("analysis complete for ratingKey:", data.rating_key, "bpm:", data.bpm)
-        this.analysisCache.set(data.rating_key, data)
-        if (this.analysisCache.size > 200) {
-          const firstKey = this.analysisCache.keys().next().value
-          if (firstKey !== undefined) this.analysisCache.delete(firstKey)
-        }
-        const resolver = this.pendingAnalyses.get(data.rating_key)
-        if (resolver) {
-          resolver(data)
-          this.pendingAnalyses.delete(data.rating_key)
-        }
-      }
-      log("analyzer worker created")
-    } catch (err) {
-      warn("failed to create analyzer worker:", err)
-    }
   }
 
   private ensureContext(): AudioContext {
@@ -174,51 +157,57 @@ class WebAudioEngine {
     }
 
     log("creating new AudioContext")
-    this.ctx = new AudioContext()
+    this.ctx = getAudioContext()
 
-    // Build shared processing chain
-    this.preampNode = this.ctx.createGain()
-    this.preampNode.gain.value = this.dbToGain(this.preampDb)
+    // Create DSP blocks
+    this.preamp = createPreamp(this.ctx)
+    this.preamp.setGain(this.preampDb)
 
-    // 10-band EQ
-    this.eqNodes = EQ_FREQS.map((freq, i) => {
-      const filter = this.ctx!.createBiquadFilter()
-      if (i === 0) filter.type = "lowshelf"
-      else if (i === 9) filter.type = "highshelf"
-      else filter.type = "peaking"
-      filter.frequency.value = freq
-      filter.Q.value = i === 0 || i === 9 ? 0.7 : 1.4
-      filter.gain.value = this.eqEnabled ? this.eqGains[i] : 0
-      return filter
-    })
+    this.equalizer = createEqualizer(this.ctx)
+    this.equalizer.enabled = this.eqEnabled
+    if (this.eqEnabled) {
+      this.equalizer.setGains(this.eqGains)
+    }
 
-    this.postgainNode = this.ctx.createGain()
-    this.postgainNode.gain.value = this.dbToGain(this.eqEnabled ? this.postgainDb : 0)
+    this.postgain = createPostgain(this.ctx)
+    this.postgain.setGain(this.eqEnabled ? this.postgainDb : 0)
 
-    this.limiterNode = this.ctx.createDynamicsCompressor()
-    this.limiterNode.threshold.value = -1
-    this.limiterNode.knee.value = 0
-    this.limiterNode.ratio.value = 20
-    this.limiterNode.attack.value = 0.003
-    this.limiterNode.release.value = 0.25
+    this.limiter = createLimiter(this.ctx)
 
-    this.analyserNode = this.ctx.createAnalyser()
-    this.analyserNode.fftSize = 2048
-    this.analyserNode.smoothingTimeConstant = 0.8
-
+    // Create analyser & master
+    this.analyser = new AnalyserBridge(this.ctx)
     this.masterNode = this.ctx.createGain()
     this.masterNode.gain.value = this.volume
 
-    // Connect chain: preamp → eq[0..9] → postgain → limiter → analyser → master → dest
-    this.preampNode.connect(this.eqNodes[0])
-    for (let i = 0; i < this.eqNodes.length - 1; i++) {
-      this.eqNodes[i].connect(this.eqNodes[i + 1])
-    }
-    this.eqNodes[this.eqNodes.length - 1].connect(this.postgainNode)
-    this.postgainNode.connect(this.limiterNode)
-    this.limiterNode.connect(this.analyserNode)
-    this.analyserNode.connect(this.masterNode)
+    // Build signal chain
+    this.signalChain = new SignalChain()
+    this.signalChain.setBlocks([this.preamp, this.equalizer, this.postgain, this.limiter])
+    this.signalChain.setDestination(this.analyser.node)
+
+    // Connect analyser → master → destination
+    this.analyser.node.connect(this.masterNode)
     this.masterNode.connect(this.ctx.destination)
+
+    // Apply deferred visualizer enablement
+    if (this.visualizerDesired) {
+      this.analyser.setEnabled(true, (samples) => {
+        this.cb?.onVisFrame?.(samples)
+      })
+    }
+
+    // Create deck manager
+    this.deckManager = new DeckManager(this.ctx)
+    this.setupDeckManagerCallbacks()
+
+    // Connect active deck output to signal chain
+    this.signalChain.setSource(this.deckManager.getActiveOutput())
+
+    // Create scheduler
+    this.scheduler = new Scheduler()
+    this.scheduler.setCallbacks({
+      onTransitionPoint: () => this.handleTransitionPoint(),
+      onGaplessPoint: () => this.handleGaplessPoint(),
+    })
 
     // Start position polling
     this.positionTimer = setInterval(() => this.pollPosition(), 250)
@@ -227,126 +216,36 @@ class WebAudioEngine {
     return this.ctx
   }
 
-  // ---------------------------------------------------------------------------
-  // Deck creation
-  // ---------------------------------------------------------------------------
+  private setupDeckManagerCallbacks(): void {
+    if (!this.deckManager) return
 
-  private createDeck(
-    url: string,
-    ratingKey: number,
-    durationMs: number,
-    parentKey: string,
-    gainDb: number | null,
-    skipCrossfade: boolean,
-  ): Deck {
-    const ctx = this.ensureContext()
-
-    const audio = new Audio()
-    audio.crossOrigin = "anonymous"
-    audio.preload = "auto"
-
-    const sourceNode = ctx.createMediaElementSource(audio)
-    const normGain = ctx.createGain()
-    normGain.gain.value = this.normalizationEnabled && gainDb != null ? this.dbToGain(gainDb) : 1
-    sourceNode.connect(normGain)
-    normGain.connect(this.preampNode!)
-
-    // Set src to start streaming immediately
-    audio.src = url
-
-    const deck: Deck = {
-      audio,
-      sourceNode,
-      normGain,
-      ratingKey,
-      durationMs,
-      parentKey,
-      gainDb,
-      skipCrossfade,
-      hasStartedPlaying: false,
-      cleanup: () => {},
-    }
-
-    return deck
-  }
-
-  private attachDeckListeners(deck: Deck, gen: number): void {
-    const onPlaying = () => {
-      if (this.playGeneration !== gen) return
-      if (!deck.hasStartedPlaying) {
-        deck.hasStartedPlaying = true
-        log("deck playing, ratingKey:", deck.ratingKey)
-
-        // Update duration from audio element if available (more accurate)
-        if (deck.audio.duration && isFinite(deck.audio.duration)) {
-          const realDurMs = deck.audio.duration * 1000
-          if (Math.abs(realDurMs - deck.durationMs) > 500) {
-            log("duration corrected:", deck.durationMs, "→", realDurMs)
-            deck.durationMs = realDurMs
-            // Reschedule crossfade with corrected duration
-            if (this.activeDeck === deck) {
-              this.scheduleCrossfade()
-            }
-          }
-        }
-      }
-      if (this.activeDeck === deck) {
-        this.cb?.onState("playing")
-        // Defer preload + analysis until the active deck is fully buffered.
-        // Plex servers can't handle multiple concurrent stream connections reliably.
-        this.waitForBufferThenPreloadAndAnalyze()
-      }
-    }
-
-    const onWaiting = () => {
-      if (this.playGeneration !== gen) return
-      if (this.activeDeck === deck) {
-        log("deck buffering, ratingKey:", deck.ratingKey)
-        this.cb?.onState("buffering")
-      }
-    }
-
-    const onEnded = () => {
-      if (this.playGeneration !== gen) return
-      log("deck ended, ratingKey:", deck.ratingKey)
-      this.handleDeckEnded(deck)
-    }
-
-    const onLoadedMetadata = () => {
-      if (this.playGeneration !== gen) return
-      if (deck.audio.duration && isFinite(deck.audio.duration)) {
-        const realDurMs = deck.audio.duration * 1000
-        if (Math.abs(realDurMs - deck.durationMs) > 500) {
-          log("duration corrected (metadata):", deck.durationMs, "→", realDurMs)
-          deck.durationMs = realDurMs
-          // Reschedule crossfade with corrected duration
-          if (this.activeDeck === deck) {
-            this.scheduleCrossfade()
-          }
-        }
-      }
-    }
-
-    const onError = () => {
-      if (this.playGeneration !== gen) return
-      const msg = deck.audio.error?.message ?? "Audio playback error"
-      warn("deck error, ratingKey:", deck.ratingKey, msg)
-      this.cb?.onError(msg)
-    }
-
-    deck.audio.addEventListener("loadedmetadata", onLoadedMetadata)
-    deck.audio.addEventListener("playing", onPlaying)
-    deck.audio.addEventListener("waiting", onWaiting)
-    deck.audio.addEventListener("ended", onEnded)
-    deck.audio.addEventListener("error", onError)
-
-    deck.cleanup = () => {
-      deck.audio.removeEventListener("loadedmetadata", onLoadedMetadata)
-      deck.audio.removeEventListener("playing", onPlaying)
-      deck.audio.removeEventListener("waiting", onWaiting)
-      deck.audio.removeEventListener("ended", onEnded)
-      deck.audio.removeEventListener("error", onError)
-    }
+    this.deckManager.setCallbacks({
+      onActiveTrackStarted: (ratingKey, durationMs) => {
+        this.cb?.onTrackStarted(ratingKey, durationMs)
+      },
+      onActiveTrackEnded: (ratingKey) => {
+        this.cb?.onTrackEnded(ratingKey)
+      },
+      onState: (state) => {
+        this.cb?.onState(state)
+      },
+      onError: (message) => {
+        warn("deck error:", message)
+        this.cb?.onError(message)
+      },
+      onTimeUpdate: (currentTimeSec, durationSec) => {
+        // Feed time updates to scheduler for transition detection
+        this.scheduler?.onTimeUpdate(currentTimeSec, durationSec)
+      },
+      onActiveBuffered: () => {
+        log("active deck fully buffered")
+        this.flushPendingPreload()
+      },
+      onActiveDurationCorrected: (_newDurationMs) => {
+        // Reschedule transition with corrected duration
+        this.scheduleTransition()
+      },
+    })
   }
 
   // ---------------------------------------------------------------------------
@@ -360,157 +259,164 @@ class WebAudioEngine {
     parentKey: string,
     gainDb: number | null,
     skipCrossfade?: boolean,
+    startRamp?: string | null,
+    endRamp?: string | null,
   ): Promise<void> {
     const gen = ++this.playGeneration
     this.pendingPreload = null
     log("play() ratingKey:", ratingKey, "url:", url.slice(0, 80))
 
-    this.ensureContext()
+    // Cache ramps if provided
+    if (startRamp || endRamp) {
+      this.parseAndCacheRamps(ratingKey, startRamp ?? null, endRamp ?? null)
+    }
 
-    // Check if the preloaded deck matches
-    if (this.preloadedDeck && this.preloadedDeck.ratingKey === ratingKey) {
+    this.ensureContext()
+    const dm = this.deckManager!
+
+    // Check if the pending deck matches (already preloaded)
+    if (dm.pendingDeck.loaded && dm.pendingDeck.ratingKey === ratingKey) {
       log("using preloaded deck for ratingKey:", ratingKey)
-      const deck = this.preloadedDeck
-      this.preloadedDeck = null
+      const deck = dm.pendingDeck
       deck.gainDb = gainDb
       deck.skipCrossfade = skipCrossfade ?? false
-      deck.normGain.gain.value = this.normalizationEnabled && gainDb != null ? this.dbToGain(gainDb) : 1
-      this.transitionToDeck(deck, gen)
+      deck.setNormGain(this.normalizationEnabled && gainDb != null ? dbToGain(gainDb) : 1)
+      this.transitionToPreloaded(gen, true)
       return
     }
 
     this.cb?.onState("buffering")
 
-    const deck = this.createDeck(url, ratingKey, durationMs, parentKey, gainDb, skipCrossfade ?? false)
-    this.attachDeckListeners(deck, gen)
-    this.transitionToDeck(deck, gen)
+    // Reset pending deck and load new track into it
+    const deck = dm.pendingDeck
+    deck.reset()
+    this.loadTrackIntoDeck(deck, url, ratingKey, durationMs, parentKey, gainDb, skipCrossfade ?? false, startRamp ?? null, endRamp ?? null)
+
+    this.transitionToPreloaded(gen, true)
   }
 
-  private transitionToDeck(deck: Deck, gen: number): void {
-    // Cancel any pending crossfade
-    this.cancelCrossfade()
-
-    const shouldCrossfade = !deck.skipCrossfade
-      && this.crossfadeWindowMs > 0
-      && this.activeDeck !== null
-      && !this.shouldSuppressCrossfade(deck)
-
-    if (shouldCrossfade && this.activeDeck) {
-      log("crossfade transition to ratingKey:", deck.ratingKey)
-      this.preloadedDeck = deck
-      this.executeCrossfade(this.crossfadeWindowMs)
-    } else {
-      log("hard transition to ratingKey:", deck.ratingKey)
-      this.stopActiveDeck()
-      this.startDeck(deck, gen)
-    }
+  private loadTrackIntoDeck(
+    deck: import("./engine/deck").Deck,
+    url: string,
+    ratingKey: number,
+    durationMs: number,
+    parentKey: string,
+    gainDb: number | null,
+    skipCrossfade: boolean,
+    startRamp: string | null,
+    endRamp: string | null,
+  ): void {
+    deck.ratingKey = ratingKey
+    deck.durationMs = durationMs
+    deck.parentKey = parentKey
+    deck.gainDb = gainDb
+    deck.skipCrossfade = skipCrossfade
+    deck.ramps = this.parseAndCacheRamps(ratingKey, startRamp, endRamp)
+    deck.setNormGain(this.normalizationEnabled && gainDb != null ? dbToGain(gainDb) : 1)
+    deck.load(url)
   }
 
-  private shouldSuppressCrossfade(nextDeck: Deck): boolean {
-    if (!this.activeDeck) return false
-    if (!this.sameAlbumCrossfade && this.activeDeck.parentKey && this.activeDeck.parentKey === nextDeck.parentKey) {
-      log("suppressing crossfade — same album:", this.activeDeck.parentKey)
-      return true
+  private transitionToPreloaded(gen: number, userSkip = false): void {
+    const dm = this.deckManager!
+    const pendingDeck = dm.pendingDeck
+    const activeDeck = dm.activeDeck
+
+    // Cancel any pending transition
+    this.scheduler?.reset()
+    dm.cancelTransition()
+
+    const hasCrossfade = this.smartCrossfadeEnabled ? this.smartCrossfadeMaxMs > 0 : this.crossfadeWindowMs > 0
+    const shouldXfade = !pendingDeck.skipCrossfade
+      && hasCrossfade
+      && activeDeck.loaded
+      && !shouldSuppressCrossfade(activeDeck.parentKey, pendingDeck.parentKey, this.sameAlbumCrossfadeEnabled)
+
+    if (shouldXfade && activeDeck.loaded) {
+      // User skips (next/prev/click) get a short duck, not the full smart crossfade
+      const plan = userSkip
+        ? this.computeSkipDuckPlan()
+        : this.computeTransitionPlan()
+      if (plan) {
+        log(userSkip ? "skip duck" : "crossfade", "transition to ratingKey:", pendingDeck.ratingKey)
+        this.executeTransition(plan)
+        return
+      }
     }
-    return false
-  }
 
-  private startDeck(deck: Deck, gen: number, offsetSec = 0): void {
-    if (offsetSec > 0) {
-      deck.audio.currentTime = offsetSec
-    }
+    // Hard transition: stop active, start pending
+    log("hard transition to ratingKey:", pendingDeck.ratingKey)
+    const prevRatingKey = activeDeck.loaded ? activeDeck.ratingKey : 0
+    activeDeck.reset()
 
-    this.activeDeck = deck
-    this.cb?.onTrackStarted(deck.ratingKey, deck.durationMs)
-    log("startDeck ratingKey:", deck.ratingKey, "offset:", offsetSec)
+    // Swap roles: pending becomes active
+    dm.swapRoles()
 
-    deck.audio.play().then(() => {
+    // Connect new active deck to signal chain
+    this.signalChain?.setSource(dm.getActiveOutput())
+
+    // Attach events and start playback
+    dm.attachActiveEvents(gen, () => this.playGeneration)
+    this.cb?.onTrackStarted(dm.activeDeck.ratingKey, dm.activeDeck.durationMs)
+
+    dm.activeDeck.play().then(() => {
       if (this.playGeneration !== gen) return
       this.cb?.onState("playing")
+      this.waitForBufferThenPreload()
     }).catch((err) => {
       if (this.playGeneration !== gen) return
-      // Autoplay blocked — will resume on user interaction
       warn("play() rejected:", err)
     })
 
-    // Schedule crossfade/gapless to next preloaded track
-    this.scheduleCrossfade()
-  }
-
-  private stopActiveDeck(): void {
-    if (!this.activeDeck) return
-    log("stopping active deck, ratingKey:", this.activeDeck.ratingKey)
-    this.destroyDeck(this.activeDeck)
-    this.activeDeck = null
-  }
-
-  private destroyDeck(deck: Deck): void {
-    deck.cleanup()
-    deck.audio.pause()
-    deck.audio.removeAttribute("src")
-    deck.audio.load() // Release network connection
-    deck.sourceNode.disconnect()
-    deck.normGain.disconnect()
-  }
-
-  private handleDeckEnded(deck: Deck): void {
-    if (this.isCrossfading) return
-
-    if (this.activeDeck === deck) {
-      this.activeDeck = null
+    if (prevRatingKey) {
+      // Don't fire onTrackEnded for hard transitions triggered by play()
+      // — the old track was replaced, not naturally ended
     }
-    this.destroyDeck(deck)
 
-    this.cb?.onTrackEnded(deck.ratingKey)
-    this.cb?.onState("stopped")
+    // Schedule transition to next preloaded track
+    this.scheduleTransition()
   }
 
   pause(): void {
-    if (this.activeDeck) {
+    if (this.deckManager?.activeDeck.loaded) {
       log("pause()")
-      this.activeDeck.audio.pause()
+      this.deckManager.activeDeck.pause()
       this.cb?.onState("paused")
     }
   }
 
   resume(): void {
-    if (this.activeDeck) {
+    if (this.deckManager?.activeDeck.loaded) {
       log("resume()")
-      this.activeDeck.audio.play().catch(() => {})
+      this.deckManager.activeDeck.play().catch(() => {})
       this.cb?.onState("playing")
     }
   }
 
   stop(): void {
     log("stop()")
-    this.cancelCrossfade()
-    this.isCrossfading = false
+    this.scheduler?.reset()
     this.pendingPreload = null
     ++this.playGeneration
 
-    if (this.activeDeck) {
-      this.stopActiveDeck()
+    if (this.deckManager) {
+      this.deckManager.stopAll()
     }
 
-    if (this.preloadedDeck) {
-      this.destroyDeck(this.preloadedDeck)
-      this.preloadedDeck = null
-    }
+    this.signalChain?.disconnectAdditionalSources()
 
     // Don't fire onTrackEnded — stop() is a user action, not a natural track end.
-    // Firing it would cause the playerStore to advance to next track.
     this.cb?.onState("stopped")
   }
 
   seek(positionMs: number): void {
-    if (!this.activeDeck) return
+    if (!this.deckManager?.activeDeck.loaded) return
     const sec = Math.max(0, positionMs / 1000)
     log("seek() to", sec.toFixed(1), "s")
-    this.activeDeck.audio.currentTime = sec
+    this.deckManager.activeDeck.seekTo(sec)
 
-    // Reschedule crossfade from new position
-    this.cancelCrossfade()
-    this.scheduleCrossfade()
+    // Reschedule transition from new position
+    this.scheduler?.reset()
+    this.scheduleTransition()
   }
 
   setVolume(gain: number): void {
@@ -521,7 +427,7 @@ class WebAudioEngine {
   }
 
   // ---------------------------------------------------------------------------
-  // Preloading & gapless
+  // Preloading
   // ---------------------------------------------------------------------------
 
   async preloadNext(
@@ -531,19 +437,26 @@ class WebAudioEngine {
     parentKey: string,
     gainDb: number | null,
     skipCrossfade?: boolean,
+    startRamp?: string | null,
+    endRamp?: string | null,
   ): Promise<void> {
-    // Don't preload if already preloaded for this track
-    if (this.preloadedDeck?.ratingKey === ratingKey) return
+    if (!this.deckManager) return
 
-    // Defer preload until the active deck is actually playing to avoid
-    // competing for Plex connections during initial buffering
-    if (this.activeDeck && !this.activeDeck.hasStartedPlaying) {
+    // Don't preload if already preloaded for this track
+    if (this.deckManager.pendingDeck.loaded && this.deckManager.pendingDeck.ratingKey === ratingKey) return
+
+    // Defer preload until the active deck is actually playing
+    if (this.deckManager.activeDeck.loaded && !this.deckManager.activeDeck.hasStartedPlaying) {
       log("preloadNext() deferred until deck playing, ratingKey:", ratingKey)
-      this.pendingPreload = { url, ratingKey, durationMs, parentKey, gainDb: gainDb, skipCrossfade: skipCrossfade ?? false }
+      this.pendingPreload = {
+        url, ratingKey, durationMs, parentKey, gainDb,
+        skipCrossfade: skipCrossfade ?? false,
+        startRamp: startRamp ?? null, endRamp: endRamp ?? null,
+      }
       return
     }
 
-    this.executePreload(url, ratingKey, durationMs, parentKey, gainDb, skipCrossfade ?? false)
+    this.executePreload(url, ratingKey, durationMs, parentKey, gainDb, skipCrossfade ?? false, startRamp ?? null, endRamp ?? null)
   }
 
   private executePreload(
@@ -553,212 +466,249 @@ class WebAudioEngine {
     parentKey: string,
     gainDb: number | null,
     skipCrossfade: boolean,
+    startRamp: string | null,
+    endRamp: string | null,
   ): void {
-    log("preloadNext() ratingKey:", ratingKey)
+    log("executePreload() ratingKey:", ratingKey)
     this.ensureContext()
     this.preloadRetried = false
 
-    // Discard previous preloaded deck
-    if (this.preloadedDeck) {
-      this.destroyDeck(this.preloadedDeck)
-    }
+    const dm = this.deckManager!
+    const deck = dm.pendingDeck
+    deck.reset()
 
-    const deck = this.createDeck(url, ratingKey, durationMs, parentKey, gainDb, skipCrossfade)
-    // Attach listeners with current gen (they'll be replaced if this deck gets promoted to active)
-    this.attachDeckListeners(deck, this.playGeneration)
+    this.loadTrackIntoDeck(deck, url, ratingKey, durationMs, parentKey, gainDb, skipCrossfade, startRamp, endRamp)
 
     // Watch for preload errors and retry once after 2s
     const onPreloadError = () => {
       deck.audio.removeEventListener("error", onPreloadError)
-      if (this.preloadedDeck !== deck) return // deck was already replaced
+      if (!dm.pendingDeck.loaded || dm.pendingDeck.ratingKey !== ratingKey) return
       if (this.preloadRetried) {
         warn("preload retry also failed for ratingKey:", ratingKey)
         return
       }
       this.preloadRetried = true
       warn("preload error for ratingKey:", ratingKey, "— retrying in 2s")
-      this.destroyDeck(deck)
-      this.preloadedDeck = null
+      deck.reset()
       setTimeout(() => {
-        // Only retry if no other preload happened in the meantime
-        if (this.preloadedDeck) return
+        if (dm.pendingDeck.loaded) return
         log("preload retry for ratingKey:", ratingKey)
-        const retryDeck = this.createDeck(url, ratingKey, durationMs, parentKey, gainDb, skipCrossfade)
-        this.attachDeckListeners(retryDeck, this.playGeneration)
-        this.preloadedDeck = retryDeck
-        this.scheduleCrossfade()
+        this.loadTrackIntoDeck(dm.pendingDeck, url, ratingKey, durationMs, parentKey, gainDb, skipCrossfade, startRamp, endRamp)
+        this.scheduleTransition()
       }, 2000)
     }
     deck.audio.addEventListener("error", onPreloadError)
 
-    this.preloadedDeck = deck
-
-    // Reschedule crossfade now that we have a preloaded deck
-    this.scheduleCrossfade()
+    // Reschedule transition now that we have a preloaded deck
+    this.scheduleTransition()
   }
 
   // ---------------------------------------------------------------------------
-  // Crossfade
+  // Transition scheduling
   // ---------------------------------------------------------------------------
 
-  private scheduleCrossfade(): void {
-    this.cancelCrossfade()
+  private scheduleTransition(): void {
+    if (!this.deckManager || !this.scheduler) return
+    const dm = this.deckManager
+    const activeDeck = dm.activeDeck
+    const pendingDeck = dm.pendingDeck
 
-    if (!this.activeDeck || !this.preloadedDeck || !this.ctx) return
-    if (this.crossfadeWindowMs <= 0) {
-      this.scheduleGapless()
+    if (!activeDeck.loaded || !pendingDeck.loaded) return
+
+    this.scheduler.reset()
+
+    const effectiveWindowMs = this.smartCrossfadeEnabled ? this.smartCrossfadeMaxMs : this.crossfadeWindowMs
+    const suppress = shouldSuppressCrossfade(
+      activeDeck.parentKey, pendingDeck.parentKey, this.sameAlbumCrossfadeEnabled,
+    )
+
+    if (effectiveWindowMs <= 0 || suppress || pendingDeck.skipCrossfade) {
+      // Gapless mode
+      this.scheduler.setMode("gapless")
+      this.scheduler.setTransitionPoint(activeDeck.durationMs / 1000)
       return
     }
 
-    const deck = this.activeDeck
-    const suppress = this.shouldSuppressCrossfade(this.preloadedDeck)
-    if (suppress) {
-      this.scheduleGapless()
-      return
+    // Crossfade mode
+    this.scheduler.setMode("crossfade")
+    const plan = this.computeTransitionPlan()
+    if (plan) {
+      this.scheduler.setTransitionPoint(plan.startTimeSeconds)
     }
+  }
 
-    // Determine crossfade start time
-    let crossfadeMs = this.crossfadeWindowMs
-    let crossfadeStartMs: number
-    let nextStartOffset = 0
+  private computeTransitionPlan(): TransitionPlan | null {
+    if (!this.deckManager) return null
+    const activeDeck = this.deckManager.activeDeck
+    const pendingDeck = this.deckManager.pendingDeck
+
+    if (!activeDeck.loaded || !pendingDeck.loaded) return null
+
+    const outDurationSec = activeDeck.durationMs / 1000
+    const outEndRamp = (activeDeck.ramps ?? this.rampCache.get(activeDeck.ratingKey))?.endRamp
+    const inStartRamp = (pendingDeck.ramps ?? this.rampCache.get(pendingDeck.ratingKey))?.startRamp
+
+    const params = {
+      outDurationSec,
+      outParentKey: activeDeck.parentKey,
+      inParentKey: pendingDeck.parentKey,
+      outEndRamp,
+      inStartRamp,
+      crossfadeWindowMs: this.crossfadeWindowMs,
+      smartCrossfadeMaxMs: this.smartCrossfadeMaxMs,
+      mixrampDb: this.mixrampDb,
+      smartCrossfadeEnabled: this.smartCrossfadeEnabled,
+      sameAlbumCrossfade: this.sameAlbumCrossfadeEnabled,
+    }
 
     if (this.smartCrossfadeEnabled) {
-      const currentAnalysis = this.analysisCache.get(deck.ratingKey)
-      const nextAnalysis = this.preloadedDeck ? this.analysisCache.get(this.preloadedDeck.ratingKey) : null
-
-      if (currentAnalysis) {
-        const outroLen = currentAnalysis.audio_end_ms - currentAnalysis.outro_start_ms
-        crossfadeMs = Math.min(outroLen > 500 ? outroLen : 2000, this.crossfadeWindowMs)
-        crossfadeStartMs = Math.max(currentAnalysis.audio_end_ms - crossfadeMs, 0)
-      } else {
-        crossfadeStartMs = deck.durationMs - crossfadeMs
-      }
-
-      if (nextAnalysis && nextAnalysis.audio_start_ms > 50) {
-        nextStartOffset = nextAnalysis.audio_start_ms / 1000
-      }
-    } else {
-      crossfadeStartMs = deck.durationMs - crossfadeMs
+      // Try MixRamp first, falls back to timed internally
+      return computeMixrampTransition(params)
     }
 
-    const currentPositionMs = this.getDeckPositionMs(deck)
-    const delayMs = crossfadeStartMs - currentPositionMs
-
-    if (delayMs <= 0) {
-      this.executeCrossfade(crossfadeMs, nextStartOffset)
-      return
-    }
-
-    log("crossfade scheduled in", (delayMs / 1000).toFixed(1), "s, duration:", crossfadeMs, "ms")
-    this.crossfadeTimer = setTimeout(() => {
-      this.executeCrossfade(crossfadeMs, nextStartOffset)
-    }, delayMs)
+    return computeTimedTransition(params)
   }
 
-  private scheduleGapless(): void {
-    if (!this.activeDeck || !this.preloadedDeck || !this.ctx) return
-
-    const deck = this.activeDeck
-    const remainingMs = deck.durationMs - this.getDeckPositionMs(deck)
-
-    if (remainingMs <= 0) {
-      this.executeGapless()
-      return
+  /**
+   * Short equal-power crossfade for user-initiated skips (next/prev/click).
+   * Immediately ducks the outgoing track instead of using the full smart crossfade.
+   */
+  private computeSkipDuckPlan(): TransitionPlan | null {
+    const durationSec = this.skipCrossfadeMs / 1000
+    const steps = Math.max(2, Math.ceil(durationSec * 100))
+    return {
+      startTimeSeconds: 0, // immediate
+      durationSeconds: durationSec,
+      fadeOutCurve: generateFadeOut(steps),
+      fadeInCurve: generateFadeIn(steps),
     }
-
-    log("gapless scheduled in", (remainingMs / 1000).toFixed(1), "s")
-    this.crossfadeTimer = setTimeout(() => {
-      this.executeGapless()
-    }, Math.max(remainingMs - 100, 0)) // Start 100ms early to minimize gap
   }
 
-  private executeGapless(): void {
-    if (!this.preloadedDeck) return
-    log("executeGapless()")
-    const prevDeck = this.activeDeck
-    const nextDeck = this.preloadedDeck
-    this.preloadedDeck = null
+  private handleTransitionPoint(): void {
+    log("transition point reached")
+    const plan = this.computeTransitionPlan()
+    if (plan) {
+      this.executeTransition(plan)
+    }
+  }
+
+  private handleGaplessPoint(): void {
+    log("gapless point reached")
+    if (!this.deckManager || !this.deckManager.pendingDeck.loaded) return
+
+    const dm = this.deckManager
     const gen = this.playGeneration
 
-    // Start next deck — fires onTrackStarted which advances the playerStore queue
-    this.startDeck(nextDeck, gen)
+    // Connect pending deck output to signal chain during overlap
+    this.signalChain?.connectAdditionalSource(dm.getPendingOutput())
 
-    // Clean up previous deck + notify for scrobbling/progress reporting
-    if (prevDeck) {
-      this.cb?.onTrackEnded(prevDeck.ratingKey)
-      this.destroyDeck(prevDeck)
-    }
+    dm.gaplessTransition()
+
+    // Reconnect signal chain to new active deck
+    this.signalChain?.disconnectAdditionalSources()
+    this.signalChain?.setSource(dm.getActiveOutput())
+
+    // Re-attach events
+    dm.attachActiveEvents(gen, () => this.playGeneration)
+
+    // Schedule next transition
+    this.scheduleTransition()
+
+    // Start deferred preload if needed
+    this.waitForBufferThenPreload()
   }
 
-  private executeCrossfade(durationMs: number, nextStartOffset = 0): void {
-    if (!this.activeDeck || !this.preloadedDeck || !this.ctx) return
-
-    log("executeCrossfade() duration:", durationMs, "ms, nextOffset:", nextStartOffset)
-    this.isCrossfading = true
-    const ctx = this.ctx
-    const oldDeck = this.activeDeck
-    const newDeck = this.preloadedDeck
-    this.preloadedDeck = null
+  private executeTransition(plan: TransitionPlan): void {
+    if (!this.deckManager || !this.signalChain) return
+    const dm = this.deckManager
     const gen = this.playGeneration
 
-    const fadeDurationSec = durationMs / 1000
-    const now = ctx.currentTime
+    log("executeTransition() duration:", (plan.durationSeconds * 1000).toFixed(0), "ms")
 
-    // Build equal-power crossfade curves
-    const steps = Math.max(2, Math.ceil(fadeDurationSec * 100)) // ~100 steps/sec
-    const fadeOut = new Float32Array(steps)
-    const fadeIn = new Float32Array(steps)
-    for (let i = 0; i < steps; i++) {
-      const t = i / (steps - 1)
-      fadeOut[i] = Math.cos(t * Math.PI / 2)
-      fadeIn[i] = Math.sin(t * Math.PI / 2)
-    }
+    // Connect pending deck output to signal chain for overlap
+    this.signalChain.connectAdditionalSource(dm.getPendingOutput())
 
-    // Apply normalization gain to fade curves
-    const oldNormValue = oldDeck.normGain.gain.value
-    const newNormValue = newDeck.normGain.gain.value
-    for (let i = 0; i < steps; i++) {
-      fadeOut[i] *= oldNormValue
-      fadeIn[i] *= newNormValue
-    }
+    // Execute the transition (applies gain curves to fadeGain nodes)
+    dm.transition(plan)
 
-    // Schedule fade-out on old deck
-    oldDeck.normGain.gain.cancelScheduledValues(now)
-    oldDeck.normGain.gain.setValueCurveAtTime(fadeOut, now, fadeDurationSec)
-
-    // Start new deck and schedule fade-in
-    if (nextStartOffset > 0) {
-      newDeck.audio.currentTime = nextStartOffset
-    }
-    newDeck.normGain.gain.setValueAtTime(0, now)
-    newDeck.normGain.gain.setValueCurveAtTime(fadeIn, now, fadeDurationSec)
-
-    newDeck.audio.play().catch(() => {})
-
-    // Track-started fires immediately for the new deck
-    this.activeDeck = newDeck
-    this.cb?.onTrackStarted(newDeck.ratingKey, newDeck.durationMs)
-
-    // After fade completes, clean up old deck
-    const cleanupGen = gen
+    // After transition: reconnect signal chain to new active deck
+    const durationMs = plan.durationSeconds * 1000
     setTimeout(() => {
-      this.isCrossfading = false
-      if (this.playGeneration !== cleanupGen) return
-      log("crossfade complete, cleaning up old deck ratingKey:", oldDeck.ratingKey)
-      // Don't fire onTrackEnded here — the playerStore already advanced via onTrackStarted.
-      // Firing it would cause a duplicate next() call and snowball skipping.
-      this.destroyDeck(oldDeck)
+      if (this.playGeneration !== gen) return
 
-      // Reschedule crossfade for the next track (if preloaded by now)
-      this.scheduleCrossfade()
+      this.signalChain?.disconnectAdditionalSources()
+      this.signalChain?.setSource(dm.getActiveOutput())
+
+      // Re-attach events to new active deck
+      dm.attachActiveEvents(gen, () => this.playGeneration)
+
+      // Schedule next transition
+      this.scheduleTransition()
+
+      // Start deferred preload
+      this.waitForBufferThenPreload()
     }, durationMs + 100)
   }
 
-  private cancelCrossfade(): void {
-    if (this.crossfadeTimer !== null) {
-      clearTimeout(this.crossfadeTimer)
-      this.crossfadeTimer = null
+  // ---------------------------------------------------------------------------
+  // Deferred preload
+  // ---------------------------------------------------------------------------
+
+  private waitForBufferThenPreload(): void {
+    if (!this.deckManager) {
+      this.flushPendingPreload()
+      return
     }
+    const activeDeck = this.deckManager.activeDeck
+    if (!activeDeck.loaded) {
+      this.flushPendingPreload()
+      return
+    }
+
+    if (activeDeck.isFullyBuffered()) {
+      log("active deck already fully buffered")
+      this.flushPendingPreload()
+    }
+    // Otherwise, DeckManager's onActiveBuffered callback will call flushPendingPreload
+  }
+
+  private flushPendingPreload(): void {
+    if (this.pendingPreload) {
+      const p = this.pendingPreload
+      this.pendingPreload = null
+      this.executePreload(p.url, p.ratingKey, p.durationMs, p.parentKey, p.gainDb, p.skipCrossfade, p.startRamp, p.endRamp)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ramp cache
+  // ---------------------------------------------------------------------------
+
+  private parseAndCacheRamps(ratingKey: number, startRamp: string | null, endRamp: string | null): TrackRamps | null {
+    if (!startRamp && !endRamp) return null
+    const cached = this.rampCache.get(ratingKey)
+    if (cached) return cached
+    const ramps: TrackRamps = {
+      startRamp: parseRamp(startRamp),
+      endRamp: parseRamp(endRamp),
+    }
+    this.rampCache.set(ratingKey, ramps)
+    if (this.rampCache.size > 500) {
+      const firstKey = this.rampCache.keys().next().value
+      if (firstKey !== undefined) this.rampCache.delete(firstKey)
+    }
+    return ramps
+  }
+
+  getTrackRamps(ratingKey: number): TrackRamps | null {
+    return this.rampCache.get(ratingKey) ?? null
+  }
+
+  getMixrampOverlap(endRamp: RampPoint[], startRamp: RampPoint[]): { endOverlapSec: number; startOverlapSec: number } | null {
+    const endOverlapSec = mixrampInterpolate(endRamp, this.mixrampDb)
+    const startOverlapSec = mixrampInterpolate(startRamp, this.mixrampDb)
+    if (endOverlapSec < 0 || startOverlapSec < 0) return null
+    return { endOverlapSec, startOverlapSec }
   }
 
   // ---------------------------------------------------------------------------
@@ -768,38 +718,31 @@ class WebAudioEngine {
   setEq(gainsDb: number[]): void {
     this.eqGains = [...gainsDb]
     if (!this.eqEnabled) return
-    for (let i = 0; i < this.eqNodes.length && i < gainsDb.length; i++) {
-      this.eqNodes[i].gain.value = gainsDb[i]
-    }
+    this.equalizer?.setGains(gainsDb)
   }
 
   setEqEnabled(enabled: boolean): void {
     log("setEqEnabled:", enabled)
     this.eqEnabled = enabled
-    for (let i = 0; i < this.eqNodes.length; i++) {
-      this.eqNodes[i].gain.value = enabled ? this.eqGains[i] : 0
+    if (this.equalizer) {
+      this.equalizer.enabled = enabled
+      this.equalizer.setGains(enabled ? this.eqGains : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+      // Rebuild signal chain to connect/disconnect EQ
+      this.signalChain?.rebuild()
     }
-    if (this.postgainNode) {
-      this.postgainNode.gain.value = this.dbToGain(enabled ? this.postgainDb : 0)
-    }
+    this.postgain?.setGain(enabled ? this.postgainDb : 0)
   }
 
   setPreampGain(db: number): void {
     this.preampDb = db
-    if (this.preampNode) {
-      this.preampNode.gain.value = this.dbToGain(db)
-    }
+    this.preamp?.setGain(db)
   }
 
   setEqPostgain(db: number): void {
     this.postgainDb = db
-    if (this.postgainNode && this.eqEnabled) {
-      this.postgainNode.gain.value = this.dbToGain(db)
+    if (this.eqEnabled) {
+      this.postgain?.setGain(db)
     }
-  }
-
-  setEqPostgainAuto(auto: boolean): void {
-    this.postgainAuto = auto
   }
 
   // ---------------------------------------------------------------------------
@@ -812,19 +755,31 @@ class WebAudioEngine {
   }
 
   setSameAlbumCrossfade(enabled: boolean): void {
-    this.sameAlbumCrossfade = enabled
+    this.sameAlbumCrossfadeEnabled = enabled
   }
 
   setSmartCrossfade(enabled: boolean): void {
     this.smartCrossfadeEnabled = enabled
   }
 
+  setSmartCrossfadeMax(ms: number): void {
+    log("setSmartCrossfadeMax:", ms, "ms")
+    this.smartCrossfadeMaxMs = ms
+  }
+
+  setMixrampDb(db: number): void {
+    log("setMixrampDb:", db, "dB")
+    this.mixrampDb = db
+  }
+
   setNormalizationEnabled(enabled: boolean): void {
     log("setNormalizationEnabled:", enabled)
     this.normalizationEnabled = enabled
-    if (this.activeDeck) {
-      const { gainDb } = this.activeDeck
-      this.activeDeck.normGain.gain.value = enabled && gainDb != null ? this.dbToGain(gainDb) : 1
+    if (this.deckManager?.activeDeck.loaded) {
+      const { gainDb } = this.deckManager.activeDeck
+      this.deckManager.activeDeck.setNormGain(
+        enabled && gainDb != null ? dbToGain(gainDb) : 1,
+      )
     }
   }
 
@@ -833,192 +788,22 @@ class WebAudioEngine {
   // ---------------------------------------------------------------------------
 
   setVisualizerEnabled(enabled: boolean): void {
-    this.visEnabled = enabled
-    if (enabled) {
-      this.startVisLoop()
-    } else {
-      this.stopVisLoop()
+    this.visualizerDesired = enabled
+    if (this.analyser) {
+      this.analyser.setEnabled(enabled, (samples) => {
+        this.cb?.onVisFrame?.(samples)
+      })
     }
   }
 
-  private startVisLoop(): void {
-    if (this.visRafId !== null) return
-    if (!this.analyserNode) return
-    if (!this.visSamples) {
-      this.visSamples = new Float32Array(this.analyserNode.fftSize)
-    }
-    const loop = () => {
-      if (!this.visEnabled || !this.analyserNode) {
-        this.visRafId = null
-        return
-      }
-      this.analyserNode.getFloatTimeDomainData(this.visSamples!)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.cb?.onVisFrame?.(this.visSamples! as any)
-      this.visRafId = requestAnimationFrame(loop)
-    }
-    this.visRafId = requestAnimationFrame(loop)
+  /** Expose hardware-accelerated FFT frequency data from the AnalyserNode. */
+  getFrequencyData(): Float32Array | null {
+    return this.analyser?.getFrequencyData() ?? null
   }
 
-  private stopVisLoop(): void {
-    if (this.visRafId !== null) {
-      cancelAnimationFrame(this.visRafId)
-      this.visRafId = null
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Track Analysis (Web Worker)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Wait for the active deck to finish buffering the full file before starting
-   * preload + analysis downloads. Plex servers can't reliably handle multiple
-   * concurrent stream connections, so we serialize all downloads.
-   */
-  private waitForBufferThenPreloadAndAnalyze(): void {
-    const active = this.activeDeck
-    if (!active) {
-      this.flushPendingPreload()
-      this.drainAnalysisQueue()
-      return
-    }
-    const gen = this.playGeneration
-
-    const isFullyBuffered = () => {
-      const audio = active.audio
-      if (!audio.duration || !isFinite(audio.duration)) return false
-      const buf = audio.buffered
-      if (buf.length === 0) return false
-      return buf.end(buf.length - 1) >= audio.duration - 0.5
-    }
-
-    const fire = () => {
-      log("active deck fully buffered, starting preload + analysis")
-      this.flushPendingPreload()
-      this.drainAnalysisQueue()
-    }
-
-    if (isFullyBuffered()) {
-      fire()
-      return
-    }
-
-    const onProgress = () => {
-      if (this.playGeneration !== gen) { cleanup(); return }
-      if (isFullyBuffered()) { cleanup(); fire() }
-    }
-    const onFail = () => { cleanup(); fire() }
-    const cleanup = () => {
-      active.audio.removeEventListener("progress", onProgress)
-      active.audio.removeEventListener("ended", onFail)
-      active.audio.removeEventListener("error", onFail)
-    }
-
-    active.audio.addEventListener("progress", onProgress)
-    active.audio.addEventListener("ended", onFail)
-    active.audio.addEventListener("error", onFail)
-  }
-
-  private flushPendingPreload(): void {
-    if (this.pendingPreload) {
-      const p = this.pendingPreload
-      this.pendingPreload = null
-      this.executePreload(p.url, p.ratingKey, p.durationMs, p.parentKey, p.gainDb, p.skipCrossfade)
-    }
-  }
-
-  async analyzeTrack(url: string, ratingKey: number, durationMs: number): Promise<void> {
-    if (this.analysisCache.has(ratingKey)) return
-    if (!this.worker) return
-    // Don't queue duplicates
-    if (this.analysisQueue.some((q) => q.ratingKey === ratingKey)) return
-
-    this.analysisQueue.push({ url, ratingKey, durationMs })
-    log("analyzeTrack() queued ratingKey:", ratingKey, "queue length:", this.analysisQueue.length)
-    // Don't auto-drain — the queue is drained after the active deck is fully buffered
-    // to avoid competing for Plex connections. See waitForBufferThenPreloadAndAnalyze().
-  }
-
-  /** Wait for the preloaded deck to finish buffering (if any). */
-  private waitForPreloadBuffered(): Promise<void> {
-    const preloaded = this.preloadedDeck
-    if (!preloaded) return Promise.resolve()
-    const audio = preloaded.audio
-    const isReady = () => {
-      if (!audio.duration || !isFinite(audio.duration)) return false
-      const buf = audio.buffered
-      return buf.length > 0 && buf.end(buf.length - 1) >= audio.duration - 0.5
-    }
-    if (isReady()) return Promise.resolve()
-    return new Promise<void>((resolve) => {
-      const gen = this.playGeneration
-      const onProgress = () => {
-        if (this.playGeneration !== gen || isReady()) { cleanup(); resolve() }
-      }
-      const onDone = () => { cleanup(); resolve() }
-      const cleanup = () => {
-        audio.removeEventListener("progress", onProgress)
-        audio.removeEventListener("canplaythrough", onDone)
-        audio.removeEventListener("ended", onDone)
-        audio.removeEventListener("error", onDone)
-      }
-      audio.addEventListener("progress", onProgress)
-      audio.addEventListener("canplaythrough", onDone)
-      audio.addEventListener("ended", onDone)
-      audio.addEventListener("error", onDone)
-    })
-  }
-
-  private async fetchAndAnalyze(job: { url: string; ratingKey: number; durationMs: number }): Promise<boolean> {
-    const ctx = this.ensureContext()
-    const abort = new AbortController()
-    const timeout = setTimeout(() => abort.abort(), 30_000)
-    const response = await fetch(job.url, { signal: abort.signal })
-    const arrayBuffer = await response.arrayBuffer()
-    clearTimeout(timeout)
-
-    const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0))
-    const mono = audioBuffer.getChannelData(0)
-    const transferable = mono.buffer.slice(0) as ArrayBuffer
-    this.worker?.postMessage(
-      { samples: new Float32Array(transferable), sampleRate: audioBuffer.sampleRate, ratingKey: job.ratingKey, durationMs: job.durationMs },
-      [transferable],
-    )
-    return true
-  }
-
-  private async drainAnalysisQueue(): Promise<void> {
-    if (this.analysisRunning) return
-    this.analysisRunning = true
-
-    // Wait for the preloaded deck to finish downloading before using the connection
-    await this.waitForPreloadBuffered()
-
-    while (this.analysisQueue.length > 0) {
-      const job = this.analysisQueue.shift()!
-      if (this.analysisCache.has(job.ratingKey)) continue
-
-      log("analyzeTrack() fetching ratingKey:", job.ratingKey)
-
-      try {
-        await this.fetchAndAnalyze(job)
-      } catch (err) {
-        warn("analyzeTrack() failed for ratingKey:", job.ratingKey, err, "— retrying in 2s")
-        try {
-          await new Promise((r) => setTimeout(r, 2000))
-          await this.fetchAndAnalyze(job)
-        } catch (retryErr) {
-          warn("analyzeTrack() retry also failed for ratingKey:", job.ratingKey, retryErr)
-        }
-      }
-    }
-
-    this.analysisRunning = false
-  }
-
-  getTrackAnalysis(ratingKey: number): TrackAnalysis | null {
-    return this.analysisCache.get(ratingKey) ?? null
+  /** Return the AudioContext sample rate (needed for correct FFT bin mapping). */
+  getSampleRate(): number {
+    return this.ctx?.sampleRate ?? 44100
   }
 
   // ---------------------------------------------------------------------------
@@ -1026,24 +811,13 @@ class WebAudioEngine {
   // ---------------------------------------------------------------------------
 
   private pollPosition(): void {
-    if (!this.activeDeck) return
-    if (this.activeDeck.audio.paused && !this.activeDeck.audio.seeking) return
+    if (!this.deckManager?.activeDeck.loaded) return
+    const deck = this.deckManager.activeDeck
+    if (deck.paused) return
 
-    const posMs = this.getDeckPositionMs(this.activeDeck)
-    const durMs = this.activeDeck.durationMs
+    const posMs = deck.getCurrentTime() * 1000
+    const durMs = deck.durationMs
     this.cb?.onPosition(Math.min(posMs, durMs), durMs)
-  }
-
-  private getDeckPositionMs(deck: Deck): number {
-    return deck.audio.currentTime * 1000
-  }
-
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
-
-  private dbToGain(db: number): number {
-    return Math.pow(10, db / 20)
   }
 
   // ---------------------------------------------------------------------------
@@ -1053,21 +827,32 @@ class WebAudioEngine {
   destroy(): void {
     log("destroy()")
     this.stop()
-    this.cancelCrossfade()
-    this.stopVisLoop()
 
     if (this.positionTimer !== null) {
       clearInterval(this.positionTimer)
       this.positionTimer = null
     }
 
-    this.worker?.terminate()
-    this.worker = null
+    this.analyser?.dispose()
+    this.signalChain?.dispose()
+    this.deckManager?.dispose()
+    this.preamp?.dispose()
+    this.equalizer?.dispose()
+    this.postgain?.dispose()
+    this.limiter?.dispose()
 
-    if (this.ctx) {
-      void this.ctx.close()
-      this.ctx = null
-    }
+    this.analyser = null
+    this.signalChain = null
+    this.deckManager = null
+    this.scheduler = null
+    this.preamp = null
+    this.equalizer = null
+    this.postgain = null
+    this.limiter = null
+    this.masterNode = null
+
+    closeAudioContext()
+    this.ctx = null
   }
 }
 

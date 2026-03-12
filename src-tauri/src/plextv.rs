@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 const PLEX_TV_BASE: &str = "https://plex.tv";
 const PLEX_APP_AUTH: &str = "https://app.plex.tv/auth";
-const PRODUCT: &str = "Plexify";
+const PRODUCT: &str = "Hibiki";
 
 static PLEX_TV_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
@@ -52,6 +52,12 @@ pub struct PlexResource {
     pub client_identifier: String,
     #[serde(default)]
     pub provides: String,
+    /// Per-resource auth token. For shared servers this differs from the user's main token.
+    #[serde(rename(deserialize = "accessToken"), default)]
+    pub access_token: Option<String>,
+    /// Whether the authenticated user owns this server.
+    #[serde(default)]
+    pub owned: bool,
     pub connections: Vec<PlexConnection>,
 }
 

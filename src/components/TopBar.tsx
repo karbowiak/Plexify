@@ -2,7 +2,7 @@ import { useLocation } from "wouter"
 import { useEffect, useRef, useState } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { useSearchStore, useConnectionStore, useUIStore, useLibraryStore } from "../stores"
-import { getMetadataBackends } from "../backends/registry"
+import { metadataBackends } from "../metadata"
 import { clearImageCache } from "../lib/imageCache"
 import { ActivityIndicator } from "./ActivityIndicator"
 import { SearchDropdown } from "./SearchDropdown"
@@ -12,6 +12,7 @@ export function TopBar() {
   const [location, navigate] = useLocation()
   const { search, clear, setQuery, query } = useSearchStore(useShallow(s => ({ search: s.search, clear: s.clear, setQuery: s.setQuery, query: s.query })))
   const { musicSectionId, isConnected } = useConnectionStore(useShallow(s => ({ musicSectionId: s.musicSectionId, isConnected: s.isConnected })))
+  const wsConnected = useLibraryStore(s => s.wsConnected)
   const { isRefreshing, setIsRefreshing, incrementPageRefreshKey } = useUIStore(useShallow(s => ({ isRefreshing: s.isRefreshing, setIsRefreshing: s.setIsRefreshing, incrementPageRefreshKey: s.incrementPageRefreshKey })))
   const { refreshAll, invalidateCache } = useLibraryStore(useShallow(s => ({ refreshAll: s.refreshAll, invalidateCache: s.invalidateCache })))
   const [localQuery, setLocalQuery] = useState(query)
@@ -42,20 +43,16 @@ export function TopBar() {
     setActiveIndex(-1)
   }, [location])
 
-  // Global keyboard shortcuts
+  // Listen for global hotkey events from useGlobalHotkeys
   useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "r") {
-        e.preventDefault()
-        void handleRefresh()
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        e.preventDefault()
-        inputRef.current?.focus()
-      }
+    function onSearchFocus() { inputRef.current?.focus() }
+    function onRefresh() { void handleRefresh() }
+    window.addEventListener("plexify:search-focus", onSearchFocus)
+    window.addEventListener("plexify:refresh", onRefresh)
+    return () => {
+      window.removeEventListener("plexify:search-focus", onSearchFocus)
+      window.removeEventListener("plexify:refresh", onRefresh)
     }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
   }, [musicSectionId, isRefreshing])
 
   const handleRefresh = async () => {
@@ -65,7 +62,7 @@ export function TopBar() {
       invalidateCache()
       incrementPageRefreshKey()
       // Clear external metadata caches so they re-fetch fresh
-      getMetadataBackends().forEach(b => b.clearCache?.())
+      metadataBackends.forEach(b => b.clearCache?.())
       await Promise.all([
         clearImageCache(),
         refreshAll(),
@@ -119,7 +116,7 @@ export function TopBar() {
 
   return (
     // pt-8 gives 32px of clearance for the macOS traffic-light buttons
-    <div data-tauri-drag-region className={`mb-3 flex flex-row items-center px-8 ${IS_MACOS ? "pt-8" : "pt-2"}`}>
+    <div data-tauri-drag-region className={`mb-3 flex flex-row items-center ${IS_MACOS ? "pt-8" : "pt-2"}`} style={{ paddingInline: "var(--spacing-topbar)" }}>
       <div data-tauri-drag-region className="flex grow flex-row items-center gap-4">
         {/* Back button */}
         <button
@@ -127,7 +124,7 @@ export function TopBar() {
           aria-label="Go back"
           className="h-fit rounded-full bg-app-surface p-2 hover:bg-app-surface-hover transition-colors"
         >
-          <svg role="img" height="16" width="16" className="fill-white" viewBox="0 0 16 16">
+          <svg role="img" height="16" width="16" className="fill-[var(--text-primary)]" viewBox="0 0 16 16">
             <path d="M11.03.47a.75.75 0 0 1 0 1.06L4.56 8l6.47 6.47a.75.75 0 1 1-1.06 1.06L2.44 8 9.97.47a.75.75 0 0 1 1.06 0z" />
           </svg>
         </button>
@@ -138,7 +135,7 @@ export function TopBar() {
           aria-label="Go forward"
           className="h-fit rounded-full bg-app-surface p-2 hover:bg-app-surface-hover transition-colors"
         >
-          <svg role="img" height="16" width="16" className="fill-white" viewBox="0 0 16 16">
+          <svg role="img" height="16" width="16" className="fill-[var(--text-primary)]" viewBox="0 0 16 16">
             <path d="M4.97.47a.75.75 0 0 0 0 1.06L11.44 8l-6.47 6.47a.75.75 0 1 0 1.06 1.06L13.56 8 6.03.47a.75.75 0 0 0-1.06 0z" />
           </svg>
         </button>
@@ -198,7 +195,7 @@ export function TopBar() {
         >
           <svg
             height="15" width="15" viewBox="0 0 24 24" fill="currentColor"
-            className={`text-white/70 ${isRefreshing ? "animate-spin" : ""}`}
+            className={`text-[color:var(--text-secondary)] ${isRefreshing ? "animate-spin" : ""}`}
           >
             <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
           </svg>
@@ -214,11 +211,13 @@ export function TopBar() {
           }`}
           title={location.startsWith("/settings") ? "Close Settings" : "Settings"}
         >
-          <span className={`h-2 w-2 rounded-full flex-shrink-0 ${isConnected ? "bg-green-500" : "bg-red-500"}`} />
-          <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor" className={location.startsWith("/settings") ? "text-accent" : "text-white/70"}>
+          <span className={`h-2 w-2 rounded-full flex-shrink-0 ${
+            !isConnected ? "bg-red-500" : wsConnected ? "bg-green-500" : "bg-amber-500"
+          }`} />
+          <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor" className={location.startsWith("/settings") ? "text-accent" : "text-[color:var(--text-secondary)]"}>
             <path d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.92c.04-.34.07-.68.07-1.08s-.03-.73-.07-1.08l2.32-1.8c.21-.16.27-.44.14-.67l-2.2-3.81c-.13-.24-.41-.31-.65-.24l-2.74 1.1c-.57-.44-1.18-.81-1.86-1.09l-.42-2.9c-.04-.26-.26-.44-.52-.44H9.5c-.26 0-.48.18-.52.44l-.42 2.9c-.68.28-1.29.65-1.86 1.09l-2.74-1.1c-.24-.07-.52 0-.65.24l-2.2 3.81c-.13.24-.07.52.14.67l2.32 1.8c-.04.35-.07.69-.07 1.08s.03.73.07 1.08L2.25 14.3c-.21.16-.27.44-.14.67l2.2 3.81c.13.24.41.31.65.24l2.74-1.1c.57.44 1.18.81 1.86 1.09l.42 2.9c.04.26.26.44.52.44h4.4c.26 0 .48-.18.52-.44l.42-2.9c.68-.28 1.29-.65 1.86-1.09l2.74 1.1c.24.07.52 0 .65-.24l2.2-3.81c.13-.24.07-.52-.14-.67l-2.32-1.8z" />
           </svg>
-          <span className={location.startsWith("/settings") ? "text-accent" : "text-white"}>Settings</span>
+          <span className={location.startsWith("/settings") ? "text-accent" : "text-[color:var(--text-primary)]"}>Settings</span>
         </button>
       </div>
     </div>

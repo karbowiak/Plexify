@@ -9,21 +9,21 @@ import { engine } from "../audio/WebAudioEngine"
 interface AudioSettingsState {
   normalizationEnabled: boolean
   crossfadeWindowMs: number
-  crossfadeStyle: number
   sameAlbumCrossfade: boolean
   smartCrossfade: boolean
+  smartCrossfadeMaxMs: number
+  mixrampDb: number
   preampDb: number
   albumGainMode: boolean
-  preferredDevice: string | null
 
   setNormalizationEnabled: (enabled: boolean) => void
   setCrossfadeWindowMs: (ms: number) => void
-  setCrossfadeStyle: (style: number) => void
   setSameAlbumCrossfade: (enabled: boolean) => void
   setSmartCrossfade: (enabled: boolean) => void
+  setSmartCrossfadeMaxMs: (ms: number) => void
+  setMixrampDb: (db: number) => void
   setPreampDb: (db: number) => void
   setAlbumGainMode: (enabled: boolean) => void
-  setPreferredDevice: (name: string | null) => void
   syncToEngine: () => void
 }
 
@@ -31,13 +31,13 @@ export const useAudioSettingsStore = create<AudioSettingsState>()(
   persist(
     (set, get) => ({
       normalizationEnabled: true,
-      crossfadeWindowMs: 8000,
-      crossfadeStyle: 0,
+      crossfadeWindowMs: 4000,
       sameAlbumCrossfade: false,
       smartCrossfade: true,
+      smartCrossfadeMaxMs: 20000,
+      mixrampDb: -17,
       preampDb: 0,
       albumGainMode: false,
-      preferredDevice: null,
 
       setNormalizationEnabled: (enabled) => {
         set({ normalizationEnabled: enabled })
@@ -47,11 +47,6 @@ export const useAudioSettingsStore = create<AudioSettingsState>()(
       setCrossfadeWindowMs: (ms) => {
         set({ crossfadeWindowMs: ms })
         engine.setCrossfadeWindow(ms)
-      },
-
-      setCrossfadeStyle: (style) => {
-        set({ crossfadeStyle: style })
-        // Web Audio engine only supports smooth crossfade — style stored for UI display
       },
 
       setSameAlbumCrossfade: (enabled) => {
@@ -64,6 +59,16 @@ export const useAudioSettingsStore = create<AudioSettingsState>()(
         engine.setSmartCrossfade(enabled)
       },
 
+      setSmartCrossfadeMaxMs: (ms) => {
+        set({ smartCrossfadeMaxMs: ms })
+        engine.setSmartCrossfadeMax(ms)
+      },
+
+      setMixrampDb: (db) => {
+        set({ mixrampDb: db })
+        engine.setMixrampDb(db)
+      },
+
       setPreampDb: (db) => {
         set({ preampDb: db })
         engine.setPreampGain(db)
@@ -74,17 +79,14 @@ export const useAudioSettingsStore = create<AudioSettingsState>()(
         // No direct engine call needed — gain value is resolved at play time
       },
 
-      setPreferredDevice: (name) => {
-        set({ preferredDevice: name })
-        // Web Audio API uses system default — device selection is N/A
-      },
-
       syncToEngine: () => {
-        const { normalizationEnabled, crossfadeWindowMs, sameAlbumCrossfade, smartCrossfade, preampDb } = get()
+        const { normalizationEnabled, crossfadeWindowMs, sameAlbumCrossfade, smartCrossfade, smartCrossfadeMaxMs, mixrampDb, preampDb } = get()
         engine.setNormalizationEnabled(normalizationEnabled)
         engine.setCrossfadeWindow(crossfadeWindowMs)
         engine.setSameAlbumCrossfade(sameAlbumCrossfade)
         engine.setSmartCrossfade(smartCrossfade)
+        engine.setSmartCrossfadeMax(smartCrossfadeMaxMs)
+        engine.setMixrampDb(mixrampDb)
         engine.setPreampGain(preampDb)
       },
     }),
@@ -93,12 +95,12 @@ export const useAudioSettingsStore = create<AudioSettingsState>()(
       partialize: (state) => ({
         normalizationEnabled: state.normalizationEnabled,
         crossfadeWindowMs: state.crossfadeWindowMs,
-        crossfadeStyle: state.crossfadeStyle,
         sameAlbumCrossfade: state.sameAlbumCrossfade,
         smartCrossfade: state.smartCrossfade,
+        smartCrossfadeMaxMs: state.smartCrossfadeMaxMs,
+        mixrampDb: state.mixrampDb,
         preampDb: state.preampDb,
         albumGainMode: state.albumGainMode,
-        preferredDevice: state.preferredDevice,
       }),
     },
   ),

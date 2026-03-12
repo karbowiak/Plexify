@@ -22,7 +22,7 @@ export function WindowTitleBar() {
     >
       {/* App label */}
       <span data-tauri-drag-region className="pl-3 text-xs font-semibold text-white/70">
-        Plexify
+        Hibiki
       </span>
 
       {/* Window controls */}

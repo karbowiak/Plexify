@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0.0",
-  "productName": "Plexify",
+  "productName": "Hibiki",
   "version": "0.1.0",
-  "identifier": "app.plexify.client",
+  "identifier": "app.hibiki.client",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Plexify",
+        "title": "Hibiki",
         "width": 1400,
         "height": 890,
         "resizable": true,
@@ -58,7 +58,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFEMEY3RDI3Q0RCN0ZGNjIKUldSaS83Zk5KMzBQclhrMFFqSmlrVmVXcXJmZmtUS1REWHcyUXQ1TDV5NDhRQnV5SVZ4OUwzN04K",
       "endpoints": [
-        "https://github.com/karbowiak/plexify/releases/latest/download/latest.json"
+        "https://github.com/karbowiak/hibiki/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

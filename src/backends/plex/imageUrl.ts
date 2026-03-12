@@ -30,9 +30,16 @@ export function buildPlexImageUrl(
   artist?: string | null,
 ): string | null {
   if (!baseUrl || !token || !thumbPath) return null
-  const base = baseUrl.replace(/\/$/, "")
-  const cleanPath = thumbPath.replace(/^\//, "")
-  const plexUrl = `${base}/${cleanPath}?X-Plex-Token=${token}`
+  // If the path is already an absolute URL (e.g. image field from newer PMS),
+  // use it directly without prepending the Plex server base URL.
+  let plexUrl: string
+  if (thumbPath.startsWith("http://") || thumbPath.startsWith("https://")) {
+    plexUrl = thumbPath
+  } else {
+    const base = baseUrl.replace(/\/$/, "")
+    const cleanPath = thumbPath.replace(/^\//, "")
+    plexUrl = `${base}/${cleanPath}?X-Plex-Token=${token}`
+  }
   return buildImageUrl(entityType, entityId, plexUrl, name, artist)
 }
 

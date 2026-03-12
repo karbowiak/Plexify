@@ -45,12 +45,13 @@ function RadioPlayerBar() {
   const volumeTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [volumeTooltipVisible, setVolumeTooltipVisible] = useState(false)
 
-  const { currentStation, isStreamPlaying, isStreamBuffering, streamError, stopStream, pauseStream, resumeStream } =
+  const { currentStation, isStreamPlaying, isStreamBuffering, streamError, icyNowPlaying, stopStream, pauseStream, resumeStream } =
     useRadioStreamStore(useShallow(s => ({
       currentStation: s.currentStation,
       isStreamPlaying: s.isStreamPlaying,
       isStreamBuffering: s.isStreamBuffering,
       streamError: s.streamError,
+      icyNowPlaying: s.icyNowPlaying,
       stopStream: s.stopStream,
       pauseStream: s.pauseStream,
       resumeStream: s.resumeStream,
@@ -61,15 +62,14 @@ function RadioPlayerBar() {
     setVolume: s.setVolume,
   })))
 
-  // Media session metadata for internet radio
+  // Media session metadata for internet radio (updated with ICY now-playing when available)
   useEffect(() => {
     if (!navigator.mediaSession || !currentStation) return
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: currentStation.name,
-      artist: currentStation.tags.slice(0, 2).join(", ") || "Internet Radio",
-    })
+    const title = icyNowPlaying?.title ?? currentStation.name
+    const artist = icyNowPlaying?.artist ?? currentStation.tags.slice(0, 2).join(", ") ?? "Internet Radio"
+    navigator.mediaSession.metadata = new MediaMetadata({ title, artist })
     navigator.mediaSession.playbackState = isStreamPlaying ? "playing" : "paused"
-  }, [currentStation?.uuid, isStreamPlaying])
+  }, [currentStation?.uuid, isStreamPlaying, icyNowPlaying])
 
   // Media session action handlers for radio
   useEffect(() => {
@@ -113,8 +113,8 @@ function RadioPlayerBar() {
         </div>
       )}
       <div className="flex h-fit w-screen min-w-[620px] flex-col overflow-clip bg-app-card">
-        <div className="h-24">
-          <div className="flex h-full items-center justify-between px-4">
+        <div style={{ height: "var(--player-height)" }}>
+          <div className="flex h-full items-center justify-between" style={{ paddingInline: "var(--spacing-player)" }}>
 
             {/* Left: station info */}
             <div className="w-[30%] min-w-[11.25rem]">
@@ -130,9 +130,15 @@ function RadioPlayerBar() {
                 </div>
                 <div className="min-w-0">
                   <h6 className="line-clamp-1 text-sm font-medium text-white">{currentStation.name}</h6>
-                  <p className="truncate text-[0.688rem] text-white/50 mt-0.5">
-                    {currentStation.country && <>{countryFlag(currentStation.country_code)} {currentStation.country}</>}
-                  </p>
+                  {icyNowPlaying && (icyNowPlaying.title || icyNowPlaying.artist) ? (
+                    <p className="truncate text-[0.688rem] text-accent mt-0.5">
+                      {[icyNowPlaying.artist, icyNowPlaying.title].filter(Boolean).join(" — ")}
+                    </p>
+                  ) : (
+                    <p className="truncate text-[0.688rem] text-white/50 mt-0.5">
+                      {currentStation.country && <>{countryFlag(currentStation.country_code)} {currentStation.country}</>}
+                    </p>
+                  )}
                   {tags.length > 0 && (
                     <div className="mt-0.5 flex gap-1">
                       {tags.map(t => (
@@ -420,21 +426,6 @@ export function Player() {
     navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused"
   }, [currentTrack?.id, isPlaying])
 
-  // Global space bar → play/pause (ignored when focus is in a text field)
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code !== "Space") return
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return
-      e.preventDefault()
-      if (!currentTrack) return
-      if (isPlaying) pause()
-      else resume()
-    }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [currentTrack, isPlaying])
-
   // Live countdown for sleep timer
   useEffect(() => {
     if (!sleepEndsAt) {
@@ -506,7 +497,7 @@ export function Player() {
   if (isInternetRadioActive) return <RadioPlayerBar />
 
   return (
-    <div className="relative border-t border-[var(--border)] bg-app-card">
+    <div className="relative z-20 border-t border-[var(--border)] bg-app-card">
       {/* Expanded album art — fixed to bottom-left corner, overlaps sidebar area */}
       {isArtExpanded && thumbUrl && (
         <div
@@ -561,8 +552,8 @@ export function Player() {
       )}
       {fullscreenOpen && <VisualizerFullscreen />}
       <div className="flex h-fit w-screen min-w-[620px] flex-col overflow-clip bg-app-card">
-        <div className="h-24">
-          <div className="flex h-full items-center justify-between px-4">
+        <div style={{ height: "var(--player-height)" }}>
+          <div className="relative flex h-full items-center justify-between" style={{ paddingInline: "var(--spacing-player)" }}>
 
             {/* Left: current track info */}
             <div
@@ -663,8 +654,9 @@ export function Player() {
               </div>
             </div>
 
-            {/* Center: controls + progress */}
-            <div className="flex w-[40%] max-w-[45.125rem] flex-col items-center px-4 pt-2">
+            {/* Center: controls + progress — absolutely centered, never shifts */}
+            <div className="absolute inset-x-0 top-0 flex h-full items-center justify-center z-10 pointer-events-none px-4">
+            <div className="flex w-[40%] max-w-[45.125rem] flex-col items-center pt-2 pointer-events-auto">
               <div className="grid grid-cols-[1fr_auto_1fr] items-center w-full">
                 {/* Left wing: radio, shuffle */}
                 <div className="flex items-center justify-end gap-x-1.5">
@@ -884,6 +876,7 @@ export function Player() {
                   {formatMs(currentTrack?.duration ?? 0)}
                 </div>
               </div>
+            </div>
             </div>
 
             {/* Right: volume + extra controls */}

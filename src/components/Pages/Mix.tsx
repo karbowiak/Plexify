@@ -4,8 +4,11 @@ import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, usePlayerStore } from "../../stores"
 import { useProviderStore } from "../../stores/providerStore"
 import { useCapability } from "../../hooks/useCapability"
-import { formatMs, formatTotalMs } from "../../lib/formatters"
+import { formatTotalMs } from "../../lib/formatters"
 import { UltraBlur } from "../UltraBlur"
+import { useTableSort } from "../../hooks/useTableSort"
+import { ALL_COLUMNS, usePlaylistColumns } from "../../hooks/useColumnPicker"
+import { TrackTable } from "../shared/TrackTable"
 import type { MusicTrack, MusicPlaylist } from "../../types/music"
 
 // ---------------------------------------------------------------------------
@@ -69,13 +72,27 @@ export function MixPage() {
   const [mixItem] = useState<MusicPlaylist | null>(() => _selectedMix)
   const provider = useProviderStore(s => s.provider)
 
-  const { playTrack, addToQueue, currentTrack } = usePlayerStore(
+  const { playTrack, playRadio, addToQueue, currentTrack } = usePlayerStore(
     useShallow(s => ({
       playTrack: s.playTrack,
+      playRadio: s.playRadio,
       addToQueue: s.addToQueue,
       currentTrack: s.currentTrack,
     }))
   )
+
+  const { visible: visibleCols, toggle: toggleCol } = usePlaylistColumns("plex-mix-columns", ["album" as const])
+
+  const [filterQuery, setFilterQuery] = useState("")
+  const [debouncedQuery, setDebouncedQuery] = useState("")
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(filterQuery), 150)
+    return () => clearTimeout(t)
+  }, [filterQuery])
+
+  type SortCol = "default" | "title" | "artist" | "album" | "year" | "plays" | "popularity" | "label" | "bitrate" | "format" | "added_at" | "rating" | "rated_at" | "duration"
+  const { sortCol, sortDir, handleSort } = useTableSort<SortCol>()
 
   if (!hasMixTracks) { navigate("/"); return null }
 
@@ -145,6 +162,44 @@ export function MixPage() {
       })
       .catch(() => {})
   }, [mixItem?.title, provider])
+
+  const filteredTracks = useMemo(() => {
+    if (!debouncedQuery) return tracks
+    const q = debouncedQuery.toLowerCase()
+    return tracks.filter(t =>
+      t.title.toLowerCase().includes(q) ||
+      t.artistName.toLowerCase().includes(q) ||
+      t.albumName.toLowerCase().includes(q)
+    )
+  }, [tracks, debouncedQuery])
+
+  const sortedTracks = useMemo(() => {
+    if (sortCol === "default") return filteredTracks
+    const items = [...filteredTracks]
+    items.sort((a, b) => {
+      let cmp = 0
+      switch (sortCol) {
+        case "title":      cmp = a.title.localeCompare(b.title); break
+        case "artist":     cmp = a.artistName.localeCompare(b.artistName); break
+        case "album":      cmp = a.albumName.localeCompare(b.albumName); break
+        case "year":       cmp = (a.albumYear ?? a.year) - (b.albumYear ?? b.year); break
+        case "plays":      cmp = a.playCount - b.playCount; break
+        case "popularity": cmp = (a.ratingCount ?? 0) - (b.ratingCount ?? 0); break
+        case "label":      cmp = (a.parentStudio ?? "").localeCompare(b.parentStudio ?? ""); break
+        case "bitrate":    cmp = (a.bitrate ?? 0) - (b.bitrate ?? 0); break
+        case "format":     cmp = (a.codec ?? "").localeCompare(b.codec ?? ""); break
+        case "added_at":   cmp = (a.addedAt ? +new Date(a.addedAt) : 0) - (b.addedAt ? +new Date(b.addedAt) : 0); break
+        case "rating":     cmp = (a.userRating ?? 0) - (b.userRating ?? 0); break
+        case "rated_at": {
+          cmp = (a.lastRatedAt ? +new Date(a.lastRatedAt) : 0) - (b.lastRatedAt ? +new Date(b.lastRatedAt) : 0)
+          break
+        }
+        case "duration":   cmp = a.duration - b.duration; break
+      }
+      return sortDir === "asc" ? cmp : -cmp
+    })
+    return items
+  }, [filteredTracks, sortCol, sortDir])
 
   if (!mixItem) {
     return (
@@ -257,138 +312,26 @@ export function MixPage() {
       </div>
 
       {/* Track list */}
-      <div className="px-8 pt-2">
-        <table className="w-full text-sm text-gray-400">
-          <thead className="border-b border-white/10">
-            <tr>
-              <th className="p-2 text-center w-8">#</th>
-              <th className="p-2 text-left">Title</th>
-              <th className="p-2 text-left">Album</th>
-              <th className="p-2 text-right">Duration</th>
-            </tr>
-          </thead>
-          <tbody>
-            {/* Skeleton rows while loading */}
-            {isLoading && tracks.length === 0 && Array.from({ length: 6 }).map((_, i) => (
-              <tr key={i} className="animate-pulse">
-                <td className="p-2 w-8"><div className="h-3 w-3 rounded bg-white/10 mx-auto" /></td>
-                <td className="p-2">
-                  <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 rounded-sm bg-white/10 flex-shrink-0" />
-                    <div className="space-y-1.5 flex-1">
-                      <div className="h-3 rounded bg-white/10 w-2/3" />
-                      <div className="h-2.5 rounded bg-white/10 w-1/3" />
-                    </div>
-                  </div>
-                </td>
-                <td className="p-2"><div className="h-3 rounded bg-white/10 w-3/4" /></td>
-                <td className="p-2 text-right"><div className="h-3 rounded bg-white/10 w-10 ml-auto" /></td>
-              </tr>
-            ))}
-
-            {tracks.map((track, idx) => {
-              const isActive = currentTrack?.id === track.id
-              return (
-                <tr
-                  key={`${track.id}-${idx}`}
-                  className={`group cursor-pointer rounded ${isActive ? "bg-hl-row" : "hover:bg-hl-row"}`}
-                  onClick={() => void playTrack(track, tracks, mixItem.title, "/mix")}
-                >
-                  <td className="p-2 text-center w-8">
-                    {isActive ? (
-                      <>
-                        <span className="group-hover:hidden flex items-center justify-center text-accent">
-                          <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                            <rect x="1" y="3" width="3" height="10" rx="1"/>
-                            <rect x="6" y="1" width="3" height="12" rx="1"/>
-                            <rect x="11" y="5" width="3" height="8" rx="1"/>
-                          </svg>
-                        </span>
-                        <span className="hidden group-hover:flex items-center justify-center text-accent">
-                          <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                            <polygon points="3,2 13,8 3,14" />
-                          </svg>
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="group-hover:hidden">{idx + 1}</span>
-                        <span className="hidden group-hover:flex items-center justify-center">
-                          <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                            <polygon points="3,2 13,8 3,14" />
-                          </svg>
-                        </span>
-                      </>
-                    )}
-                  </td>
-
-                  <td className="p-2">
-                    <div className="flex items-center gap-3">
-                      {track.thumbUrl ? (
-                        <img className="h-10 w-10 rounded-sm flex-shrink-0 object-cover" src={track.thumbUrl} alt="" />
-                      ) : (
-                        <div className="h-10 w-10 rounded-sm flex-shrink-0 bg-app-surface" />
-                      )}
-                      <div className="min-w-0">
-                        <div className={`truncate ${isActive ? "text-accent" : "text-white"}`}>{track.title}</div>
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="truncate shrink min-w-0">
-                            {track.artistId ? (
-                              <Link
-                                href={`/artist/${track.artistId}`}
-                                className="text-gray-500 hover:text-white hover:underline transition-colors"
-                                onClick={e => e.stopPropagation()}
-                              >
-                                {track.artistName}
-                              </Link>
-                            ) : (
-                              <span className="text-gray-500">{track.artistName}</span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                            <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-hl-menu"
-                              title="Add to Queue"
-                              onClick={e => { e.stopPropagation(); addToQueue([track]) }}
-                            >
-                              <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor">
-                                <path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
-                              </svg>
-                              Queue
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-
-                  <td className="p-2 truncate max-w-[200px]">
-                    {track.albumId ? (
-                      <Link
-                        href={`/album/${track.albumId}`}
-                        className="hover:text-white hover:underline transition-colors"
-                        onClick={e => e.stopPropagation()}
-                      >
-                        {track.albumName}
-                      </Link>
-                    ) : (
-                      track.albumName
-                    )}
-                  </td>
-
-                  <td className="p-2 text-right tabular-nums">{formatMs(track.duration)}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-
-        {!isLoading && tracks.length === 0 && (
-          <div className="py-12 text-center text-sm text-gray-500">
-            No tracks found for this mix.
-          </div>
-        )}
-      </div>
+      <TrackTable
+        tracks={sortedTracks}
+        visibleCols={visibleCols}
+        toggleCol={toggleCol}
+        sortCol={sortCol}
+        sortDir={sortDir}
+        onSort={handleSort}
+        onPlay={(track, all) => void playTrack(track, all, mixItem.title, "/mix")}
+        onAddToQueue={addToQueue}
+        onPlayRadio={playRadio}
+        columns={ALL_COLUMNS}
+        searchPlaceholder="Search in mix…  ⌘K"
+        filterQuery={filterQuery}
+        onFilterChange={setFilterQuery}
+        defaultResetTitle="Restore shuffled order"
+        isLoading={isLoading}
+        loadedCount={tracks.length}
+        emptyMessage="No tracks found for this mix."
+        currentTrackId={currentTrack?.id ?? null}
+      />
     </div>
   )
 }

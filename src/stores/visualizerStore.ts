@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { getAllNames } from "../lib/milkdropPresets"
+import { engine } from "../audio/WebAudioEngine"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +37,14 @@ interface VisualizerState {
   starfieldReactivity: number // 0–100: 0 = chill cruise, 100 = full audio warp
   starfieldBaseSpeed: number  // 1–10: cruise speed when no audio
 
+  // Visualization colors (low/mid/high frequency ranges)
+  vizColorLow: string   // bass — default green
+  vizColorMid: string   // mids — default yellow
+  vizColorHigh: string  // treble — default red
+
+  // DPR render scale (0.25–1.0)
+  renderScale: number
+
   // Milkdrop preset state
   currentPresetName: string | null
   favoritePresets: string[]
@@ -65,7 +74,12 @@ interface VisualizerState {
   setAutoCycleMode: (mode: AutoCycleMode) => void
   setStarfieldReactivity: (val: number) => void
   setStarfieldBaseSpeed: (val: number) => void
-
+  setVizColorLow: (hex: string) => void
+  setVizColorMid: (hex: string) => void
+  setVizColorHigh: (hex: string) => void
+  setRenderScale: (val: number) => void
+  getFrequencyData: () => Float32Array | null
+  getSampleRate: () => number
 }
 
 export const useVisualizerStore = create<VisualizerState>()(
@@ -78,6 +92,14 @@ export const useVisualizerStore = create<VisualizerState>()(
       // Starfield defaults
       starfieldReactivity: 50,
       starfieldBaseSpeed: 3,
+
+      // Viz color defaults
+      vizColorLow: "#22c55e",
+      vizColorMid: "#eab308",
+      vizColorHigh: "#ef4444",
+
+      // DPR render scale
+      renderScale: 1.0,
 
       // Preset defaults
       currentPresetName: null,
@@ -165,7 +187,12 @@ export const useVisualizerStore = create<VisualizerState>()(
       setAutoCycleMode: (mode) => set({ autoCycleMode: mode }),
       setStarfieldReactivity: (val) => set({ starfieldReactivity: Math.max(0, Math.min(100, val)) }),
       setStarfieldBaseSpeed: (val) => set({ starfieldBaseSpeed: Math.max(1, Math.min(10, val)) }),
-
+      setVizColorLow: (hex) => set({ vizColorLow: hex }),
+      setVizColorMid: (hex) => set({ vizColorMid: hex }),
+      setVizColorHigh: (hex) => set({ vizColorHigh: hex }),
+      setRenderScale: (val) => set({ renderScale: Math.max(0.25, Math.min(1.0, val)) }),
+      getFrequencyData: () => engine.getFrequencyData(),
+      getSampleRate: () => engine.getSampleRate(),
     }),
     {
       name: "plex-visualizer-v1",
@@ -180,6 +207,10 @@ export const useVisualizerStore = create<VisualizerState>()(
         autoCycleMode: state.autoCycleMode,
         starfieldReactivity: state.starfieldReactivity,
         starfieldBaseSpeed: state.starfieldBaseSpeed,
+        vizColorLow: state.vizColorLow,
+        vizColorMid: state.vizColorMid,
+        vizColorHigh: state.vizColorHigh,
+        renderScale: state.renderScale,
       }),
     },
   ),

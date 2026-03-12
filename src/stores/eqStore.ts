@@ -44,8 +44,7 @@ function computeAutoPostgainDb(gains: EqGains): number {
 }
 
 /** Send postgain state to the Web Audio engine. */
-function sendPostgain(db: number, auto: boolean) {
-  engine.setEqPostgainAuto(auto)
+function sendPostgain(db: number) {
   engine.setEqPostgain(db)
 }
 
@@ -101,6 +100,9 @@ export const useEqStore = create<EqState>()(
         set(updates)
         if (get().enabled) {
           engine.setEq(next)
+          if (get().autoPostgain) {
+            engine.setEqPostgain(get().postgainDb)
+          }
         }
       },
 
@@ -108,9 +110,9 @@ export const useEqStore = create<EqState>()(
         set({ enabled })
         engine.setEqEnabled(enabled)
         if (enabled) {
-          const { gains, postgainDb, autoPostgain } = get()
+          const { gains, postgainDb } = get()
           engine.setEq(gains)
-          sendPostgain(postgainDb, autoPostgain)
+          sendPostgain(postgainDb)
         }
       },
 
@@ -122,6 +124,9 @@ export const useEqStore = create<EqState>()(
         set(updates)
         if (get().enabled) {
           engine.setEq(preset)
+          if (get().autoPostgain) {
+            engine.setEqPostgain(get().postgainDb)
+          }
         }
       },
 
@@ -130,14 +135,13 @@ export const useEqStore = create<EqState>()(
         engine.setEqEnabled(enabled)
         if (enabled) {
           engine.setEq(gains)
-          sendPostgain(postgainDb, autoPostgain)
+          sendPostgain(postgainDb)
         }
         // Web Audio API uses system default device — no device query needed
       },
 
       setPostgainDb: (db) => {
         set({ postgainDb: db, autoPostgain: false })
-        engine.setEqPostgainAuto(false)
         engine.setEqPostgain(db)
       },
 
@@ -148,7 +152,7 @@ export const useEqStore = create<EqState>()(
         } else {
           set({ autoPostgain: false })
         }
-        sendPostgain(get().postgainDb, auto)
+        sendPostgain(get().postgainDb)
       },
 
       setCurrentDevice: (name) => {
@@ -190,7 +194,7 @@ export const useEqStore = create<EqState>()(
         engine.setEqEnabled(profile.enabled)
         if (profile.enabled) {
           engine.setEq(profile.gains)
-          sendPostgain(profile.postgainDb, profile.autoPostgain)
+          sendPostgain(profile.postgainDb)
         }
       },
     }),

@@ -29,3 +29,5 @@ dist-ssr
 .tmp/
 .vscode/
 TODO.md
+.claude/
+test-library/

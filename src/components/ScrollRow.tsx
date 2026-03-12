@@ -7,9 +7,11 @@ interface ScrollRowProps {
   titleHref?: string
   children: React.ReactNode
   restoreKey?: string
+  onPlayAll?: () => void
+  onShuffleAll?: () => void
 }
 
-export function ScrollRow({ title, titleHref, children, restoreKey }: ScrollRowProps) {
+export function ScrollRow({ title, titleHref, children, restoreKey, onPlayAll, onShuffleAll }: ScrollRowProps) {
   const [expanded, setExpanded] = useState(false)
   const [overflows, setOverflows] = useState(false)
   const scrollRef = useScrollRestore(restoreKey, "x")
@@ -44,7 +46,7 @@ export function ScrollRow({ title, titleHref, children, restoreKey }: ScrollRowP
         {titleHref ? (
           <Link
             href={titleHref}
-            className="grow text-2xl font-bold hover:underline decoration-white/40 underline-offset-4 flex items-center gap-2 group"
+            className="text-2xl font-bold hover:underline decoration-white/40 underline-offset-4 flex items-center gap-2 group"
           >
             {title}
             <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"
@@ -53,8 +55,35 @@ export function ScrollRow({ title, titleHref, children, restoreKey }: ScrollRowP
             </svg>
           </Link>
         ) : (
-          <span className="grow text-2xl font-bold">{title}</span>
+          <span className="text-2xl font-bold">{title}</span>
         )}
+        {onPlayAll && (
+          <button
+            onClick={onPlayAll}
+            aria-label="Play all"
+            className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/20 text-accent/70 transition-all hover:bg-accent/30 hover:text-accent active:scale-95"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+          </button>
+        )}
+        {onShuffleAll && (
+          <button
+            onClick={onShuffleAll}
+            aria-label="Shuffle all"
+            className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/20 text-accent/70 transition-all hover:bg-accent/30 hover:text-accent active:scale-95"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="16 3 21 3 21 8"/>
+              <line x1="4" y1="20" x2="21" y2="3"/>
+              <polyline points="21 16 21 21 16 21"/>
+              <line x1="15" y1="15" x2="21" y2="21"/>
+              <line x1="4" y1="4" x2="9" y2="9"/>
+            </svg>
+          </button>
+        )}
+        <div className="grow" />
         {!expanded && overflows && (
           <>
             <button

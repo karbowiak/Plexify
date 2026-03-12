@@ -458,7 +458,7 @@ impl PlexClient {
     /// * `state` - Playback state (playing, paused, buffering, stopped)
     /// * `time` - Current position in milliseconds
     /// * `duration` - Total duration in milliseconds
-    /// * `client_id` - Client identifier (optional, defaults to "plexify")
+    /// * `client_id` - Client identifier (optional, defaults to "hibiki")
     ///
     /// # Returns
     /// * `Result<()>` - Success or error
@@ -481,7 +481,7 @@ impl PlexClient {
         duration: i64,
         client_id: Option<&str>,
     ) -> Result<()> {
-        let client_identifier = client_id.unwrap_or("plexify");
+        let client_identifier = client_id.unwrap_or("hibiki");
 
         // Serialize the state to lowercase string
         let state_str = match state {
@@ -615,7 +615,7 @@ mod tests {
         let state_str = "playing";
         let time = 30000;
         let duration = 180000;
-        let client_identifier = "plexify";
+        let client_identifier = "hibiki";
 
         let path = format!(
             "/:/timeline?hasMDE=1&ratingKey={}&key=/library/metadata/{}&state={}&time={}&duration={}&identifier=com.plexapp.plugins.library&clientIdentifier={}",

@@ -18,6 +18,7 @@ import { TagPage } from "./Pages/TagPage"
 import { InternetRadioPage } from "./Pages/InternetRadio"
 import { PodcastsPage } from "./Pages/Podcasts"
 import { PodcastDetailPage } from "./Pages/PodcastDetail"
+import { Playlists } from "./Pages/Playlists"
 // MixPage uses module-level selectMix() state — no URL param needed
 import clsx from "clsx"
 import { TopBar } from "./TopBar"
@@ -80,9 +81,9 @@ export function Page() {
         ref={scrollRef}
         onScroll={e => verticalScrollPositions.set(location, e.currentTarget.scrollTop)}
         className={clsx(
-          "flex-1 overflow-auto border-[var(--border)] transition-colors scrollbar scrollbar-track-transparent scrollbar-thumb-[var(--scrollbar-thumb)] scrollbar-track-rounded-lg scrollbar-w-3 hover:scrollbar-thumb-[var(--scrollbar-thumb-hover)]",
-          hasPadding ? "p-8" : undefined
+          "flex-1 overflow-auto border-[var(--border)] transition-colors scrollbar scrollbar-track-transparent scrollbar-thumb-[var(--scrollbar-thumb)] scrollbar-track-rounded-lg scrollbar-w-3 hover:scrollbar-thumb-[var(--scrollbar-thumb-hover)]"
         )}
+        style={hasPadding ? { padding: "var(--spacing-topbar)" } : undefined}
       >
         <Route path="/" key="home">
           <Home />
@@ -116,6 +117,10 @@ export function Page() {
             const id = params.id ?? ""
             return id ? <ArtistPage artistId={id} /> : null
           }}
+        </Route>
+
+        <Route path="/collection/playlists" key="playlists">
+          <Playlists />
         </Route>
 
         <Route path="/collection/tracks" key="liked">

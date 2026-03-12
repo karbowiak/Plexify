@@ -3,11 +3,11 @@ import { Menu, Submenu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/men
 export async function createAppMenu(onSettings: () => void) {
   const sep = () => PredefinedMenuItem.new({ item: "Separator" })
 
-  // ── Plexify (app) menu ──
+  // ── Hibiki (app) menu ──
   const appMenu = await Submenu.new({
-    text: "Plexify",
+    text: "Hibiki",
     items: [
-      await PredefinedMenuItem.new({ item: { About: { name: "Plexify" } } }),
+      await PredefinedMenuItem.new({ item: { About: { name: "Hibiki" } } }),
       await sep(),
       await MenuItem.new({
         id: "settings",

@@ -730,4 +730,91 @@ mod integration_tests {
         let truncated = if body_str.len() > 4000 { &body_str[..4000] } else { &body_str };
         println!("{}", truncated);
     }
+
+    /// Probe: fetch a known track and dump the raw JSON
+    /// to see where startRamp/endRamp appear (Track level? Stream level? Both?).
+    /// Note: includeLoudnessRamps=1 is added globally by build_url().
+    #[tokio::test]
+    async fn test_loudness_ramps_raw() {
+        use serde_json::Value;
+        let client = get_client();
+        let url = client.build_url(&format!(
+            "/library/metadata/{}",
+            RADIO_TRACK_KEY
+        ));
+        println!("GET {}", url);
+        let resp = client.client.get(&url)
+            .header("X-Plex-Token", &client.token)
+            .header("Accept", "application/json")
+            .send().await.expect("request failed");
+        println!("  Status: {}", resp.status());
+        let body: Value = resp.json().await.expect("parse failed");
+
+        // Search for startRamp/endRamp anywhere in the JSON tree
+        fn find_ramps(v: &Value, path: &str) {
+            match v {
+                Value::Object(map) => {
+                    for (k, val) in map {
+                        if k == "startRamp" || k == "endRamp" {
+                            println!("  FOUND {}.{} = {:?}", path, k, val);
+                        }
+                        find_ramps(val, &format!("{}.{}", path, k));
+                    }
+                }
+                Value::Array(arr) => {
+                    for (i, val) in arr.iter().enumerate() {
+                        find_ramps(val, &format!("{}[{}]", path, i));
+                    }
+                }
+                _ => {}
+            }
+        }
+        find_ramps(&body, "root");
+
+        // Also dump the first track's top-level keys
+        if let Some(track) = body.pointer("/MediaContainer/Metadata/0") {
+            println!("\n  Track top-level keys:");
+            if let Value::Object(map) = track {
+                for k in map.keys() {
+                    println!("    - {}", k);
+                }
+            }
+        }
+    }
+
+    /// Probe: fetch a play queue and check for ramps (includeLoudnessRamps=1 added by build_url).
+    #[tokio::test]
+    async fn test_play_queue_ramps() {
+        use serde_json::Value;
+        let client = get_client();
+        let (_, uuid) = get_music_section(&client).await;
+        let uri = match &uuid {
+            Some(u) => PlexClient::build_item_uri(u, &format!("/library/metadata/{}", RADIO_TRACK_KEY)),
+            None => format!("/library/metadata/{}", RADIO_TRACK_KEY),
+        };
+        let queue = match client.create_play_queue(&uri, false, 0).await {
+            Ok(q) => q,
+            Err(e) => { println!("create_play_queue failed: {}", e); return; }
+        };
+
+        // Check if the first track in the queue has ramps
+        if let Some(track) = queue.items.first() {
+            println!("Track {} '{}' by {}", track.rating_key, track.title, track.grandparent_title);
+            println!("  start_ramp: {:?}", track.start_ramp);
+            println!("  end_ramp:   {:?}", track.end_ramp);
+            // Also check streams
+            if let Some(media) = track.media.first() {
+                if let Some(part) = media.parts.first() {
+                    for stream in &part.streams {
+                        if stream.stream_type == Some(2) {
+                            println!("  stream.start_ramp: {:?}", stream.start_ramp);
+                            println!("  stream.end_ramp:   {:?}", stream.end_ramp);
+                        }
+                    }
+                }
+            }
+        }
+
+        let _ = client.delete_play_queue(queue.id).await;
+    }
 }

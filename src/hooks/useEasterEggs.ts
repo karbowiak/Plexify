@@ -72,14 +72,16 @@ export function useEasterEggs() {
   const partyMode = useEasterEggStore(s => s.partyMode)
 
   useEffect(() => {
-    if (partyMode) {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+
+    if (partyMode && !reducedMotion) {
       document.documentElement.classList.add("party-mode")
     } else {
       document.documentElement.classList.remove("party-mode")
       document.documentElement.style.setProperty("--party-pulse", "0")
     }
 
-    if (!partyMode) return
+    if (!partyMode || reducedMotion) return
 
     // Two-EMA beat detection: a fast EMA tracks transients, a slow EMA
     // tracks the long-term energy floor. A beat fires when fast > slow * ratio.

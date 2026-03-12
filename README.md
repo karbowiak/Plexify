@@ -1,4 +1,4 @@
-# Plexify
+# Hibiki
 
 A Spotify-inspired desktop music client for [Plex](https://www.plex.tv/), built with Tauri 2 and React 19. Browse your library, play tracks with a native audio engine, manage playlists, explore radio & DJ modes, discover podcasts, scrobble to Last.fm, enjoy visualizers, and more — all from a fast, frameless desktop app.
 
@@ -86,36 +86,36 @@ A Spotify-inspired desktop music client for [Plex](https://www.plex.tv/), built 
 
 ## Download & Install
 
-Grab the latest release for your platform from the [Releases page](https://github.com/karbowiak/plexify/releases).
+Grab the latest release for your platform from the [Releases page](https://github.com/karbowiak/hibiki/releases).
 
 | Platform | File | Notes |
 |---|---|---|
 | **Windows** | `.exe` (NSIS installer) | Run the installer and follow the prompts |
-| **macOS (Apple Silicon)** | `.dmg` (aarch64) | Drag Plexify into Applications |
-| **macOS (Intel)** | `.dmg` (x86_64) | Drag Plexify into Applications |
+| **macOS (Apple Silicon)** | `.dmg` (aarch64) | Drag Hibiki into Applications |
+| **macOS (Intel)** | `.dmg` (x86_64) | Drag Hibiki into Applications |
 | **Linux** | `.AppImage` / `.deb` | See below |
 
 ### macOS — Security Warning
 
-Plexify is not currently code-signed or notarized with Apple, so macOS Gatekeeper will block it. Run this in Terminal after downloading to remove the quarantine flag:
+Hibiki is not currently code-signed or notarized with Apple, so macOS Gatekeeper will block it. Run this in Terminal after downloading to remove the quarantine flag:
 
 ```bash
 # Remove quarantine from the downloaded .dmg
-xattr -cr ~/Downloads/Plexify_*.dmg
+xattr -cr ~/Downloads/Hibiki_*.dmg
 ```
 
-Then open the `.dmg` and drag Plexify into Applications as usual. If macOS still shows a warning when launching the app:
+Then open the `.dmg` and drag Hibiki into Applications as usual. If macOS still shows a warning when launching the app:
 
 ```bash
 # Remove quarantine from the installed app
-xattr -cr /Applications/Plexify.app
+xattr -cr /Applications/Hibiki.app
 ```
 
 Alternatively, you can **right-click** the app in Applications, click **Open**, then click **Open** again in the dialog — macOS remembers your choice after the first time.
 
 ### Windows — SmartScreen Warning
 
-Plexify is not currently code-signed, so Windows SmartScreen may show a warning when you run the installer:
+Hibiki is not currently code-signed, so Windows SmartScreen may show a warning when you run the installer:
 
 1. Click **More info**
 2. Click **Run anyway**
@@ -125,14 +125,14 @@ Plexify is not currently code-signed, so Windows SmartScreen may show a warning 
 No special steps needed. For `.AppImage` files, make them executable first:
 
 ```bash
-chmod +x Plexify_*.AppImage
-./Plexify_*.AppImage
+chmod +x Hibiki_*.AppImage
+./Hibiki_*.AppImage
 ```
 
 For `.deb` packages:
 
 ```bash
-sudo dpkg -i plexify_*.deb
+sudo dpkg -i hibiki_*.deb
 ```
 
 ### First Launch
@@ -142,8 +142,8 @@ You'll need a running Plex Media Server with a music library. On first launch, o
 ## Building from Source
 
 ```bash
-git clone https://github.com/karbowiak/plexify.git
-cd Plexify
+git clone https://github.com/karbowiak/hibiki.git
+cd Hibiki
 bun install
 ```
 

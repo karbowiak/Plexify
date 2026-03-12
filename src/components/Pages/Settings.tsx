@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"
+import React, { useState, useEffect, useRef, useMemo } from "react"
 import { useLocation } from "wouter"
 import { open } from "@tauri-apps/plugin-shell"
 import clsx from "clsx"
@@ -7,7 +7,7 @@ import { clearImageCache, getImageCacheInfo, type ImageCacheInfo } from "../../l
 import { getVersion } from "@tauri-apps/api/app"
 import { useAudioSettingsStore } from "../../stores/audioSettingsStore"
 import { useUpdateStore } from "../../stores/updateStore"
-import { useLastfmStore } from "../../backends/lastfm/authStore"
+import { useLastfmStore } from "../../metadata/lastfm/authStore"
 import { useAccentStore, ACCENT_PRESETS } from "../../stores/accentStore"
 import { getTheme, setTheme, subscribeTheme } from "../../stores/themeStore"
 import { getFont, setFont, subscribeFont, FONT_PRESETS } from "../../stores/fontStore"
@@ -18,26 +18,44 @@ import { useNotificationStore } from "../../stores/notificationStore"
 import { useDebugStore } from "../../stores/debugStore"
 import { useUIStore } from "../../stores"
 import { useEasterEggStore } from "../../stores/easterEggStore"
-import { getBackends, getMetadataBackends, getMetadataBackend, getBackend } from "../../backends/registry"
+import { plexBackend } from "../../backends/plex/definition"
+import { metadataBackends, getMetadataBackend } from "../../metadata"
 import type { ProviderCapabilities } from "../../providers/types"
-import type { MetadataCapabilities, MetadataBackendDefinition, BackendDefinition } from "../../backends/types"
+import type { MetadataCapabilities } from "../../metadata/types"
 import { useMetadataSourceStore, type MetadataSource, SOURCE_LABELS, SOURCE_DESCRIPTIONS } from "../../stores/metadataSourceStore"
+import { useCompactStore } from "../../stores/compactStore"
+import { ColorPicker } from "../shared/ColorPicker"
+import { useCustomColorStore, SEMANTIC_COLOR_LABELS, UI_COLOR_COUNT, type SemanticColor } from "../../stores/customColorStore"
+import { useVisualizerStore } from "../../stores/visualizerStore"
+import { useTranslation } from "react-i18next"
+import { setLanguage } from "../../i18n"
+import { useLibraryStore } from "../../stores/libraryStore"
+import { clearMetadataCache, getMetadataCacheStats } from "../../stores/metadataCache"
 
 // ---------------------------------------------------------------------------
 // Section types & sidebar nav
 // ---------------------------------------------------------------------------
 
 type Section =
-  | "backends" | `backends/${string}`
-  | "playback" | "appearance" | "general" | "about" | "eastereggs"
+  | "plex" | "metadata" | `metadata/${string}`
+  | "playback" | "appearance" | "cache" | "general" | "about" | "eastereggs"
 
 const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
   {
-    id: "backends",
-    label: "Backends",
+    id: "plex",
+    label: "Plex",
     icon: (
       <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
         <path d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z" />
+      </svg>
+    ),
+  },
+  {
+    id: "metadata",
+    label: "Metadata",
+    icon: (
+      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" />
       </svg>
     ),
   },
@@ -56,6 +74,15 @@ const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
     icon: (
       <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
         <path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5S18.33 12 17.5 12z" />
+      </svg>
+    ),
+  },
+  {
+    id: "cache" as Section,
+    label: "Cache",
+    icon: (
+      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M21 10h-2V4h-2v6h-2V4h-2v6h-2V4H9v6H7V4H5v6H3v2h2v4H3v2h2v6h2v-6h2v6h2v-6h2v6h2v-6h2v6h2v-6h2v-2h-2v-4h2v-2zm-4 6H7v-4h10v4z" />
       </svg>
     ),
   },
@@ -215,12 +242,17 @@ function formatBytes(bytes: number): string {
 }
 
 const PREAMP_OPTIONS = [3, 0, -3, -6, -9, -12] as const
+const MIXRAMP_DB_OPTIONS = [-7, -10, -14, -17, -21, -25] as const
 const CROSSFADE_OPTIONS = [
   { label: "Off",  ms: 0 },
   { label: "2s",   ms: 2000 },
   { label: "4s",   ms: 4000 },
   { label: "6s",   ms: 6000 },
   { label: "8s",   ms: 8000 },
+  { label: "10s",  ms: 10000 },
+] as const
+const SMART_CROSSFADE_MAX_OPTIONS = [
+  { label: "5s",   ms: 5000 },
   { label: "10s",  ms: 10000 },
   { label: "15s",  ms: 15000 },
   { label: "20s",  ms: 20000 },
@@ -234,6 +266,8 @@ function PlaybackSection() {
     crossfadeWindowMs, setCrossfadeWindowMs,
     sameAlbumCrossfade, setSameAlbumCrossfade,
     smartCrossfade, setSmartCrossfade,
+    smartCrossfadeMaxMs, setSmartCrossfadeMaxMs,
+    mixrampDb, setMixrampDb,
     preampDb, setPreampDb,
     albumGainMode, setAlbumGainMode,
   } = useAudioSettingsStore()
@@ -271,7 +305,7 @@ function PlaybackSection() {
       {/* Crossfade */}
       <SettingCard title="Crossfade">
         <div className="flex flex-col gap-5">
-          <SettingRow label={smartCrossfade && crossfadeWindowMs > 0 ? "Maximum duration (min 2s)" : "Duration"}>
+          <SettingRow label="Duration">
             <PillGroup
               options={CROSSFADE_OPTIONS}
               value={CROSSFADE_OPTIONS.find(o => o.ms === crossfadeWindowMs) ?? CROSSFADE_OPTIONS[0]}
@@ -281,12 +315,6 @@ function PlaybackSection() {
             />
           </SettingRow>
 
-          {crossfadeWindowMs > 0 && (
-            <SettingRow label="Smart crossfade" description="Analyses tracks to skip trailing silence, align crossfades to natural fade-outs, and adapt duration to each transition." inline>
-              <Toggle value={smartCrossfade} onChange={setSmartCrossfade} />
-            </SettingRow>
-          )}
-
           <SettingRow label="Same-album tracks" description="Suppressing crossfade preserves gapless playback for live albums and classical works.">
             <PillGroup
               options={[false, true] as const}
@@ -295,6 +323,38 @@ function PlaybackSection() {
               getLabel={v => v ? "Allow" : "Suppress"}
             />
           </SettingRow>
+        </div>
+      </SettingCard>
+
+      {/* Smart Crossfade (Sweet Fades) */}
+      <SettingCard title="Smart Crossfade">
+        <div className="flex flex-col gap-5">
+          <SettingRow label="Enabled" description="Uses MixRamp to overlap tracks at naturally quiet moments — no artificial volume dipping. Falls back to equal-power crossfade when ramp data is unavailable." inline>
+            <Toggle value={smartCrossfade} onChange={setSmartCrossfade} />
+          </SettingRow>
+
+          {smartCrossfade && (
+            <>
+              <SettingRow label="Fallback duration" description="Maximum crossfade duration when MixRamp data is unavailable or the threshold isn't reached.">
+                <PillGroup
+                  options={SMART_CROSSFADE_MAX_OPTIONS}
+                  value={SMART_CROSSFADE_MAX_OPTIONS.find(o => o.ms === smartCrossfadeMaxMs) ?? SMART_CROSSFADE_MAX_OPTIONS[3]}
+                  onChange={opt => setSmartCrossfadeMaxMs(opt.ms)}
+                  getLabel={opt => opt.label}
+                  isActive={(opt, val) => opt.ms === val.ms}
+                />
+              </SettingRow>
+
+              <SettingRow label="Overlap threshold" description="Where tracks overlap during transitions. Lower values create longer, more gradual overlaps. Higher values create tighter, shorter transitions.">
+                <PillGroup
+                  options={MIXRAMP_DB_OPTIONS}
+                  value={mixrampDb}
+                  onChange={setMixrampDb}
+                  getLabel={db => `${db} dB`}
+                />
+              </SettingRow>
+            </>
+          )}
         </div>
       </SettingCard>
 
@@ -312,6 +372,10 @@ function AppearanceSection() {
   const [theme, setThemeState] = useState(getTheme)
   const [font, setFontState] = useState<FontPreset>(getFont)
   const { cardSize, setCardSize } = useCardSizeStore()
+  const { compact, setCompact } = useCompactStore()
+  const [showPicker, setShowPicker] = useState(false)
+  const { enabled: customColorsEnabled, overrides, setEnabled: setCustomColorsEnabled, setOverride, resetAll: resetCustomColors } = useCustomColorStore()
+  const [showCustomColors, setShowCustomColors] = useState(false)
 
   useEffect(() => subscribeTheme(t => setThemeState(t)), [])
   useEffect(() => subscribeFont(f => setFontState(f)), [])
@@ -338,22 +402,37 @@ function AppearanceSection() {
 
       {/* Font */}
       <SettingCard title="Font" description="Pick a typeface for the entire interface.">
-        <div className="flex flex-wrap gap-2">
-          {FONT_PRESETS.map(preset => (
-            <button
-              key={preset.name}
-              onClick={() => setFont(preset.name)}
-              style={{ fontFamily: preset.stack }}
-              className={clsx(
-                "rounded-full px-4 py-1.5 text-sm transition-colors",
-                font.name === preset.name
-                  ? "bg-accent text-black font-semibold"
-                  : "bg-white/10 text-white hover:bg-white/20"
-              )}
-            >
-              {preset.label}
-            </button>
-          ))}
+        <div className="space-y-3">
+          {(["default", "sans-serif", "monospace"] as const).map(cat => {
+            const presets = FONT_PRESETS.filter(p => p.category === cat)
+            if (presets.length === 0) return null
+            return (
+              <div key={cat}>
+                {cat !== "default" && (
+                  <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/25 mb-1.5">
+                    {cat === "sans-serif" ? "Sans-serif" : "Monospace"}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {presets.map(preset => (
+                    <button
+                      key={preset.name}
+                      onClick={() => setFont(preset.name)}
+                      style={{ fontFamily: preset.stack }}
+                      className={clsx(
+                        "rounded-full px-4 py-1.5 text-sm transition-colors",
+                        font.name === preset.name
+                          ? "bg-accent text-black font-semibold"
+                          : "bg-white/10 text-white hover:bg-white/20"
+                      )}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
         </div>
       </SettingCard>
 
@@ -419,8 +498,29 @@ function AppearanceSection() {
           </span>
         </div>
 
+        {/* HSV Color Picker (collapsible) */}
+        <div className="mt-4">
+          <button
+            onClick={() => setShowPicker(!showPicker)}
+            className="flex items-center gap-2 text-xs text-white/40 hover:text-white/70 transition-colors"
+          >
+            <svg
+              viewBox="0 0 16 16" width="10" height="10" fill="currentColor"
+              className={`transition-transform ${showPicker ? "rotate-90" : ""}`}
+            >
+              <path d="M6 4l4 4-4 4z" />
+            </svg>
+            Advanced color picker
+          </button>
+          {showPicker && (
+            <div className="mt-3">
+              <ColorPicker value={accent} onChange={hex => { setAccent(hex); setCustom(hex) }} />
+            </div>
+          )}
+        </div>
+
         {/* Live preview strip */}
-        <div className="mt-6 rounded-xl bg-white/5 p-4 flex items-center gap-4 border border-white/5">
+        <div className="mt-6 rounded-xl bg-accent-tint-subtle p-4 flex items-center gap-4 border border-white/5">
           <span className="text-xs text-white/40 w-16 flex-shrink-0">Preview</span>
           <div className="flex items-center gap-3 flex-wrap">
             <button className="flex h-8 w-8 items-center justify-center rounded-full text-black text-sm font-bold shadow-md" style={{ backgroundColor: accent }}>
@@ -445,7 +545,7 @@ function AppearanceSection() {
             step={10}
             value={cardSize}
             onChange={e => setCardSize(parseInt(e.target.value, 10))}
-            className="flex-1 accent-[var(--accent)] cursor-pointer"
+            className="flex-1 range-styled accent-[var(--accent)] cursor-pointer"
           />
           <span className="text-sm font-mono text-white/60 w-14 text-right">{cardSize}px</span>
         </div>
@@ -455,8 +555,72 @@ function AppearanceSection() {
         </div>
       </SettingCard>
 
+      {/* Compact Mode */}
+      <SettingCard title="Compact Mode" description="Reduce spacing across the sidebar, top bar, and player for a denser layout.">
+        <Toggle value={compact} onChange={setCompact} />
+      </SettingCard>
+
       {/* Highlight Intensity */}
       <HighlightCard />
+
+      {/* Visualizer Colors */}
+      <VisualizerColorsCard />
+
+      {/* Custom Colors */}
+      <SettingCard title="Custom Colors" description="Override individual semantic colors for a fully custom look.">
+        <div className="flex items-center justify-between mb-3">
+          <Toggle value={customColorsEnabled} onChange={setCustomColorsEnabled} />
+          {customColorsEnabled && Object.keys(overrides).length > 0 && (
+            <button
+              onClick={resetCustomColors}
+              className="text-xs text-white/40 hover:text-white/70 transition-colors"
+            >
+              Reset all
+            </button>
+          )}
+        </div>
+        <button
+          onClick={() => setShowCustomColors(!showCustomColors)}
+          className="flex items-center gap-2 text-xs text-white/40 hover:text-white/70 transition-colors"
+        >
+          <svg
+            viewBox="0 0 16 16" width="10" height="10" fill="currentColor"
+            className={`transition-transform ${showCustomColors ? "rotate-90" : ""}`}
+          >
+            <path d="M6 4l4 4-4 4z" />
+          </svg>
+          {showCustomColors ? "Hide color overrides" : "Show color overrides"}
+        </button>
+        {showCustomColors && (
+          <div className="mt-3 grid gap-2">
+            {(Object.keys(SEMANTIC_COLOR_LABELS) as SemanticColor[]).map((key, idx) => (
+              <React.Fragment key={key}>
+                {idx === UI_COLOR_COUNT && (
+                  <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/25 mt-2 mb-0.5">System</p>
+                )}
+              <div className="flex items-center gap-3">
+                <input
+                  type="color"
+                  value={overrides[key] || getComputedStyle(document.documentElement).getPropertyValue(`--${key}`).trim() || "#000000"}
+                  onChange={e => setOverride(key, e.target.value)}
+                  disabled={!customColorsEnabled}
+                  className="h-7 w-7 cursor-pointer rounded border border-white/10 bg-transparent disabled:opacity-30"
+                />
+                <span className="text-sm text-white/60 flex-1">{SEMANTIC_COLOR_LABELS[key]}</span>
+                {overrides[key] && (
+                  <button
+                    onClick={() => setOverride(key, null)}
+                    className="text-[10px] text-white/30 hover:text-white/60"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+      </SettingCard>
     </div>
   )
 }
@@ -494,7 +658,7 @@ function HighlightCard() {
           step={5}
           value={pct}
           onChange={e => setIntensity(parseInt(e.target.value, 10) / 100)}
-          className="flex-1 accent-[var(--accent)] cursor-pointer"
+          className="flex-1 range-styled accent-[var(--accent)] cursor-pointer"
         />
         <span className="text-sm font-mono text-white/60 w-14 text-right">{pct}%</span>
       </div>
@@ -563,7 +727,7 @@ function HighlightCard() {
                     step={1}
                     value={Math.round(val * 100)}
                     onChange={e => setCategory(key, parseInt(e.target.value, 10) / 100)}
-                    className="flex-1 accent-[var(--accent)] cursor-pointer"
+                    className="flex-1 range-styled accent-[var(--accent)] cursor-pointer"
                   />
                   <span className="text-xs font-mono text-white/50 w-10 text-right">{Math.round(val * 100)}%</span>
                   {val !== defVal && (
@@ -596,17 +760,209 @@ function HighlightCard() {
 }
 
 // ---------------------------------------------------------------------------
+// Visualizer Colors card
+// ---------------------------------------------------------------------------
+
+const VIZ_COLOR_DEFAULTS = { low: "#22c55e", mid: "#eab308", high: "#ef4444" }
+
+function VisualizerColorsCard() {
+  const vizColorLow = useVisualizerStore(s => s.vizColorLow)
+  const vizColorMid = useVisualizerStore(s => s.vizColorMid)
+  const vizColorHigh = useVisualizerStore(s => s.vizColorHigh)
+  const { setVizColorLow, setVizColorMid, setVizColorHigh } = useVisualizerStore.getState()
+
+  const isDefault = vizColorLow === VIZ_COLOR_DEFAULTS.low
+    && vizColorMid === VIZ_COLOR_DEFAULTS.mid
+    && vizColorHigh === VIZ_COLOR_DEFAULTS.high
+
+  return (
+    <SettingCard title="Visualizer Colors" description="Customize the frequency band colors used in spectrum, VU meter, and oscilloscope visualizers.">
+      <div className="flex items-center gap-6">
+        {([
+          { label: "Bass", value: vizColorLow, set: setVizColorLow },
+          { label: "Mid", value: vizColorMid, set: setVizColorMid },
+          { label: "Treble", value: vizColorHigh, set: setVizColorHigh },
+        ] as const).map(({ label, value, set: setter }) => (
+          <div key={label} className="flex items-center gap-2">
+            <input
+              type="color"
+              value={value}
+              onChange={e => setter(e.target.value)}
+              className="h-8 w-8 cursor-pointer rounded-full border border-white/10 bg-transparent"
+            />
+            <span className="text-sm text-white/60">{label}</span>
+          </div>
+        ))}
+        {!isDefault && (
+          <button
+            onClick={() => {
+              setVizColorLow(VIZ_COLOR_DEFAULTS.low)
+              setVizColorMid(VIZ_COLOR_DEFAULTS.mid)
+              setVizColorHigh(VIZ_COLOR_DEFAULTS.high)
+            }}
+            className="text-xs text-white/40 hover:text-white/70 transition-colors ml-auto"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      {/* Preview gradient */}
+      <div className="mt-3 h-3 rounded-full overflow-hidden" style={{
+        background: `linear-gradient(to right, ${vizColorLow}, ${vizColorMid}, ${vizColorHigh})`,
+      }} />
+    </SettingCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Cache section
+// ---------------------------------------------------------------------------
+
+function CacheSection() {
+  const [imgCacheInfo, setImgCacheInfo] = useState<ImageCacheInfo | null>(null)
+  const [imgClearing, setImgClearing] = useState(false)
+  const [libClearing, setLibClearing] = useState(false)
+  const [metaClearing, setMetaClearing] = useState(false)
+  const [, forceUpdate] = useState(0)
+
+  const libStore = useLibraryStore.getState()
+  const playlistCount = libStore.playlists.length
+  const hubCount = libStore.hubs.length
+  const recentlyAddedCount = libStore.recentlyAdded.length
+  const playlistCacheCount = Object.keys(libStore.playlistItemsCache).length
+  const mixCacheCount = Object.keys(libStore.mixTracksCache).length
+
+  const metaStats = getMetadataCacheStats()
+
+  useEffect(() => {
+    void getImageCacheInfo().then(setImgCacheInfo).catch(() => {})
+  }, [])
+
+  async function handleClearImages() {
+    setImgClearing(true)
+    try {
+      await clearImageCache()
+      const info = await getImageCacheInfo()
+      setImgCacheInfo(info)
+    } finally {
+      setImgClearing(false)
+    }
+  }
+
+  function handleClearLibrary() {
+    setLibClearing(true)
+    useLibraryStore.getState().invalidateCache()
+    setTimeout(() => { setLibClearing(false); forceUpdate(n => n + 1) }, 300)
+  }
+
+  function handleClearMetadata() {
+    setMetaClearing(true)
+    clearMetadataCache()
+    setTimeout(() => { setMetaClearing(false); forceUpdate(n => n + 1) }, 300)
+  }
+
+  return (
+    <div className="flex flex-col gap-5 max-w-2xl">
+      {/* Image Cache */}
+      <SettingCard title="Image Cache" description="Artwork fetched from Plex and external metadata sources.">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-white">Cached Images</p>
+            <p className="text-xs text-white/40 mt-0.5">
+              {imgCacheInfo
+                ? `${formatBytes(imgCacheInfo.bytes)} · ${imgCacheInfo.files} ${imgCacheInfo.files === 1 ? "file" : "files"}`
+                : "Loading..."}
+            </p>
+          </div>
+          <button
+            onClick={() => void handleClearImages()}
+            disabled={imgClearing || (imgCacheInfo?.files ?? 0) === 0}
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+          >
+            {imgClearing ? "Clearing..." : "Clear"}
+          </button>
+        </div>
+      </SettingCard>
+
+      {/* Library Cache */}
+      <SettingCard title="Library Cache" description="Cached playlists, hubs, and recently added items. Clearing forces a fresh fetch from your Plex server.">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-white">Library Data</p>
+            <p className="text-xs text-white/40 mt-0.5">
+              {playlistCount} playlists · {hubCount} hubs · {recentlyAddedCount} recently added · {playlistCacheCount} playlist caches · {mixCacheCount} mix caches
+            </p>
+          </div>
+          <button
+            onClick={handleClearLibrary}
+            disabled={libClearing}
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+          >
+            {libClearing ? "Clearing..." : "Clear"}
+          </button>
+        </div>
+      </SettingCard>
+
+      {/* Metadata Cache */}
+      <SettingCard title="Page Metadata Cache" description="Cached artist and album page data for instant navigation.">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-white">Metadata Entries</p>
+            <p className="text-xs text-white/40 mt-0.5">
+              {metaStats.artistCount} artists · {metaStats.albumCount} albums
+            </p>
+          </div>
+          <button
+            onClick={handleClearMetadata}
+            disabled={metaClearing || (metaStats.artistCount === 0 && metaStats.albumCount === 0)}
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+          >
+            {metaClearing ? "Clearing..." : "Clear"}
+          </button>
+        </div>
+      </SettingCard>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // General section (Notifications + Debug + Coming Soon placeholders)
 // ---------------------------------------------------------------------------
+
+const LANGUAGES = [
+  { code: "en", label: "English" },
+] as const
 
 function GeneralSection() {
   const { notificationsEnabled, setNotificationsEnabled } = useNotificationStore()
   const { debugEnabled, setDebugEnabled } = useDebugStore()
   const deduplicateAlbums = useUIStore(s => s.deduplicateAlbums)
   const setDeduplicateAlbums = useUIStore(s => s.setDeduplicateAlbums)
+  const { i18n: i18nInstance } = useTranslation()
+  const currentLang = i18nInstance.language
 
   return (
     <div className="flex flex-col gap-5 max-w-2xl">
+      <SettingCard title="Language" description="Choose the display language for the interface.">
+        <div className="flex flex-wrap gap-2">
+          {LANGUAGES.map(lang => (
+            <button
+              key={lang.code}
+              onClick={() => setLanguage(lang.code)}
+              className={clsx(
+                "rounded-full px-4 py-1.5 text-sm transition-colors",
+                currentLang === lang.code
+                  ? "bg-accent text-black font-semibold"
+                  : "bg-white/10 text-white hover:bg-white/20"
+              )}
+            >
+              {lang.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-white/30">More languages coming soon. Contribute translations on GitHub.</p>
+      </SettingCard>
+
       <SettingCard title="Preferences">
         <div className="flex flex-col gap-5">
           <SettingRow
@@ -741,19 +1097,9 @@ function CapabilityGrid({ caps, labels }: { caps: { [k: string]: boolean }; labe
   )
 }
 
-function BackendsListView({ setSection }: { setSection: (s: Section) => void }) {
-  const backends = getBackends()
-  const metadataBackends = getMetadataBackends()
-  const { hasApiKey: lastfmHasApiKey } = useLastfmStore()
-  const { priority, setPriority } = useMetadataSourceStore()
-
+function PlexSection() {
   const [imgCacheInfo, setImgCacheInfo] = useState<ImageCacheInfo | null>(null)
   const [imgClearing, setImgClearing] = useState(false)
-
-  // Pointer-based drag for source priority
-  const [draggingIdx, setDraggingIdx] = useState<number | null>(null)
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
-  const sortListRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     void getImageCacheInfo().then(setImgCacheInfo).catch(() => {})
@@ -769,6 +1115,51 @@ function BackendsListView({ setSection }: { setSection: (s: Section) => void }) 
       setImgClearing(false)
     }
   }
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      {/* Plex connection settings */}
+      <div>
+        <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Capabilities</h3>
+        <CapabilityGrid caps={plexBackend.capabilities as unknown as { [k: string]: boolean }} labels={CAPABILITY_LABELS} />
+      </div>
+      <div>
+        <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Settings</h3>
+        <plexBackend.SettingsComponent />
+      </div>
+
+      {/* Image Cache */}
+      <SettingCard title="Image Cache" description="Artwork fetched from Plex and external metadata sources is saved to disk.">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-white">Cached Images</p>
+            <p className="text-xs text-white/40 mt-0.5">
+              {imgCacheInfo
+                ? `${formatBytes(imgCacheInfo.bytes)} · ${imgCacheInfo.files} ${imgCacheInfo.files === 1 ? "file" : "files"}`
+                : "Loading..."}
+            </p>
+          </div>
+          <button
+            onClick={() => void handleClearImages()}
+            disabled={imgClearing || (imgCacheInfo?.files ?? 0) === 0}
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+          >
+            {imgClearing ? "Clearing..." : "Clear"}
+          </button>
+        </div>
+      </SettingCard>
+    </div>
+  )
+}
+
+function MetadataListView({ setSection }: { setSection: (s: Section) => void }) {
+  const { hasApiKey: lastfmHasApiKey } = useLastfmStore()
+  const { priority, setPriority } = useMetadataSourceStore()
+
+  // Pointer-based drag for source priority
+  const [draggingIdx, setDraggingIdx] = useState<number | null>(null)
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+  const sortListRef = useRef<HTMLDivElement>(null)
 
   function getHoveredIndex(clientY: number): number | null {
     if (!sortListRef.current) return null
@@ -852,42 +1243,9 @@ function BackendsListView({ setSection }: { setSection: (s: Section) => void }) 
         </div>
       </SettingCard>
 
-      {/* Music Backends */}
-      <div>
-        <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Music Backends</h3>
-        <div className="space-y-3">
-          {backends.map(backend => {
-            const connected = backend.useIsConnected()
-            const Icon = backend.icon
-            return (
-              <button
-                key={backend.id}
-                onClick={() => setSection(`backends/${backend.id}` as Section)}
-                className="w-full rounded-xl bg-white/5 px-5 py-4 text-left hover:bg-white/8 transition-colors group"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="text-white/60"><Icon size={20} /></span>
-                  <span className="text-sm font-semibold text-white">{backend.name}</span>
-                  <span className="ml-auto flex items-center gap-1.5 text-xs">
-                    <span className={`h-2 w-2 rounded-full ${connected ? "bg-accent" : "bg-white/20"}`} />
-                    <span className={connected ? "text-accent" : "text-white/30"}>
-                      {connected ? "Connected" : "Not connected"}
-                    </span>
-                  </span>
-                  <svg height="14" width="14" viewBox="0 0 24 24" fill="currentColor" className="text-white/20 group-hover:text-white/40 transition-colors">
-                    <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
-                  </svg>
-                </div>
-                <p className="mt-1.5 text-xs text-white/35">{backend.description}</p>
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
       {/* Metadata Backends */}
       <div>
-        <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Metadata Backends</h3>
+        <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Metadata Sources</h3>
         <div className="space-y-3">
           {metadataBackends.map(mb => {
             const enabled = mb.useIsEnabled()
@@ -895,7 +1253,7 @@ function BackendsListView({ setSection }: { setSection: (s: Section) => void }) 
             return (
               <button
                 key={mb.id}
-                onClick={() => setSection(`backends/${mb.id}` as Section)}
+                onClick={() => setSection(`metadata/${mb.id}` as Section)}
                 className="w-full rounded-xl bg-white/5 px-5 py-4 text-left hover:bg-white/8 transition-colors group"
               >
                 <div className="flex items-center gap-3">
@@ -917,50 +1275,27 @@ function BackendsListView({ setSection }: { setSection: (s: Section) => void }) 
           })}
         </div>
       </div>
-
-      {/* Image Cache */}
-      <SettingCard title="Image Cache" description="Artwork fetched from Plex and external metadata sources is saved to disk.">
-        <div className="flex items-center gap-4">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-white">Cached Images</p>
-            <p className="text-xs text-white/40 mt-0.5">
-              {imgCacheInfo
-                ? `${formatBytes(imgCacheInfo.bytes)} · ${imgCacheInfo.files} ${imgCacheInfo.files === 1 ? "file" : "files"}`
-                : "Loading..."}
-            </p>
-          </div>
-          <button
-            onClick={() => void handleClearImages()}
-            disabled={imgClearing || (imgCacheInfo?.files ?? 0) === 0}
-            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-          >
-            {imgClearing ? "Clearing..." : "Clear"}
-          </button>
-        </div>
-      </SettingCard>
     </div>
   )
 }
 
-function BackendSubPage({ backendId, goBack }: { backendId: string; goBack: () => void }) {
-  const musicBackend = getBackend(backendId)
+function MetadataSubPage({ backendId, goBack }: { backendId: string; goBack: () => void }) {
   const metaBackend = getMetadataBackend(backendId)
 
-  if (!musicBackend && !metaBackend) {
+  if (!metaBackend) {
     return (
       <div className="max-w-2xl">
         <button onClick={goBack} className="mb-6 flex items-center gap-1.5 text-sm text-white/50 hover:text-white transition-colors">
           <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" /></svg>
-          Back to Backends
+          Back to Metadata
         </button>
-        <p className="text-sm text-white/50">Backend not found.</p>
+        <p className="text-sm text-white/50">Metadata source not found.</p>
       </div>
     )
   }
 
-  const name = musicBackend?.name ?? metaBackend!.name
-  const Icon = musicBackend?.icon ?? metaBackend!.icon
-  const Settings = musicBackend?.SettingsComponent ?? metaBackend!.SettingsComponent
+  const Icon = metaBackend.icon
+  const Settings = metaBackend.SettingsComponent
 
   return (
     <div className="max-w-2xl space-y-8">
@@ -968,22 +1303,18 @@ function BackendSubPage({ backendId, goBack }: { backendId: string; goBack: () =
       <div>
         <button onClick={goBack} className="mb-4 flex items-center gap-1.5 text-sm text-white/50 hover:text-white transition-colors">
           <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" /></svg>
-          Back to Backends
+          Back to Metadata
         </button>
         <div className="flex items-center gap-3">
           <span className="text-white/60"><Icon size={24} /></span>
-          <h2 className="text-2xl font-bold">{name}</h2>
+          <h2 className="text-2xl font-bold">{metaBackend.name}</h2>
         </div>
       </div>
 
       {/* Capabilities */}
       <div>
         <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Capabilities</h3>
-        {musicBackend ? (
-          <CapabilityGrid caps={musicBackend.capabilities as unknown as { [k: string]: boolean }} labels={CAPABILITY_LABELS} />
-        ) : metaBackend ? (
-          <CapabilityGrid caps={metaBackend.capabilities as unknown as { [k: string]: boolean }} labels={METADATA_CAPABILITY_LABELS} />
-        ) : null}
+        <CapabilityGrid caps={metaBackend.capabilities as unknown as { [k: string]: boolean }} labels={METADATA_CAPABILITY_LABELS} />
       </div>
 
       {/* Settings */}
@@ -1007,6 +1338,163 @@ function CreditLink({ href, children }: { href: string; children: React.ReactNod
   )
 }
 
+// ---------------------------------------------------------------------------
+// Floating orbs background animation for the About section
+// ---------------------------------------------------------------------------
+
+function FloatingOrbs() {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+
+    let raf: number
+    let w = 0
+    let h = 0
+
+    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#d946ef"
+
+    // Parse accent hex to r,g,b
+    const hexToRgb = (hex: string) => {
+      const c = hex.replace("#", "")
+      return [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16), parseInt(c.slice(4, 6), 16)] as const
+    }
+    const [ar, ag, ab] = hexToRgb(accent)
+
+    interface Orb { x: number; y: number; r: number; vx: number; vy: number; hue: number; alpha: number; pulse: number; pulseSpeed: number }
+
+    const orbs: Orb[] = []
+    const ORB_COUNT = 7
+
+    const resize = () => {
+      const dpr = window.devicePixelRatio || 1
+      w = canvas.clientWidth
+      h = canvas.clientHeight
+      canvas.width = w * dpr
+      canvas.height = h * dpr
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    }
+
+    const init = () => {
+      resize()
+      orbs.length = 0
+      for (let i = 0; i < ORB_COUNT; i++) {
+        orbs.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          r: 60 + Math.random() * 120,
+          vx: (Math.random() - 0.5) * 0.4,
+          vy: (Math.random() - 0.5) * 0.4,
+          hue: Math.random() * 60 - 30, // offset from accent hue
+          alpha: 0.08 + Math.random() * 0.08,
+          pulse: Math.random() * Math.PI * 2,
+          pulseSpeed: 0.003 + Math.random() * 0.005,
+        })
+      }
+    }
+
+    const draw = () => {
+      ctx.clearRect(0, 0, w, h)
+      for (const orb of orbs) {
+        orb.x += orb.vx
+        orb.y += orb.vy
+        orb.pulse += orb.pulseSpeed
+
+        // Bounce off edges softly
+        if (orb.x < -orb.r) orb.x = w + orb.r
+        if (orb.x > w + orb.r) orb.x = -orb.r
+        if (orb.y < -orb.r) orb.y = h + orb.r
+        if (orb.y > h + orb.r) orb.y = -orb.r
+
+        const pulseFactor = 1 + Math.sin(orb.pulse) * 0.25
+        const currentR = orb.r * pulseFactor
+        const currentAlpha = orb.alpha * (0.7 + Math.sin(orb.pulse * 0.7) * 0.3)
+
+        // Shift accent colour slightly per orb
+        const shift = orb.hue / 60
+        const r = Math.min(255, Math.max(0, ar + shift * 40))
+        const g = Math.min(255, Math.max(0, ag + shift * 20))
+        const b = Math.min(255, Math.max(0, ab - shift * 20))
+
+        const grad = ctx.createRadialGradient(orb.x, orb.y, 0, orb.x, orb.y, currentR)
+        grad.addColorStop(0, `rgba(${r},${g},${b},${currentAlpha})`)
+        grad.addColorStop(0.6, `rgba(${r},${g},${b},${currentAlpha * 0.4})`)
+        grad.addColorStop(1, `rgba(${r},${g},${b},0)`)
+
+        ctx.beginPath()
+        ctx.arc(orb.x, orb.y, currentR, 0, Math.PI * 2)
+        ctx.fillStyle = grad
+        ctx.fill()
+      }
+      raf = requestAnimationFrame(draw)
+    }
+
+    init()
+    draw()
+
+    window.addEventListener("resize", resize)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener("resize", resize)
+    }
+  }, [])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      style={{ filter: "blur(50px)" }}
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Animated tech stack badge for the About hero
+// ---------------------------------------------------------------------------
+
+const TECH_STACK: { label: string; href: string; category: "core" | "audio" | "frontend" | "backend" }[] = [
+  { label: "Tauri", href: "https://v2.tauri.app", category: "core" },
+  { label: "React", href: "https://react.dev", category: "core" },
+  { label: "TypeScript", href: "https://www.typescriptlang.org", category: "core" },
+  { label: "Rust", href: "https://www.rust-lang.org", category: "core" },
+  { label: "Vite", href: "https://vitejs.dev", category: "core" },
+  { label: "Web Audio API", href: "https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API", category: "audio" },
+  { label: "Butterchurn", href: "https://github.com/jprjr/butterchurn", category: "audio" },
+  { label: "Tailwind CSS", href: "https://tailwindcss.com", category: "frontend" },
+  { label: "Zustand", href: "https://zustand.docs.pmnd.rs", category: "frontend" },
+  { label: "Wouter", href: "https://github.com/molefrog/wouter", category: "frontend" },
+  { label: "dnd kit", href: "https://dndkit.com", category: "frontend" },
+  { label: "Tokio", href: "https://tokio.rs", category: "backend" },
+  { label: "reqwest", href: "https://github.com/seanmonstar/reqwest", category: "backend" },
+  { label: "Serde", href: "https://serde.rs", category: "backend" },
+  { label: "Souvlaki", href: "https://github.com/Sinono3/souvlaki", category: "backend" },
+]
+
+const CATEGORY_LABELS: Record<string, string> = {
+  core: "Core",
+  audio: "Audio",
+  frontend: "Frontend",
+  backend: "Backend",
+}
+
+function TechBadge({ item }: { item: typeof TECH_STACK[number] }) {
+  return (
+    <button
+      onClick={() => void open(item.href)}
+      className="group relative rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-white/60 transition-all duration-200 hover:border-accent/30 hover:bg-accent/10 hover:text-accent hover:scale-105"
+    >
+      {item.label}
+    </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// About section
+// ---------------------------------------------------------------------------
+
 function AboutSection() {
   const [version, setVersion] = useState("")
   const { update, checking, error, lastChecked, checkForUpdate, setShowDialog } = useUpdateStore()
@@ -1015,146 +1503,158 @@ function AboutSection() {
     void getVersion().then(setVersion)
   }, [])
 
+  const categories = useMemo(() => {
+    const cats = [...new Set(TECH_STACK.map((t) => t.category))]
+    return cats.map((c) => ({ key: c, label: CATEGORY_LABELS[c] || c, items: TECH_STACK.filter((t) => t.category === c) }))
+  }, [])
+
   return (
-    <div className="flex gap-12 max-w-4xl">
-      {/* Left column — version, updates, links */}
-      <div className="flex flex-col gap-6 min-w-[320px] max-w-md">
-        {/* Version */}
-        <SettingCard title="Version">
-          <p className="text-sm text-white/70">
-            Plexify <span className="font-semibold text-white">{version || "\u2026"}</span>
-          </p>
-        </SettingCard>
+    <div className="max-w-3xl space-y-8">
+      {/* ── Hero card with animated background ── */}
+      <div className="relative overflow-hidden rounded-2xl border border-white/[0.08]">
+        <FloatingOrbs />
 
-        {/* Updates */}
-        <SettingCard title="Updates">
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-3">
+        {/* Glassmorphism overlay */}
+        <div className="relative z-10 flex flex-col items-center py-14 px-8 text-center">
+          {/* App icon */}
+          <div className="mb-5 rounded-[22px] bg-white/[0.06] p-1 shadow-2xl ring-1 ring-white/10 backdrop-blur-sm">
+            <svg width="72" height="72" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect width="200" height="200" rx="45" fill="#111"/>
+              <path d="M 78,72 C 78,65 84,62 90,66 L 128,90 C 135,94 135,106 128,110 L 90,134 C 84,138 78,135 78,128 Z" fill="#e8e8e8"/>
+              <path d="M 65,55 C 65,46 73,42 80,47 L 141,83 C 149,88 149,112 141,117 L 80,153 C 73,158 65,154 65,145 Z" fill="none" stroke="#e8e8e8" strokeWidth="2" strokeLinejoin="round" opacity="0.42"/>
+              <path d="M 52,38 C 52,27 62,22 70,28 L 154,76 C 163,82 163,118 154,124 L 70,172 C 62,178 52,173 52,162 Z" fill="none" stroke="#e8e8e8" strokeWidth="1.5" strokeLinejoin="round" opacity="0.17"/>
+            </svg>
+          </div>
+
+          {/* App name */}
+          <h1 className="text-3xl font-bold tracking-tight text-white">Hibiki</h1>
+          <p className="mt-1 text-sm text-white/40">A Plex music client</p>
+
+          {/* Version pill */}
+          <div className="mt-4 flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.08] px-3 py-1 text-xs font-medium text-white/60 ring-1 ring-white/[0.06]">
+              <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
+              v{version || "\u2026"}
+            </span>
+          </div>
+
+          {/* Quick links */}
+          <div className="mt-6 flex gap-3">
+            <button
+              onClick={() => void open("https://github.com/karbowiak/hibiki")}
+              className="flex items-center gap-2 rounded-full bg-white/[0.08] px-4 py-2 text-xs font-medium text-white/70 ring-1 ring-white/[0.06] transition-all hover:bg-white/[0.14] hover:text-white"
+            >
+              <svg height="14" width="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+              GitHub
+            </button>
+            <button
+              onClick={() => void open("https://github.com/karbowiak/hibiki/releases")}
+              className="flex items-center gap-2 rounded-full bg-white/[0.08] px-4 py-2 text-xs font-medium text-white/70 ring-1 ring-white/[0.06] transition-all hover:bg-white/[0.14] hover:text-white"
+            >
+              <svg height="14" width="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Releases
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Updates ── */}
+      <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-5">
+        <div className="flex items-center gap-3 mb-4">
+          <svg height="16" width="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/40"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          <h3 className="text-sm font-semibold text-white">Updates</h3>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => void checkForUpdate()}
+              disabled={checking}
+              className="rounded-full px-4 py-1.5 text-sm bg-white/[0.08] text-white/80 ring-1 ring-white/[0.06] hover:bg-white/[0.14] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {checking ? "Checking\u2026" : "Check for Updates"}
+            </button>
+            {checking && (
+              <svg className="animate-spin text-accent" height="16" width="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                <path d="M12 2a10 10 0 0 1 10 10" />
+              </svg>
+            )}
+          </div>
+
+          {!checking && update && (
+            <div className="rounded-xl bg-accent/10 border border-accent/20 px-4 py-3 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-accent">Version {update.version} available</p>
+                {update.body && <p className="text-xs text-white/40 mt-0.5 line-clamp-1">{update.body}</p>}
+              </div>
               <button
-                onClick={() => void checkForUpdate()}
-                disabled={checking}
-                className="rounded-full px-4 py-1.5 text-sm bg-white/10 text-white hover:bg-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                onClick={() => setShowDialog(true)}
+                className="rounded-full px-4 py-1.5 text-sm bg-accent text-black font-semibold flex-shrink-0"
               >
-                {checking ? "Checking\u2026" : "Check for Updates"}
+                Install
               </button>
-              {checking && (
-                <svg className="animate-spin text-accent" height="16" width="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
-                  <path d="M12 2a10 10 0 0 1 10 10" />
-                </svg>
-              )}
             </div>
+          )}
 
-            {!checking && update && (
-              <div className="rounded-xl bg-accent/10 border border-accent/20 px-4 py-3 flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-accent">
-                    Version {update.version} available
-                  </p>
-                  {update.body && (
-                    <p className="text-xs text-white/40 mt-0.5 line-clamp-1">{update.body}</p>
-                  )}
-                </div>
-                <button
-                  onClick={() => setShowDialog(true)}
-                  className="rounded-full px-4 py-1.5 text-sm bg-accent text-black font-semibold flex-shrink-0"
-                >
-                  Install
-                </button>
-              </div>
-            )}
+          {!checking && !update && !error && lastChecked && (
+            <p className="text-xs text-white/40">You're on the latest version.</p>
+          )}
 
-            {!checking && !update && !error && lastChecked && (
-              <p className="text-xs text-white/40">You're on the latest version.</p>
-            )}
-
-            {!checking && error && (
-              <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
-                {error}
-              </div>
-            )}
-          </div>
-        </SettingCard>
-
-        {/* Links */}
-        <SettingCard title="Links">
-          <div className="flex flex-col gap-2 text-sm">
-            <CreditLink href="https://github.com/karbowiak/plexify">GitHub Repository</CreditLink>
-            <CreditLink href="https://github.com/karbowiak/plexify/releases">Release Notes</CreditLink>
-          </div>
-        </SettingCard>
+          {!checking && error && (
+            <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">{error}</div>
+          )}
+        </div>
       </div>
 
-      {/* Right column — thank you / credits */}
-      <div className="flex-1 min-w-[260px]">
-        <SettingCard title="Thank You">
-          <p className="text-sm text-white/50 mb-5">
-            Plexify wouldn't exist without these incredible projects and people.
-          </p>
+      {/* ── Built With ── */}
+      <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-6">
+        <h3 className="text-sm font-semibold text-white mb-1">Built With</h3>
+        <p className="text-xs text-white/35 mb-5">The open-source projects that power Hibiki.</p>
 
-          <div className="flex flex-col gap-5">
-            {/* Special thanks */}
-            <div className="rounded-xl bg-white/5 border border-white/5 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wider text-white/30 mb-3">Special Thanks</p>
-              <ul className="space-y-2 text-sm">
-                <li className="text-white/70">
-                  <CreditLink href="https://www.plex.tv">Plex</CreditLink>
-                  <span className="text-white/30"> &mdash; the media server that makes it all possible</span>
-                </li>
-                <li className="text-white/70">
-                  <CreditLink href="https://github.com/agmmnn/tauri-spotify-clone">@agmmnn</CreditLink>
-                  <span className="text-white/30"> &mdash; original Spotify-clone UI design inspiration</span>
-                </li>
-              </ul>
-            </div>
-
-            {/* Core framework */}
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-white/30 mb-3">Core</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
-                <CreditLink href="https://v2.tauri.app">Tauri</CreditLink>
-                <CreditLink href="https://react.dev">React</CreditLink>
-                <CreditLink href="https://www.typescriptlang.org">TypeScript</CreditLink>
-                <CreditLink href="https://www.rust-lang.org">Rust</CreditLink>
-                <CreditLink href="https://vitejs.dev">Vite</CreditLink>
+        <div className="space-y-5">
+          {categories.map((cat) => (
+            <div key={cat.key}>
+              <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/25 mb-2.5">{cat.label}</p>
+              <div className="flex flex-wrap gap-2">
+                {cat.items.map((item) => (
+                  <TechBadge key={item.label} item={item} />
+                ))}
               </div>
             </div>
+          ))}
+        </div>
+      </div>
 
-            {/* Audio */}
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-white/30 mb-3">Audio Engine</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
-                <CreditLink href="https://github.com/pdeljanov/Symphonia">Symphonia</CreditLink>
-                <CreditLink href="https://github.com/RustAudio/cpal">cpal</CreditLink>
-                <CreditLink href="https://github.com/jprjr/butterchurn">Butterchurn</CreditLink>
-                <CreditLink href="https://github.com/Amanieu/ringbuf">ringbuf</CreditLink>
-              </div>
+      {/* ── Special Thanks ── */}
+      <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-6">
+        <h3 className="text-sm font-semibold text-white mb-4">Special Thanks</h3>
+        <div className="space-y-3">
+          <div className="flex items-start gap-3 rounded-xl bg-white/[0.04] p-4 ring-1 ring-white/[0.06] transition-colors hover:bg-white/[0.06]">
+            <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-[#e5a00d]/15 text-[#e5a00d]">
+              <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
             </div>
-
-            {/* Frontend */}
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-white/30 mb-3">Frontend</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
-                <CreditLink href="https://tailwindcss.com">Tailwind CSS</CreditLink>
-                <CreditLink href="https://zustand.docs.pmnd.rs">Zustand</CreditLink>
-                <CreditLink href="https://github.com/molefrog/wouter">Wouter</CreditLink>
-                <CreditLink href="https://dndkit.com">dnd kit</CreditLink>
-              </div>
-            </div>
-
-            {/* Backend */}
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-white/30 mb-3">Backend</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
-                <CreditLink href="https://tokio.rs">Tokio</CreditLink>
-                <CreditLink href="https://github.com/seanmonstar/reqwest">reqwest</CreditLink>
-                <CreditLink href="https://serde.rs">Serde</CreditLink>
-                <CreditLink href="https://github.com/Sinono3/souvlaki">Souvlaki</CreditLink>
-              </div>
+              <CreditLink href="https://www.plex.tv">Plex</CreditLink>
+              <p className="text-xs text-white/30 mt-0.5">The media server that makes it all possible.</p>
             </div>
           </div>
-        </SettingCard>
+          <div className="flex items-start gap-3 rounded-xl bg-white/[0.04] p-4 ring-1 ring-white/[0.06] transition-colors hover:bg-white/[0.06]">
+            <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-white/[0.08] text-white/50">
+              <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+            </div>
+            <div>
+              <CreditLink href="https://github.com/agmmnn/tauri-spotify-clone">@agmmnn</CreditLink>
+              <p className="text-xs text-white/30 mt-0.5">Original Spotify-clone UI design inspiration.</p>
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* ── Footer ── */}
+      <p className="text-center text-[11px] text-white/20 pb-4">
+        Made with love and way too much coffee.
+      </p>
     </div>
   )
 }
@@ -1210,16 +1710,18 @@ export function SettingsPage({ section: sectionProp }: { section?: string }) {
 
   // Map old routes to new ones
   const mappedSection = (() => {
-    const raw = sectionProp || "backends"
+    const raw = sectionProp || "plex"
     if (raw === "experience") return "appearance"
     if (raw === "notifications" || raw === "debug") return "general"
     if (raw === "downloads" || raw === "ai") return "general"
+    if (raw === "backends") return "plex"
+    if (raw.startsWith("backends/")) return raw.replace("backends/", "metadata/")
     return raw
   })()
   const section: Section = mappedSection as Section
 
   const setSection = (s: Section) => {
-    navigate(s === "backends" ? "/settings" : `/settings/${s}`)
+    navigate(s === "plex" ? "/settings" : `/settings/${s}`)
   }
 
   const navItems = easterEggsUnlocked ? [...NAV, EASTER_EGG_NAV] : NAV
@@ -1232,7 +1734,7 @@ export function SettingsPage({ section: sectionProp }: { section?: string }) {
         <nav>
           <ul className="space-y-0.5">
             {navItems.map(item => {
-              const active = section === item.id || (item.id === "backends" && section.startsWith("backends/"))
+              const active = section === item.id || (item.id === "metadata" && section.startsWith("metadata/"))
               return (
                 <li key={item.id}>
                   <button
@@ -1262,18 +1764,20 @@ export function SettingsPage({ section: sectionProp }: { section?: string }) {
 
       {/* Content */}
       <main className="flex-1 overflow-auto p-10 pt-8">
-        {!section.startsWith("backends/") && (
+        {!section.startsWith("metadata/") && (
           <h1 className="mb-8 text-2xl font-bold">
             {navItems.find(n => n.id === section)?.label}
           </h1>
         )}
 
-        {section === "backends" && <BackendsListView setSection={setSection} />}
-        {section.startsWith("backends/") && (
-          <BackendSubPage backendId={section.slice(9)} goBack={() => navigate("/settings")} />
+        {section === "plex" && <PlexSection />}
+        {section === "metadata" && <MetadataListView setSection={setSection} />}
+        {section.startsWith("metadata/") && (
+          <MetadataSubPage backendId={section.slice(9)} goBack={() => setSection("metadata")} />
         )}
         {section === "playback" && <PlaybackSection />}
         {section === "appearance" && <AppearanceSection />}
+        {section === "cache" && <CacheSection />}
         {section === "general" && <GeneralSection />}
         {section === "about" && <AboutSection />}
         {section === "eastereggs" && <EasterEggsSection />}

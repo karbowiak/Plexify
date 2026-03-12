@@ -12,7 +12,7 @@
  * `src` fails. Cache key: `{type}_{id}_{md5(src)[..8]}.img`.
  *
  * This module is backend-agnostic — each backend owns its own URL assembly
- * (see backends/plex/imageUrl.ts, backends/demo/imageUrl.ts).
+ * (see backends/plex/imageUrl.ts).
  */
 
 import { IS_WINDOWS } from "./platform"

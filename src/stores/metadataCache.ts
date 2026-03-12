@@ -102,9 +102,11 @@ interface MetadataCacheState {
 
   setArtistCache: (id: string, entry: Omit<ArtistCacheEntry, "fetchedAt">) => void
   setAlbumCache: (id: string, entry: Omit<AlbumCacheEntry, "fetchedAt">) => void
+  clearAll: () => void
+  stats: () => { artistCount: number; albumCount: number }
 }
 
-const useMetadataCacheStore = create<MetadataCacheState>()(persist((set) => ({
+const useMetadataCacheStore = create<MetadataCacheState>()(persist((set, get) => ({
   artists: {},
   albums: {},
 
@@ -116,6 +118,13 @@ const useMetadataCacheStore = create<MetadataCacheState>()(persist((set) => ({
   setAlbumCache: (id, entry) => set(state => {
     const updated = { ...state.albums, [id]: { ...entry, fetchedAt: Date.now() } }
     return { albums: evictRecord(updated, MAX_ALBUMS) }
+  }),
+
+  clearAll: () => set({ artists: {}, albums: {} }),
+
+  stats: () => ({
+    artistCount: Object.keys(get().artists).length,
+    albumCount: Object.keys(get().albums).length,
   }),
 }), {
   name: "plex-metadata-cache-v1",
@@ -148,6 +157,14 @@ export function setArtistCache(id: string, entry: Omit<ArtistCacheEntry, "fetche
 
 export function setAlbumCache(id: string, entry: Omit<AlbumCacheEntry, "fetchedAt">): void {
   useMetadataCacheStore.getState().setAlbumCache(id, entry)
+}
+
+export function clearMetadataCache(): void {
+  useMetadataCacheStore.getState().clearAll()
+}
+
+export function getMetadataCacheStats(): { artistCount: number; albumCount: number } {
+  return useMetadataCacheStore.getState().stats()
 }
 
 /**

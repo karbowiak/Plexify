@@ -7,12 +7,12 @@
  */
 
 import { useState } from "react"
-import { useLastfmMetadataStore } from "../backends/lastfm/store"
-import { useDeezerMetadataStore } from "../backends/deezer/store"
-import { useItunesMetadataStore } from "../backends/apple/store"
-import type { LastfmArtistInfo, LastfmAlbumInfo, LastfmTrackInfo } from "../backends/lastfm/api"
-import type { DeezerArtistInfo, DeezerAlbumInfo } from "../backends/deezer/api"
-import type { ItunesArtistInfo, ItunesAlbumInfo } from "../backends/apple/api"
+import { useLastfmMetadataStore } from "../metadata/lastfm/store"
+import { useDeezerMetadataStore } from "../metadata/deezer/store"
+import { useItunesMetadataStore } from "../metadata/apple/store"
+import type { LastfmArtistInfo, LastfmAlbumInfo, LastfmTrackInfo } from "../metadata/lastfm/api"
+import type { DeezerArtistInfo, DeezerAlbumInfo } from "../metadata/deezer/api"
+import type { ItunesArtistInfo, ItunesAlbumInfo } from "../metadata/apple/api"
 import { useMetadataFetch } from "./useMetadataFetch"
 
 export interface ArtistEnrichment {
@@ -100,6 +100,6 @@ export function useTrackEnrichment(artistName: string | null, trackName: string 
 }
 
 // Re-export types for consumers
-export type { LastfmArtistInfo, LastfmAlbumInfo, LastfmTrackInfo } from "../backends/lastfm/api"
-export type { DeezerArtistInfo, DeezerAlbumInfo } from "../backends/deezer/api"
-export type { ItunesArtistInfo, ItunesAlbumInfo } from "../backends/apple/api"
+export type { LastfmArtistInfo, LastfmAlbumInfo, LastfmTrackInfo } from "../metadata/lastfm/api"
+export type { DeezerArtistInfo, DeezerAlbumInfo } from "../metadata/deezer/api"
+export type { ItunesArtistInfo, ItunesAlbumInfo } from "../metadata/apple/api"

@@ -20,7 +20,7 @@ use crate::podcast::{PodcastCategory, PodcastTopChart};
 const PI_KEY: &str = env!("PI_KEY", "Set PI_KEY in .env or environment (free from https://api.podcastindex.org/)");
 const PI_SECRET: &str = env!("PI_SECRET", "Set PI_SECRET in .env or environment");
 const PI_BASE: &str = "https://api.podcastindex.org/api/1.0";
-const PI_USER_AGENT: &str = "Plexify/1.0";
+const PI_USER_AGENT: &str = "Hibiki/1.0";
 
 static PI_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()

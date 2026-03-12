@@ -66,12 +66,12 @@ export function UpdateDialog() {
           <div className="py-4 text-center">
             <div className="mb-2 text-4xl">&#10003;</div>
             <p className="font-semibold text-accent">Update installed!</p>
-            <p className="mt-1 text-sm text-white/50">Restart Plexify to use the new version.</p>
+            <p className="mt-1 text-sm text-white/50">Restart Hibiki to use the new version.</p>
           </div>
         ) : (
           <>
             <p className="mb-2 text-sm text-white/70">
-              Plexify <span className="font-semibold text-accent">{update.version}</span> is ready to install.
+              Hibiki <span className="font-semibold text-accent">{update.version}</span> is ready to install.
             </p>
             {update.body && (
               <p className="mb-5 max-h-32 overflow-y-auto rounded-lg bg-white/5 px-3 py-2 text-xs text-white/50">

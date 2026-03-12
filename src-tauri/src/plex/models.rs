@@ -424,6 +424,16 @@ pub struct Track {
     #[serde(rename(deserialize = "playlistItemID"), default, deserialize_with = "serde_string_or_i64_opt::deserialize")]
     pub playlist_item_id: Option<i64>,
 
+    /// Loudness ramp from track start (dB/time pairs, semicolon-delimited).
+    /// Populated when `includeLoudnessRamps=1` is passed in the API request.
+    #[serde(rename(deserialize = "startRamp"), default)]
+    pub start_ramp: Option<String>,
+
+    /// Loudness ramp from track end (dB/time pairs, semicolon-delimited).
+    /// Populated when `includeLoudnessRamps=1` is passed in the API request.
+    #[serde(rename(deserialize = "endRamp"), default)]
+    pub end_ramp: Option<String>,
+
     /// Media files for this track (contains stream/part info)
     #[serde(rename(deserialize = "Media"), default)]
     pub media: Vec<Media>,
@@ -568,6 +578,16 @@ pub struct PlexStream {
     /// Human-readable stream description (e.g. "FLAC (Stereo)")
     #[serde(rename(deserialize = "displayTitle"), default)]
     pub display_title: Option<String>,
+
+    /// Loudness ramp from track start (dB/time pairs, semicolon-delimited).
+    /// Populated when `includeLoudnessRamps=1` is passed in the API request.
+    #[serde(rename(deserialize = "startRamp"), default)]
+    pub start_ramp: Option<String>,
+
+    /// Loudness ramp from track end (dB/time pairs, semicolon-delimited).
+    /// Populated when `includeLoudnessRamps=1` is passed in the API request.
+    #[serde(rename(deserialize = "endRamp"), default)]
+    pub end_ramp: Option<String>,
 }
 
 /// A lyrics stream embedded in a track (returned when `includeLyrics=1` is passed).
@@ -917,6 +937,10 @@ pub struct Playlist {
     #[serde(default)]
     pub thumb: Option<String>,
 
+    /// Full image URL — newer PMS versions (1.40+) return this for mixes and playlists
+    #[serde(default)]
+    pub image: Option<String>,
+
     /// Composite artwork URL (auto-generated from track art)
     #[serde(default)]
     pub composite: Option<String>,
@@ -1194,6 +1218,14 @@ pub struct PlexSettings {
     /// Used as fallbacks when the primary `base_url` is unreachable.
     #[serde(default)]
     pub all_urls: Vec<String>,
+
+    /// Selected music library section ID.
+    #[serde(default)]
+    pub section_id: i64,
+
+    /// Selected music library section UUID.
+    #[serde(default)]
+    pub section_uuid: String,
 
     // -----------------------------------------------------------------------
     // Last.fm integration

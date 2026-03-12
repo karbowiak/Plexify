@@ -5,41 +5,56 @@ export interface FontPreset {
   label: string
   /** CSS font-family stack to set on --font-family */
   stack: string
-  /** Google Fonts URL — null if the font is already available locally */
-  googleUrl: string | null
+  /** Category for grouping in the UI */
+  category: "default" | "sans-serif" | "monospace"
 }
 
 export const FONT_PRESETS: FontPreset[] = [
+  // Default
   {
     name: "circular",
     label: "Circular",
     stack: "CircularSp, CircularSp-Arab, CircularSp-Hebr, CircularSp-Cyrl, CircularSp-Grek, CircularSp-Deva, sans-serif",
-    googleUrl: null,
+    category: "default",
   },
   {
-    name: "inter",
-    label: "Inter",
-    stack: "'Inter', sans-serif",
-    googleUrl: "https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap",
+    name: "system",
+    label: "System",
+    stack: "system-ui, -apple-system, sans-serif",
+    category: "default",
   },
-  {
-    name: "geist",
-    label: "Geist",
-    stack: "'Geist', sans-serif",
-    googleUrl: "https://fonts.googleapis.com/css2?family=Geist:wght@400;600;700;900&display=swap",
-  },
-  {
-    name: "montserrat",
-    label: "Montserrat",
-    stack: "'Montserrat', sans-serif",
-    googleUrl: "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;900&display=swap",
-  },
-  {
-    name: "nunito",
-    label: "Nunito",
-    stack: "'Nunito', sans-serif",
-    googleUrl: "https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;900&display=swap",
-  },
+  // Sans-serif (alphabetical)
+  { name: "archivo",             label: "Archivo",             stack: "'Archivo Variable', sans-serif",             category: "sans-serif" },
+  { name: "bricolage-grotesque", label: "Bricolage Grotesque", stack: "'Bricolage Grotesque Variable', sans-serif", category: "sans-serif" },
+  { name: "cabin",               label: "Cabin",               stack: "'Cabin Variable', sans-serif",               category: "sans-serif" },
+  { name: "dm-sans",             label: "DM Sans",             stack: "'DM Sans Variable', sans-serif",             category: "sans-serif" },
+  { name: "figtree",             label: "Figtree",             stack: "'Figtree Variable', sans-serif",             category: "sans-serif" },
+  { name: "geist",               label: "Geist",               stack: "'Geist Variable', sans-serif",               category: "sans-serif" },
+  { name: "instrument-sans",     label: "Instrument Sans",     stack: "'Instrument Sans Variable', sans-serif",     category: "sans-serif" },
+  { name: "inter",               label: "Inter",               stack: "'Inter Variable', sans-serif",               category: "sans-serif" },
+  { name: "josefin-sans",        label: "Josefin Sans",        stack: "'Josefin Sans Variable', sans-serif",        category: "sans-serif" },
+  { name: "lexend",              label: "Lexend",              stack: "'Lexend Variable', sans-serif",              category: "sans-serif" },
+  { name: "manrope",             label: "Manrope",             stack: "'Manrope Variable', sans-serif",             category: "sans-serif" },
+  { name: "montserrat",          label: "Montserrat",          stack: "'Montserrat Variable', sans-serif",          category: "sans-serif" },
+  { name: "nunito",              label: "Nunito",              stack: "'Nunito Variable', sans-serif",              category: "sans-serif" },
+  { name: "onest",               label: "Onest",               stack: "'Onest Variable', sans-serif",               category: "sans-serif" },
+  { name: "open-sans",           label: "Open Sans",           stack: "'Open Sans Variable', sans-serif",           category: "sans-serif" },
+  { name: "outfit",              label: "Outfit",              stack: "'Outfit Variable', sans-serif",              category: "sans-serif" },
+  { name: "overpass",            label: "Overpass",            stack: "'Overpass Variable', sans-serif",            category: "sans-serif" },
+  { name: "plus-jakarta-sans",   label: "Plus Jakarta Sans",   stack: "'Plus Jakarta Sans Variable', sans-serif",   category: "sans-serif" },
+  { name: "public-sans",         label: "Public Sans",         stack: "'Public Sans Variable', sans-serif",         category: "sans-serif" },
+  { name: "quicksand",           label: "Quicksand",           stack: "'Quicksand Variable', sans-serif",           category: "sans-serif" },
+  { name: "raleway",             label: "Raleway",             stack: "'Raleway Variable', sans-serif",             category: "sans-serif" },
+  { name: "roboto",              label: "Roboto",              stack: "'Roboto Variable', sans-serif",              category: "sans-serif" },
+  { name: "rubik",               label: "Rubik",               stack: "'Rubik Variable', sans-serif",               category: "sans-serif" },
+  { name: "sora",                label: "Sora",                stack: "'Sora Variable', sans-serif",                category: "sans-serif" },
+  { name: "source-sans-3",       label: "Source Sans",         stack: "'Source Sans 3 Variable', sans-serif",       category: "sans-serif" },
+  { name: "space-grotesk",       label: "Space Grotesk",       stack: "'Space Grotesk Variable', sans-serif",       category: "sans-serif" },
+  { name: "urbanist",            label: "Urbanist",            stack: "'Urbanist Variable', sans-serif",            category: "sans-serif" },
+  { name: "work-sans",           label: "Work Sans",           stack: "'Work Sans Variable', sans-serif",           category: "sans-serif" },
+  // Monospace
+  { name: "jetbrains-mono",      label: "JetBrains Mono",      stack: "'JetBrains Mono Variable', monospace",       category: "monospace" },
+  { name: "fira-code",           label: "Fira Code",           stack: "'Fira Code Variable', monospace",            category: "monospace" },
 ]
 
 const DEFAULT_FONT = "circular"
@@ -49,16 +64,7 @@ function loadFont(): FontPreset {
   return FONT_PRESETS.find(p => p.name === stored) ?? FONT_PRESETS[0]!
 }
 
-function injectGoogleFont(url: string) {
-  if (document.querySelector(`link[href="${url}"]`)) return
-  const link = document.createElement("link")
-  link.rel = "stylesheet"
-  link.href = url
-  document.head.appendChild(link)
-}
-
 function applyFont(preset: FontPreset) {
-  if (preset.googleUrl) injectGoogleFont(preset.googleUrl)
   document.documentElement.style.setProperty("--font-family", preset.stack)
 }
 

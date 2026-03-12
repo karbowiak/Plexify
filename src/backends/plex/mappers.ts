@@ -14,6 +14,7 @@ import type {
   MusicPlaylist,
   MusicItem,
   MusicHub,
+  HubLayout,
 } from "../../types/music"
 
 /**
@@ -91,6 +92,8 @@ export function plexTrackToMusicTrack(t: Track, img: ImgResolver): MusicTrack {
     parentStudio: t.parent_studio ?? null,
     lastRatedAt: t.last_rated_at ?? null,
     providerKey: t.key ?? null,
+    startRamp: t.start_ramp ?? stream?.start_ramp ?? null,
+    endRamp: t.end_ramp ?? stream?.end_ramp ?? null,
     rawThumbPath: t.thumb ?? t.parent_thumb ?? null,
     mediaInfo: {
       container: media?.container ?? null,
@@ -173,7 +176,7 @@ export function plexPlaylistToMusicPlaylist(p: Playlist, img: ImgResolver): Musi
     smart: p.smart,
     trackCount: p.leaf_count,
     duration: p.duration ?? null,
-    thumbUrl: resolveImg(img, p.thumb || p.composite, "playlist", playlistId, p.title),
+    thumbUrl: resolveImg(img, p.thumb || p.image || p.composite, "playlist", playlistId, p.title),
     summary: p.summary ?? null,
     addedAt: p.added_at ?? null,
     guid: p.guid ?? null,
@@ -205,6 +208,13 @@ export function plexMediaToMusicItem(item: PlexMedia, img: ImgResolver): MusicIt
 // Hub
 // ---------------------------------------------------------------------------
 
+function deriveHubLayout(identifier: string, style: string | null): HubLayout {
+  const id = identifier.toLowerCase()
+  if (id.includes("mix") || id.includes("station")) return "hero"
+  if (style === "pills" || id.includes("tag") || id.includes("genre") || id.includes("mood")) return "pills"
+  return "scroller"
+}
+
 export function plexHubToMusicHub(h: Hub, img: ImgResolver): MusicHub {
   return {
     title: h.title,
@@ -213,5 +223,6 @@ export function plexHubToMusicHub(h: Hub, img: ImgResolver): MusicHub {
       .map(m => plexMediaToMusicItem(m, img))
       .filter((x): x is MusicItem => x !== null),
     style: h.style ?? null,
+    layout: deriveHubLayout(h.hub_identifier, h.style ?? null),
   }
 }

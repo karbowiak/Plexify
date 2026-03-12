@@ -1,7 +1,7 @@
 [package]
-name = "plexify"
+name = "hibiki"
 version = "0.1.0"
-description = "Plexify — Plex music client"
+description = "Hibiki — Plex music client"
 authors = ["you"]
 license = ""
 repository = ""
@@ -53,16 +53,7 @@ sha1 = "0.10"
 once_cell = "1.19"
 uuid = { version = "1", features = ["v4"] }
 roxmltree = "0.19"
-
-# Audio engine
-symphonia = { version = "0.5", features = [
-    "mp3", "aac", "alac", "flac", "ogg", "wav", "pcm", "isomp4",
-] }
-symphonia-adapter-libopus = "0.2"
-cpal = "0.15"
-ringbuf = "0.4"
 crossbeam-channel = "0.5"
-rubato = "0.14"
 
 # SQLite database
 rusqlite = { version = "0.31", features = ["bundled"] }

@@ -27,7 +27,7 @@ import {
 } from "./mappers"
 
 import * as plex from "./api"
-import { lastfmScrobble, lastfmUpdateNowPlaying } from "../lastfm/api"
+import { lastfmScrobble, lastfmUpdateNowPlaying } from "../../metadata/lastfm/api"
 import { buildPlexImageUrl } from "./imageUrl"
 import { pickBestMediaIndex } from "../../lib/dedup"
 
@@ -125,9 +125,10 @@ export class PlexProvider implements MusicProvider {
   // Browse
   // ---------------------------------------------------------------------------
 
-  async search(query: string): Promise<MusicItem[]> {
+  async search(query: string, type?: "track" | "album" | "artist"): Promise<MusicItem[]> {
     const sid = this.requireSection()
-    const results = await plex.searchLibrary(sid, query)
+    const libtype = type === "track" ? "10" : type === "album" ? "9" : type === "artist" ? "8" : undefined
+    const results = await plex.searchLibrary(sid, query, libtype)
     return results
       .map(m => plexMediaToMusicItem(m, this.img))
       .filter((x): x is MusicItem => x !== null)
@@ -262,9 +263,21 @@ export class PlexProvider implements MusicProvider {
   }
 
   async getPlaybackInfo(track: MusicTrack): Promise<TrackPlaybackInfo> {
-    const plexTrack = track._providerData as Track
-    const idx = pickBestMediaIndex(plexTrack.media ?? [])
-    const media = plexTrack.media?.[idx]
+    let plexTrack = track._providerData as Track
+    let idx = pickBestMediaIndex(plexTrack.media ?? [])
+    let media = plexTrack.media?.[idx]
+    let stream = media?.parts?.[0]?.streams?.find(s => s.stream_type === 2)
+
+    // Re-fetch if ramps are missing — cached _providerData may predate includeLoudnessRamps
+    if (!stream?.start_ramp && !stream?.end_ramp) {
+      try {
+        plexTrack = await plex.getTrack(Number(track.id))
+        idx = pickBestMediaIndex(plexTrack.media ?? [])
+        media = plexTrack.media?.[idx]
+        stream = media?.parts?.[0]?.streams?.find(s => s.stream_type === 2)
+      } catch { /* use original data */ }
+    }
+
     const partKey = media?.parts?.[0]?.key
     if (!partKey) throw new Error("Track has no media part")
     return {
@@ -272,6 +285,8 @@ export class PlexProvider implements MusicProvider {
       trackKey: Number(track.id),
       partId: media?.parts?.[0]?.id ?? 0,
       parentKey: plexTrack.parent_key ?? "",
+      startRamp: plexTrack.start_ramp ?? stream?.start_ramp ?? null,
+      endRamp: plexTrack.end_ramp ?? stream?.end_ramp ?? null,
     }
   }
 

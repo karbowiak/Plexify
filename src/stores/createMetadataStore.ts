@@ -6,7 +6,7 @@ import { evictStaleEntries } from "./cacheUtils"
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60_000  // 7 days
 
 export interface CacheEntry<T> {
-  data: T
+  data: T | null
   cachedAt: number
 }
 
@@ -26,6 +26,8 @@ interface CreateMetadataStoreOpts<ArtistT, AlbumT> {
   fetchAlbum: (artist: string, album: string) => Promise<AlbumT | null>
   artistTtl?: number
   albumTtl?: number
+  negativeTtl?: number
+  evictionTtl?: number
   guard?: () => boolean
 }
 
@@ -38,8 +40,11 @@ export function createMetadataStore<ArtistT, AlbumT>(
     fetchAlbum,
     artistTtl = DEFAULT_TTL_MS,
     albumTtl = DEFAULT_TTL_MS,
+    negativeTtl = DEFAULT_TTL_MS,
     guard,
   } = opts
+
+  const evictionTtl = opts.evictionTtl ?? Math.max(artistTtl, albumTtl) * 1.5
 
   const inflightArtists = new Map<string, Promise<ArtistT | null>>()
   const inflightAlbums = new Map<string, Promise<AlbumT | null>>()
@@ -55,13 +60,16 @@ export function createMetadataStore<ArtistT, AlbumT>(
           if (guard && !guard()) return null
           const key = artist.toLowerCase()
           const cached = get().artists[key]
-          if (cached && Date.now() - cached.cachedAt < artistTtl) return cached.data
+          if (cached) {
+            const ttl = cached.data === null ? negativeTtl : artistTtl
+            if (Date.now() - cached.cachedAt < ttl) return cached.data
+          }
           const existing = inflightArtists.get(key)
           if (existing) return existing
           const promise = (async () => {
             try {
               const data = await fetchArtist(artist)
-              if (data) set((s) => ({ artists: { ...s.artists, [key]: { data, cachedAt: Date.now() } } }))
+              set((s) => ({ artists: { ...s.artists, [key]: { data, cachedAt: Date.now() } } }))
               return data
             } catch {
               return null
@@ -77,13 +85,16 @@ export function createMetadataStore<ArtistT, AlbumT>(
           if (guard && !guard()) return null
           const key = `${artist.toLowerCase()}::${album.toLowerCase()}`
           const cached = get().albums[key]
-          if (cached && Date.now() - cached.cachedAt < albumTtl) return cached.data
+          if (cached) {
+            const ttl = cached.data === null ? negativeTtl : albumTtl
+            if (Date.now() - cached.cachedAt < ttl) return cached.data
+          }
           const existing = inflightAlbums.get(key)
           if (existing) return existing
           const promise = (async () => {
             try {
               const data = await fetchAlbum(artist, album)
-              if (data) set((s) => ({ albums: { ...s.albums, [key]: { data, cachedAt: Date.now() } } }))
+              set((s) => ({ albums: { ...s.albums, [key]: { data, cachedAt: Date.now() } } }))
               return data
             } catch {
               return null
@@ -108,8 +119,8 @@ export function createMetadataStore<ArtistT, AlbumT>(
         partialize: (s) => ({ artists: s.artists, albums: s.albums }),
         onRehydrateStorage: () => (state) => {
           if (state) {
-            state.artists = evictStaleEntries(state.artists)
-            state.albums = evictStaleEntries(state.albums)
+            state.artists = evictStaleEntries(state.artists, evictionTtl)
+            state.albums = evictStaleEntries(state.albums, evictionTtl)
           }
           store.setState({ _hasHydrated: true })
         },

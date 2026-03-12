@@ -1,6 +1,6 @@
 import { useState } from "react"
-import { lastfmLoveTrack } from "../../backends/lastfm/api"
-import { useLastfmStore } from "../../backends/lastfm/authStore"
+import { lastfmLoveTrack } from "../../metadata/lastfm/api"
+import { useLastfmStore } from "../../metadata/lastfm/authStore"
 import { useLibraryStore } from "../../stores/libraryStore"
 import { useProviderStore } from "../../stores/providerStore"
 import { useCapability } from "../../hooks/useCapability"

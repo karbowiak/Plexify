@@ -16,8 +16,8 @@
 
 import { useEffect } from "react"
 import { useMetadataSourceStore } from "../stores/metadataSourceStore"
-import { useDeezerMetadataStore } from "../backends/deezer/store"
-import { useItunesMetadataStore } from "../backends/apple/store"
+import { useDeezerMetadataStore } from "../metadata/deezer/store"
+import { useItunesMetadataStore } from "../metadata/apple/store"
 import { buildImageUrl } from "../lib/imageUrl"
 
 /**
@@ -93,16 +93,17 @@ export function useAlbumImage(
   const deezerHydrated = useDeezerMetadataStore(s => s._hasHydrated)
   const itunesHydrated = useItunesMetadataStore(s => s._hasHydrated)
 
+  const deezerUrl = deezerEntry?.data?.cover_url ?? null
+  const appleUrl  = itunesEntry?.data?.cover_url ?? null
+
   // Warm caches when entries are missing.
   // Gate on hydration to avoid firing fetches before IndexedDB data loads.
+  // Only fire iTunes fetch when no higher-priority source already has art.
   useEffect(() => {
     if (!artistName || !albumName) return
     if (deezerHydrated && deezerEntry === undefined) void getDeezerAlbum(artistName, albumName)
-    if (itunesHydrated && itunesEntry === undefined) void getItunesAlbum(artistName, albumName)
-  }, [artistName, albumName, deezerHydrated, itunesHydrated, deezerEntry !== undefined, itunesEntry !== undefined, getDeezerAlbum, getItunesAlbum])
-
-  const deezerUrl = deezerEntry?.data?.cover_url ?? null
-  const appleUrl  = itunesEntry?.data?.cover_url ?? null
+    if (itunesHydrated && itunesEntry === undefined && !plexThumb && !deezerUrl) void getItunesAlbum(artistName, albumName)
+  }, [artistName, albumName, plexThumb, deezerUrl, deezerHydrated, itunesHydrated, deezerEntry !== undefined, itunesEntry !== undefined, getDeezerAlbum, getItunesAlbum])
 
   for (const source of priority) {
     if (source === "plex"   && plexThumb) return plexThumb

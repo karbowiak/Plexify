@@ -24,6 +24,10 @@ export interface PlexStream {
   sampling_rate: number | null
   /** Human-readable description (e.g. "FLAC (Stereo)") */
   display_title: string | null
+  /** Loudness ramp from track start (dB/time pairs, semicolon-delimited) */
+  start_ramp: string | null
+  /** Loudness ramp from track end (dB/time pairs, semicolon-delimited) */
+  end_ramp: string | null
 }
 
 export interface MediaPart {
@@ -93,6 +97,10 @@ export interface Track {
   skip_count: number | null
   /** Sequential ID Plex assigns when a track is added to a playlist. Lower = added earlier. Null outside playlist context. */
   playlist_item_id: number | null
+  /** Loudness ramp from track start (dB/time pairs, semicolon-delimited) */
+  start_ramp: string | null
+  /** Loudness ramp from track end (dB/time pairs, semicolon-delimited) */
+  end_ramp: string | null
   media: Media[]
 }
 
@@ -197,6 +205,8 @@ export interface Playlist {
   summary: string | null
   /** Custom user-uploaded artwork */
   thumb: string | null
+  /** Full image URL — newer PMS versions return this for mixes and playlists */
+  image: string | null
   composite: string | null
   content: string | null
   icon: string | null
@@ -312,6 +322,10 @@ export interface PlexSettings {
   client_id: string
   /** All known connection URLs ordered best-first; used as fallbacks. */
   all_urls: string[]
+  /** Selected music library section ID. 0 = not yet selected. */
+  section_id: number
+  /** Selected music library section UUID. Empty = not yet selected. */
+  section_uuid: string
   /** Last.fm API key (user-registered). Empty if not configured. */
   lastfm_api_key: string
   /** Last.fm session key obtained after OAuth. Empty if not authenticated. */
@@ -351,5 +365,9 @@ export interface PlexResource {
   name: string
   client_identifier: string
   provides: string
+  /** Per-resource auth token. For shared servers this differs from the user's main token. */
+  access_token: string | null
+  /** Whether the authenticated user owns this server. */
+  owned: boolean
   connections: PlexConnection[]
 }

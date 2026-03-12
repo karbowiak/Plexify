@@ -4,14 +4,16 @@ import { useShallow } from "zustand/react/shallow"
 import { open } from "@tauri-apps/plugin-shell"
 import { useConnectionStore } from "./connectionStore"
 import { useLibraryStore } from "../../stores/libraryStore"
-import { plexAuthPoll, plexGetResources, testServerConnection } from "./api"
-import type { PlexResource } from "./types"
+import { plexAuthPoll, plexGetResources, testServerConnection, getLibrarySections } from "./api"
+import type { PlexResource, LibrarySection } from "./types"
 
-type AuthState = "idle" | "polling" | "picking"
+type AuthState = "idle" | "polling" | "picking" | "picking-library"
 
 export function PlexSettings() {
   const {
     connect,
+    selectLibrary,
+    switchLibrary,
     disconnectAndClear,
     startPlexAuth,
     isLoading,
@@ -20,8 +22,13 @@ export function PlexSettings() {
     clearError,
     baseUrl: savedUrl,
     token: savedToken,
+    needsLibraryPick,
+    availableMusicSections,
+    musicSectionTitle,
   } = useConnectionStore(useShallow(s => ({
     connect: s.connect,
+    selectLibrary: s.selectLibrary,
+    switchLibrary: s.switchLibrary,
     disconnectAndClear: s.disconnectAndClear,
     startPlexAuth: s.startPlexAuth,
     isLoading: s.isLoading,
@@ -30,6 +37,9 @@ export function PlexSettings() {
     clearError: s.clearError,
     baseUrl: s.baseUrl,
     token: s.token,
+    needsLibraryPick: s.needsLibraryPick,
+    availableMusicSections: s.availableMusicSections,
+    musicSectionTitle: s.musicSectionTitle,
   })))
   const { fetchPlaylists, fetchRecentlyAdded, fetchHubs } = useLibraryStore(useShallow(s => ({ fetchPlaylists: s.fetchPlaylists, fetchRecentlyAdded: s.fetchRecentlyAdded, fetchHubs: s.fetchHubs })))
   const [, navigate] = useLocation()
@@ -50,6 +60,11 @@ export function PlexSettings() {
   const pollCountRef = useRef(0)
   const MAX_POLLS = 150
 
+  // Library switcher state
+  const [showLibrarySwitcher, setShowLibrarySwitcher] = useState(false)
+  const [switcherSections, setSwitcherSections] = useState<LibrarySection[]>([])
+  const [isSwitching, setIsSwitching] = useState(false)
+
   useEffect(() => {
     setUrl(savedUrl)
     setToken(savedToken)
@@ -60,6 +75,13 @@ export function PlexSettings() {
   }, [])
 
   useEffect(() => () => stopPolling(), [])
+
+  // Transition to library picker when connect sets needsLibraryPick
+  useEffect(() => {
+    if (needsLibraryPick && availableMusicSections.length > 0) {
+      setAuthState("picking-library")
+    }
+  }, [needsLibraryPick, availableMusicSections])
 
   const isDirty = url.trim() !== savedUrl || token.trim() !== savedToken
 
@@ -73,7 +95,11 @@ export function PlexSettings() {
   }
 
   function afterConnect() {
-    const { isConnected: ok, musicSectionId } = useConnectionStore.getState()
+    const { isConnected: ok, musicSectionId, needsLibraryPick: picking } = useConnectionStore.getState()
+    if (picking) {
+      setAuthState("picking-library")
+      return
+    }
     if (ok && musicSectionId !== null) {
       void fetchPlaylists()
       void fetchRecentlyAdded(50)
@@ -81,6 +107,16 @@ export function PlexSettings() {
       navigate("/")
     } else if (ok) {
       setAuthError("Connected, but no music library was found. Make sure a Music library has been shared with your account.")
+    }
+  }
+
+  const handlePickLibrary = async (section: LibrarySection) => {
+    setAuthError(null)
+    try {
+      await selectLibrary(section)
+      afterConnect()
+    } catch (err) {
+      setAuthError(String(err))
     }
   }
 
@@ -133,10 +169,14 @@ export function PlexSettings() {
   }
 
   const connectToServer = async (resource: PlexResource, authToken: string) => {
+    // For shared servers, plex.tv returns a per-resource accessToken that
+    // differs from the user's main token. We must use it for all server calls.
+    const effectiveToken = resource.access_token ?? authToken
+
     setConnectingServer(resource.name)
     setAuthError(null)
 
-    console.log("[connectToServer] Picked server:", resource.name, "connections:", resource.connections)
+    console.log("[connectToServer] Picked server:", resource.name, "owned:", resource.owned, "connections:", resource.connections)
 
     interface Candidate { url: string; isLocal: boolean; isHttps: boolean; isRelay: boolean }
     const seen = new Set<string>()
@@ -167,7 +207,7 @@ export function PlexSettings() {
     const results = await Promise.allSettled(
       candidates.map(async c => {
         try {
-          const latency = await testServerConnection(c.url, authToken)
+          const latency = await testServerConnection(c.url, effectiveToken)
           console.log("[connectToServer] OK:", c.url, `${latency}ms`)
           return { ...c, latency }
         } catch (err) {
@@ -196,7 +236,7 @@ export function PlexSettings() {
 
     try {
       console.log("[connectToServer] Connecting to:", successful[0].url)
-      await connect(successful[0].url, authToken, successful.map(c => c.url))
+      await connect(successful[0].url, effectiveToken, successful.map(c => c.url))
       const { isConnected: ok, musicSectionId: secId } = useConnectionStore.getState()
       console.log("[connectToServer] After connect: isConnected=%s, musicSectionId=%s", ok, secId)
       afterConnect()
@@ -225,6 +265,33 @@ export function PlexSettings() {
     setIsDisconnecting(false)
   }
 
+  const handleOpenLibrarySwitcher = async () => {
+    try {
+      const sections = await getLibrarySections()
+      const musicSections = sections.filter(s => s.section_type === "artist")
+      if (musicSections.length <= 1) return
+      setSwitcherSections(musicSections)
+      setShowLibrarySwitcher(true)
+    } catch (err) {
+      console.error("Failed to fetch library sections:", err)
+    }
+  }
+
+  const handleSwitchLibrary = async (section: LibrarySection) => {
+    setIsSwitching(true)
+    try {
+      await switchLibrary(section)
+      setShowLibrarySwitcher(false)
+      void fetchPlaylists()
+      void fetchRecentlyAdded(50)
+      void fetchHubs()
+    } catch (err) {
+      console.error("Failed to switch library:", err)
+    } finally {
+      setIsSwitching(false)
+    }
+  }
+
   return (
     <div className="max-w-xl space-y-8">
       {/* Connection status */}
@@ -248,6 +315,111 @@ export function PlexSettings() {
           </button>
         )}
       </div>
+
+      {/* Library switcher (when connected with multiple libraries) */}
+      {isConnected && !showLibrarySwitcher && (
+        <div className="flex items-center gap-3 rounded-xl bg-white/5 px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium text-white/50 uppercase tracking-wider">Music Library</p>
+            <p className="mt-0.5 text-sm text-white">{musicSectionTitle ?? "Unknown"}</p>
+          </div>
+          {availableMusicSections.length > 1 && (
+            <button
+              onClick={() => void handleOpenLibrarySwitcher()}
+              className="flex-shrink-0 rounded-full border border-white/20 px-4 py-1.5 text-xs font-semibold text-white/60 hover:bg-white/10 hover:text-white transition-colors"
+            >
+              Switch
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Library switcher inline picker */}
+      {isConnected && showLibrarySwitcher && (
+        <div className="space-y-3">
+          <p className="text-sm text-white/60">Choose a music library:</p>
+          <ul className="space-y-2">
+            {switcherSections.map(section => {
+              const isCurrent = section.key === useConnectionStore.getState().musicSectionId
+              return (
+                <li key={section.key}>
+                  <button
+                    onClick={() => void handleSwitchLibrary(section)}
+                    disabled={isSwitching || isCurrent}
+                    className="w-full rounded-xl bg-white/5 px-5 py-3.5 text-left hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-white">{section.title}</span>
+                      {isCurrent && (
+                        <span className="rounded-full bg-accent/20 px-2 py-0.5 text-[10px] font-medium text-accent">current</span>
+                      )}
+                      {isSwitching && !isCurrent && (
+                        <svg className="animate-spin text-[#e5a00d] flex-shrink-0" height="14" width="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                          <path d="M12 2a10 10 0 0 1 10 10" />
+                        </svg>
+                      )}
+                    </div>
+                    {section.total_size != null && (
+                      <p className="mt-0.5 text-xs text-white/40">{section.total_size.toLocaleString()} items</p>
+                    )}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+          <button
+            onClick={() => setShowLibrarySwitcher(false)}
+            disabled={isSwitching}
+            className="w-full rounded-full border border-white/20 py-2.5 text-sm font-semibold text-white/60 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Library picker at login time */}
+      {authState === "picking-library" && (
+        <div className="space-y-3">
+          <p className="text-sm text-white/60">Multiple music libraries found. Choose one:</p>
+          <ul className="space-y-2">
+            {availableMusicSections.map(section => (
+              <li key={section.key}>
+                <button
+                  onClick={() => void handlePickLibrary(section)}
+                  disabled={isLoading}
+                  className="w-full rounded-xl bg-white/5 px-5 py-3.5 text-left hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-white">{section.title}</span>
+                    {isLoading && (
+                      <svg className="animate-spin text-[#e5a00d] flex-shrink-0" height="14" width="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                        <path d="M12 2a10 10 0 0 1 10 10" />
+                      </svg>
+                    )}
+                  </div>
+                  {section.total_size != null && (
+                    <p className="mt-0.5 text-xs text-white/40">{section.total_size.toLocaleString()} items</p>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+          {authError && (
+            <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
+              {authError}
+            </div>
+          )}
+          <button
+            onClick={() => { setAuthState("idle"); setAuthError(null); useConnectionStore.getState().disconnect() }}
+            disabled={isLoading}
+            className="w-full rounded-full border border-white/20 py-2.5 text-sm font-semibold text-white/60 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            Back
+          </button>
+        </div>
+      )}
 
       {/* Polling */}
       {authState === "polling" && (
@@ -290,7 +462,12 @@ export function PlexSettings() {
                     className="w-full rounded-xl bg-white/5 px-5 py-3.5 text-left hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-white">{r.name}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-white">{r.name}</span>
+                        {!r.owned && (
+                          <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-medium text-white/50">shared</span>
+                        )}
+                      </div>
                       {isConnectingThis && (
                         <svg className="animate-spin text-[#e5a00d] flex-shrink-0" height="14" width="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                           <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />

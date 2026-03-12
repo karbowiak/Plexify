@@ -48,6 +48,10 @@ export interface TrackPlaybackInfo {
   partId: number
   /** Parent key — used for same-album crossfade detection. Empty if not applicable. */
   parentKey: string
+  /** Loudness ramp from track start (dB/time pairs, semicolon-delimited) */
+  startRamp: string | null
+  /** Loudness ramp from track end (dB/time pairs, semicolon-delimited) */
+  endRamp: string | null
 }
 
 export interface LevelData {

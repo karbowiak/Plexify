@@ -20,6 +20,7 @@ import { useLibraryStore } from "../stores"
 import { usePlayerStore } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
 import { useResizable } from "../hooks/useResizable"
+import { IS_MACOS } from "../lib/platform"
 import { useContextMenu } from "../hooks/useContextMenu"
 import { useCapability } from "../hooks/useCapability"
 import type { MusicPlaylist } from "../types/music"
@@ -28,6 +29,7 @@ import type { MusicPlaylist } from "../types/music"
 // Custom order persistence (localStorage)
 // ---------------------------------------------------------------------------
 
+const LIBRARY_EXPANDED_KEY = "plex-sidebar-library-expanded"
 const ORDER_KEY = "plex-sidebar-playlist-order"
 
 function getCustomOrder(): string[] {
@@ -75,7 +77,7 @@ function SortablePlaylistItem({ playlist, location, playPlaylist, ctxMenu, justD
         onClick={e => { if (justDragged.current) { e.preventDefault(); e.stopPropagation() } }}
         onContextMenu={ctxMenu("playlist", playlist)}
         className={clsx(
-          "group flex cursor-default items-center gap-3 rounded-md px-1 py-[5px] no-underline hover:bg-app-surface hover:no-underline",
+          "group flex cursor-default items-center gap-3 rounded-md px-1 py-[5px] no-underline hover:bg-accent-tint hover:no-underline",
           location !== href ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-primary)]"
         )}
       >
@@ -90,7 +92,7 @@ function SortablePlaylistItem({ playlist, location, playPlaylist, ctxMenu, justD
               void playPlaylist(playlist.id, playlist.trackCount, playlist.title, href)
             }}
             title={`Play ${playlist.title}`}
-            className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute inset-0 flex items-center justify-center bg-overlay-medium opacity-0 group-hover:opacity-100 transition-opacity"
           >
             <svg viewBox="0 0 16 16" width="16" height="16" fill="white">
               <polygon points="3,2 13,8 3,14" />
@@ -126,6 +128,9 @@ export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
   const [orderVersion, setOrderVersion] = useState(0)
   const justDragged = useRef(false)
+  const [libraryExpanded, setLibraryExpanded] = useState(() => {
+    try { return localStorage.getItem(LIBRARY_EXPANDED_KEY) === "true" } catch { return false }
+  })
 
   // Sort playlists by custom order; new playlists go to bottom
   const sortedPlaylists = useMemo(() => {
@@ -166,61 +171,97 @@ export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) 
   }
 
   return (
-    <div className="relative flex h-full flex-shrink-0 flex-col bg-app-bg p-6" style={{ width }}>
+    <nav role="navigation" aria-label="Main navigation" className="relative flex h-full flex-shrink-0 flex-col bg-app-bg" style={{ width, padding: "var(--spacing-sidebar)", ...(IS_MACOS && { paddingTop: "max(var(--spacing-sidebar), 28px)" }) }}>
       {/* Resize handle */}
       <div
         className="absolute right-0 top-0 bottom-0 w-1 cursor-ew-resize z-10 hover:bg-white/10 transition-colors"
         onMouseDown={onMouseDown}
       />
       <ul className="flex-shrink-0 pt-1 text-sm font-semibold">
-        {routes1.filter(i => i.href !== "/stations" || hasStations).map((i, index) => (
-          <li key={`${i.href}-${index}`}>
-            <Link
-              href={i.href}
-              className={clsx(
-                "flex h-10 cursor-pointer items-center gap-4 rounded no-underline transition-colors duration-300 hover:fill-[var(--text-primary)] hover:text-[var(--text-primary)] hover:no-underline",
-                location !== i.href
-                  ? "fill-gray-400 text-gray-400"
-                  : "fill-accent text-accent"
+        {routes1.filter(i => i.href !== "/stations" || hasStations).map((i, index) => {
+          const isActive = i.href === "/library"
+            ? location === "/library" || location.startsWith("/collection/")
+            : location === i.href
+          return (
+            <li key={`${i.href}-${index}`}>
+              <div className="flex items-center">
+                <Link
+                  href={i.href}
+                  aria-current={isActive ? "page" : undefined}
+                  onClick={() => {
+                    if (i.href === "/library" && !libraryExpanded) {
+                      setLibraryExpanded(true)
+                      try { localStorage.setItem(LIBRARY_EXPANDED_KEY, "true") } catch {}
+                    }
+                  }}
+                  className={clsx(
+                    "flex h-10 flex-1 cursor-pointer items-center gap-4 rounded no-underline transition-colors duration-300 hover:fill-[var(--text-primary)] hover:text-[var(--text-primary)] hover:bg-accent-tint hover:no-underline",
+                    !isActive
+                      ? "fill-[var(--text-secondary)] text-[var(--text-secondary)]"
+                      : "fill-accent text-accent border-l-[3px] border-accent -ml-[3px]"
+                  )}
+                >
+                  <svg height="24" width="24" viewBox="0 0 24 24">
+                    {!isActive ? i.icon : i.iconActive}
+                  </svg>
+                  <span>{i.title}</span>
+                </Link>
+                {i.href === "/library" && (
+                  <button
+                    onClick={() => setLibraryExpanded(prev => {
+                      const next = !prev
+                      try { localStorage.setItem(LIBRARY_EXPANDED_KEY, String(next)) } catch {}
+                      return next
+                    })}
+                    className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-accent-tint transition-colors"
+                  >
+                    <svg
+                      width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+                      className={clsx("transition-transform duration-200", libraryExpanded && "rotate-90")}
+                    >
+                      <path d="M6 3l5 5-5 5z" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+              {i.href === "/library" && libraryExpanded && (
+                <ul className="ml-8 mt-0.5 mb-0.5 space-y-0.5 text-sm font-normal">
+                  {librarySubLinks.map(sub => (
+                    <li key={sub.href}>
+                      <Link
+                        href={sub.href}
+                        className={clsx(
+                          "flex h-8 items-center rounded px-2 no-underline transition-colors duration-200 hover:bg-accent-tint hover:text-[var(--text-primary)] hover:no-underline",
+                          location === sub.href
+                            ? "text-accent"
+                            : "text-[var(--text-secondary)]"
+                        )}
+                      >
+                        {sub.title}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
               )}
-            >
-              <svg height="24" width="24" viewBox="0 0 24 24">
-                {location !== i.href ? i.icon : i.iconActive}
-              </svg>
-              <span>{i.title}</span>
-            </Link>
-          </li>
-        ))}
+            </li>
+          )
+        })}
       </ul>
 
-      <ul className="flex-shrink-0 border-b border-[var(--border)] pb-1 pt-8 text-sm font-semibold">
-        {routes2.map((i, index) => (
-          <li key={`${i.href}-${index}`}>
-            {i.href === "/create" ? (
-              <button
-                onClick={onCreatePlaylist}
-                className="flex h-10 w-full cursor-pointer items-center gap-4 rounded fill-gray-400 text-gray-400 transition-colors duration-300 hover:fill-[var(--text-primary)] hover:text-[var(--text-primary)]"
-              >
-                {i.icon}
-                <span>{i.title}</span>
-              </button>
-            ) : (
-              <Link
-                href={i.href}
-                className={clsx(
-                  "flex h-10 cursor-pointer items-center gap-4 rounded no-underline transition-colors duration-300 hover:fill-[var(--text-primary)] hover:text-[var(--text-primary)] hover:no-underline",
-                  location !== i.href
-                    ? "fill-gray-400 text-gray-400"
-                    : "fill-accent text-accent"
-                )}
-              >
-                {i.icon}
-                <span>{i.title}</span>
-              </Link>
-            )}
-          </li>
-        ))}
-      </ul>
+      <div className="flex-shrink-0 pb-1 pt-8 text-sm font-semibold">
+        <button
+          onClick={onCreatePlaylist}
+          className="flex h-10 w-full cursor-pointer items-center gap-4 rounded fill-[var(--text-secondary)] text-[var(--text-secondary)] transition-colors duration-300 hover:fill-[var(--text-primary)] hover:text-[var(--text-primary)] hover:bg-accent-tint"
+        >
+          <span className="flex h-6 w-6 items-center justify-center rounded-sm bg-accent/20 text-accent group-hover:bg-accent/40 transition-colors">
+            <svg viewBox="0 0 16 16" width="12" height="12" xmlns="http://www.w3.org/2000/svg">
+              <path d="M14 7H9V2H7v5H2v2h5v5h2V9h5z" fill="currentColor"></path>
+              <path fill="none" d="M0 0h16v16H0z"></path>
+            </svg>
+          </span>
+          <span>Create Playlist</span>
+        </button>
+      </div>
 
       <div className="mt-2 min-h-0 flex-1 overflow-y-scroll scrollbar scrollbar-w-1 scrollbar-track-[var(--bg-base)] scrollbar-thumb-[var(--bg-surface)] hover:scrollbar-thumb-[var(--bg-surface-hover)]">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDragCancel={() => setTimeout(() => { justDragged.current = false }, 300)}>
@@ -245,7 +286,7 @@ export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) 
       {isArtExpanded && (
         <div className="flex-shrink-0 transition-all duration-300" style={{ height: width - 120 }} />
       )}
-    </div>
+    </nav>
   )
 }
 
@@ -312,44 +353,9 @@ const routes1 = [
   },
 ]
 
-const routes2 = [
-  {
-    title: "Create Playlist",
-    href: "/create",
-    icon: (
-      <span className="flex h-6 w-6 items-center justify-center rounded-sm bg-accent/20 text-accent group-hover:bg-accent/40 transition-colors">
-        <svg viewBox="0 0 16 16" width="12" height="12" xmlns="http://www.w3.org/2000/svg">
-          <path d="M14 7H9V2H7v5H2v2h5v5h2V9h5z" fill="currentColor"></path>
-          <path fill="none" d="M0 0h16v16H0z"></path>
-        </svg>
-      </span>
-    ),
-  },
-  {
-    title: "Liked Songs",
-    href: "/collection/tracks",
-    icon: (
-      <svg height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M15.724 4.22A4.313 4.313 0 0 0 12 6.192 4.313 4.313 0 0 0 8.276 4.22a4.313 4.313 0 0 0-4.204 4.32c0 3.96 4.49 7.98 7.928 10.47 3.44-2.49 7.928-6.51 7.928-10.47a4.313 4.313 0 0 0-4.204-4.32z" />
-      </svg>
-    ),
-  },
-  {
-    title: "Liked Artists",
-    href: "/collection/artists",
-    icon: (
-      <svg height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" />
-      </svg>
-    ),
-  },
-  {
-    title: "Liked Albums",
-    href: "/collection/albums",
-    icon: (
-      <svg height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
-      </svg>
-    ),
-  },
+const librarySubLinks = [
+  { title: "Playlists", href: "/collection/playlists" },
+  { title: "Liked Songs", href: "/collection/tracks" },
+  { title: "Liked Albums", href: "/collection/albums" },
+  { title: "Liked Artists", href: "/collection/artists" },
 ]

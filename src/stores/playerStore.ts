@@ -10,6 +10,12 @@ import { useAudioSettingsStore } from "./audioSettingsStore"
 import { useNotificationStore } from "./notificationStore"
 import { evictMap } from "./cacheUtils"
 import { sendNotification } from "@tauri-apps/plugin-notification"
+import { useSleepTimerStore } from "./sleepTimerStore"
+import { useAnnouncerStore } from "./announcerStore"
+import { useVisualizerStore } from "./visualizerStore"
+import { useRadioStreamStore } from "./radioStreamStore"
+import { radioStop, radioSetVolume } from "../lib/radioAudio"
+import { getAudioTranscodeUrl } from "../backends/plex/api"
 
 type RadioType = 'track' | 'artist' | 'album' | 'playlist'
 
@@ -138,9 +144,7 @@ const _prefetchedPartKeys = new Set<string>()
 // Track ID resolution — maps numeric rating_key → MusicTrack.id
 // ---------------------------------------------------------------------------
 
-/** Maps numeric rating_key (sent to Rust engine) → MusicTrack.id string.
- *  Needed because demo tracks use prefixed IDs like "dz-12345" but Rust
- *  only knows the numeric trackKey. */
+/** Maps numeric rating_key (sent to Rust engine) → MusicTrack.id string. */
 const _ratingKeyToTrackId = new Map<number, string>()
 
 function resolveTrackId(ratingKey: number): string {
@@ -162,6 +166,11 @@ let _gaplessTimeoutId: ReturnType<typeof setTimeout> | null = null
 // and captures its value. After async work, if the counter changed, a newer play
 // superseded this one and the current call bails out.
 let _playGeneration = 0
+
+// Transcode fallback state — tracks whether we've already retried with transcoding
+// for the current track, to avoid infinite retry loops.
+let _transcodeRetriedTrackId: string | null = null
+
 
 // ---------------------------------------------------------------------------
 // Periodic timeline reporting — throttle to every 10 seconds
@@ -527,9 +536,10 @@ async function sendToAudioEngine(track: MusicTrack): Promise<void> {
     track.duration,
     info.parentKey,
     gainDb,
+    undefined,
+    track.startRamp ?? info.startRamp,
+    track.endRamp ?? info.endRamp,
   )
-  // Analyze the current track for smart crossfade (outro detection)
-  fireAndForget(engine.analyzeTrack(info.url, info.trackKey, track.duration))
 }
 
 /**
@@ -595,6 +605,9 @@ async function preloadNextTrack(queue: MusicTrack[], queueIndex: number, repeat:
       nextTrack.duration,
       info.parentKey,
       gainDb,
+      undefined,
+      nextTrack.startRamp ?? info.startRamp,
+      nextTrack.endRamp ?? info.endRamp,
     )
   } catch {
     // Pre-load failure is non-critical
@@ -686,6 +699,7 @@ function _onTrackBecomesActive(track: MusicTrack, index: number, get: () => Play
   set({ currentTrack: track, queueIndex: index, isPlaying: true, positionMs: 0,
         waveformLevels: null, lyricsLines: null })
   _lastTimelineReportMs = 0
+  _transcodeRetriedTrackId = null
 
   if (useNotificationStore.getState().notificationsEnabled) {
     sendNotification({
@@ -724,6 +738,11 @@ function _onTrackBecomesActive(track: MusicTrack, index: number, get: () => Play
     fireAndForget(provider.setNowPlayingState("playing", 0))
   }
 
+  // Announce track change for screen readers
+  useAnnouncerStore.getState().announce(
+    `Now playing: ${track.title} by ${track.artistName ?? "Unknown Artist"}`
+  )
+
   // Record when this track started (for scrobble timestamp)
   _trackStartedAtUnix = Math.floor(Date.now() / 1000)
 
@@ -745,17 +764,14 @@ function prefetchAhead(queue: MusicTrack[], fromIndex: number, count: number): v
   for (let i = 1; i <= count; i++) {
     const t = queue[fromIndex + i]
     if (!t) continue
-    // Direct URL tracks (podcasts) — analyze without provider
     if (t.streamUrl?.startsWith("http")) {
       const key = Math.abs(hashCode(t.id))
       _ratingKeyToTrackId.set(key, t.id)
-      fireAndForget(engine.analyzeTrack(t.streamUrl, key, t.duration))
       continue
     }
     if (!provider) continue
     fireAndForget(provider.getPlaybackInfo(t).then(info => {
       _ratingKeyToTrackId.set(info.trackKey, t.id)
-      fireAndForget(engine.analyzeTrack(info.url, info.trackKey, t.duration))
     }))
   }
 }
@@ -769,7 +785,6 @@ function prefetchAhead(queue: MusicTrack[], fromIndex: number, count: number): v
 async function _startPlayback(track: MusicTrack, index: number, get: () => PlayerState, set: any): Promise<void> {
   // If internet radio is active, stop it before starting Plex playback
   if (get().isInternetRadioActive) {
-    const { radioStop } = await import("../lib/radioAudio")
     radioStop()
     set({ isInternetRadioActive: false })
   }
@@ -1048,10 +1063,8 @@ export const usePlayerStore = create<PlayerState>()(
     const { currentTrack, positionMs, isInternetRadioActive } = get()
     // Stop internet radio if active
     if (isInternetRadioActive) {
-      import("../lib/radioAudio").then(m => m.radioStop())
-      import("../stores/radioStreamStore").then(m => {
-        m.useRadioStreamStore.getState().stopStream()
-      })
+      radioStop()
+      useRadioStreamStore.getState().stopStream()
     }
     // Report stopped to Plex server
     if (currentTrack) {
@@ -1165,7 +1178,7 @@ export const usePlayerStore = create<PlayerState>()(
     engine.setVolume(gain)
     // Also route volume to the internet radio HTML5 audio element
     if (get().isInternetRadioActive) {
-      import("../lib/radioAudio").then(m => m.radioSetVolume(clamped))
+      radioSetVolume(clamped)
     }
     set({ volume: clamped })
   },
@@ -1299,6 +1312,11 @@ export const usePlayerStore = create<PlayerState>()(
         // don't set the fallback timeout — that would cause a double-skip.
         if (!isStillActive) return
 
+        // End-of-track sleep timer: pause and stop queue advancement
+        {
+          if (useSleepTimerStore.getState().onTrackEnd()) return
+        }
+
         // Repeat-one: restart the current track immediately
         if (repeat === 1) {
           fireAndForget(playAtIndex(queueIndex, get, set))
@@ -1375,17 +1393,38 @@ export const usePlayerStore = create<PlayerState>()(
         }
       },
 
-      onError(message) {
+      async onError(message) {
         console.error("Audio engine error:", message)
+        const { currentTrack } = get()
+
+        // Attempt transcode fallback once per track on playback errors
+        if (currentTrack && _transcodeRetriedTrackId !== currentTrack.id) {
+          _transcodeRetriedTrackId = currentTrack.id
+          try {
+            // Extract part key from provider data for transcoding
+            const providerData = currentTrack._providerData as { media?: { parts?: { key?: string }[] }[] } | undefined
+            const partKey = providerData?.media?.[0]?.parts?.[0]?.key
+            if (partKey) {
+              console.log("[Transcode fallback] Retrying with transcoded audio for:", currentTrack.title)
+              const transcodeUrl = await getAudioTranscodeUrl(partKey, 320, "mp3")
+              const ratingKey = Number(currentTrack.id)
+              _ratingKeyToTrackId.set(ratingKey, currentTrack.id)
+              await engine.play(transcodeUrl, ratingKey, currentTrack.duration, "", null, true)
+              set({ playerError: null })
+              return
+            }
+          } catch (err) {
+            console.error("Transcode fallback failed:", err)
+          }
+        }
+
         set({ playerError: message })
+        useAnnouncerStore.getState().announce(`Playback error: ${message}`, "assertive")
         setTimeout(() => set({ playerError: null }), 6000)
       },
 
       onVisFrame(samples) {
-        // Dynamically import to avoid circular dependency
-        import("./visualizerStore").then(m => {
-          m.useVisualizerStore.getState().pushPcm(Array.from(samples))
-        })
+        useVisualizerStore.getState().pushPcm(Array.from(samples))
       },
     })
 

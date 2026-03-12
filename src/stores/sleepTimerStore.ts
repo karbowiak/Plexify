@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
+import { usePlayerStore } from "./playerStore"
 
 // ---------------------------------------------------------------------------
 // Module-level timer handle — survives store re-renders
@@ -14,8 +15,13 @@ let _timerId: ReturnType<typeof setTimeout> | null = null
 interface SleepTimerState {
   /** UTC timestamp (ms) when playback will pause. Null when timer is off. */
   endsAt: number | null
+  /** When true, playback will pause after the current track finishes. */
+  endOfTrack: boolean
 
   start: (minutes: number) => void
+  startEndOfTrack: () => void
+  /** Called by playerStore when a track ends naturally. Returns true if playback should stop. */
+  onTrackEnd: () => boolean
   cancel: () => void
   /** Call once on app mount to reschedule any timer that survived a refresh. */
   hydrate: () => void
@@ -25,19 +31,35 @@ export const useSleepTimerStore = create<SleepTimerState>()(
   persist(
     (set, get) => ({
       endsAt: null,
+      endOfTrack: false,
 
       start: (minutes: number) => {
+        set({ endOfTrack: false })
         if (_timerId !== null) clearTimeout(_timerId)
         const endsAt = Date.now() + minutes * 60 * 1000
         set({ endsAt })
         _timerId = setTimeout(() => {
-          // Lazily import to avoid circular deps — playerStore imports nothing from here
-          import("./playerStore").then(({ usePlayerStore }) => {
-            usePlayerStore.getState().pause()
-          })
+          usePlayerStore.getState().pause()
           set({ endsAt: null })
           _timerId = null
         }, minutes * 60 * 1000)
+      },
+
+      startEndOfTrack: () => {
+        // Cancel any timed sleep timer
+        if (_timerId !== null) {
+          clearTimeout(_timerId)
+          _timerId = null
+        }
+        set({ endsAt: null, endOfTrack: true })
+      },
+
+      onTrackEnd: () => {
+        if (!get().endOfTrack) return false
+        // Pause playback and clear the EOT flag
+        usePlayerStore.getState().pause()
+        set({ endOfTrack: false })
+        return true
       },
 
       cancel: () => {
@@ -45,7 +67,7 @@ export const useSleepTimerStore = create<SleepTimerState>()(
           clearTimeout(_timerId)
           _timerId = null
         }
-        set({ endsAt: null })
+        set({ endsAt: null, endOfTrack: false })
       },
 
       hydrate: () => {
@@ -60,9 +82,7 @@ export const useSleepTimerStore = create<SleepTimerState>()(
         // Reschedule for the remaining time
         if (_timerId !== null) clearTimeout(_timerId)
         _timerId = setTimeout(() => {
-          import("./playerStore").then(({ usePlayerStore }) => {
-            usePlayerStore.getState().pause()
-          })
+          usePlayerStore.getState().pause()
           set({ endsAt: null })
           _timerId = null
         }, remaining)
@@ -70,7 +90,7 @@ export const useSleepTimerStore = create<SleepTimerState>()(
     }),
     {
       name: "plex-sleep-timer-v1",
-      partialize: (state) => ({ endsAt: state.endsAt }),
+      partialize: (state) => ({ endsAt: state.endsAt, endOfTrack: state.endOfTrack }),
     },
   ),
 )

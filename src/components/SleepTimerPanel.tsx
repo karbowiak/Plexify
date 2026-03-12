@@ -16,7 +16,7 @@ interface Props {
 }
 
 export default function SleepTimerPanel({ onClose }: Props) {
-  const { endsAt, start, cancel } = useSleepTimerStore()
+  const { endsAt, endOfTrack, start, startEndOfTrack, cancel } = useSleepTimerStore()
   const [, forceUpdate] = useState(0)
   const [customMinutes, setCustomMinutes] = useState("")
 
@@ -47,13 +47,22 @@ export default function SleepTimerPanel({ onClose }: Props) {
         <span className="text-sm font-semibold text-white tracking-wide">Sleep Timer</span>
       </div>
 
-      {endsAt ? (
-        /* Active state — show countdown + cancel */
+      {endsAt || endOfTrack ? (
+        /* Active state — show countdown or EOT message + cancel */
         <div className="px-4 py-4 flex flex-col items-center gap-3">
-          <div className="text-2xl font-mono font-semibold text-accent">
-            {formatRemaining(endsAt)}
-          </div>
-          <p className="text-xs text-white/50 text-center">Pausing after timer ends</p>
+          {endOfTrack ? (
+            <>
+              <div className="text-lg font-semibold text-accent">End of Track</div>
+              <p className="text-xs text-white/50 text-center">Pausing after this track</p>
+            </>
+          ) : (
+            <>
+              <div className="text-2xl font-mono font-semibold text-accent">
+                {formatRemaining(endsAt!)}
+              </div>
+              <p className="text-xs text-white/50 text-center">Pausing after timer ends</p>
+            </>
+          )}
           <button
             onClick={() => { cancel(); onClose() }}
             className="w-full rounded-full bg-white/10 py-1.5 text-sm text-white/70 hover:bg-white/20 hover:text-white transition-colors"
@@ -74,6 +83,12 @@ export default function SleepTimerPanel({ onClose }: Props) {
                 {min} min
               </button>
             ))}
+            <button
+              onClick={() => { startEndOfTrack(); onClose() }}
+              className="rounded-full bg-white/10 px-3 py-1 text-sm text-white/70 hover:bg-white/20 hover:text-white transition-colors"
+            >
+              End of track
+            </button>
           </div>
           {/* Custom duration input */}
           <div className="flex gap-2">
