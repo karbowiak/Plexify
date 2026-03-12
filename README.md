@@ -2,7 +2,24 @@
 
 A Spotify-inspired desktop music client for [Plex](https://www.plex.tv/), built with Tauri 2 and React 19. Browse your library, play tracks with a Web Audio engine, manage playlists, explore radio & DJ modes, discover podcasts, enjoy visualizers, and more — all from a fast, frameless desktop app.
 
+<p align="center">
+  <img src="screenshots/main.png" alt="Hibiki" width="100%" />
+</p>
+
 > Frontend layout and design based on [tauri-spotify-clone](https://github.com/agmmnn/tauri-spotify-clone) by [@agmmnn](https://github.com/agmmnn).
+
+## Screenshots
+
+<p>
+  <a href="screenshots/artist.png"><img src="screenshots/artist.png" alt="Artist" width="32%" /></a>
+  <a href="screenshots/album.png"><img src="screenshots/album.png" alt="Album" width="32%" /></a>
+  <a href="screenshots/playlist.png"><img src="screenshots/playlist.png" alt="Playlist" width="32%" /></a>
+</p>
+<p>
+  <a href="screenshots/search.png"><img src="screenshots/search.png" alt="Search" width="32%" /></a>
+  <a href="screenshots/internetradio.png"><img src="screenshots/internetradio.png" alt="Internet Radio" width="32%" /></a>
+  <a href="screenshots/podcasts.png"><img src="screenshots/podcasts.png" alt="Podcasts" width="32%" /></a>
+</p>
 
 ## Features
 
