@@ -1,6 +1,15 @@
-# Hibiki
+<p align="center">
+  <img src="src-tauri/icons/128x128@2x.png" alt="Hibiki icon" width="128" />
+  <br />
+  <strong style="font-size: 1.5em;">Hibiki</strong>
+  <br />
+  <em>響き — Japanese for "resonance" or "echo"; the sound that lingers after the note is played.</em>
+</p>
 
-A Spotify-inspired desktop music client for [Plex](https://www.plex.tv/), built with Tauri 2 and React 19. Browse your library, play tracks with a Web Audio engine, manage playlists, explore radio & DJ modes, discover podcasts, enjoy visualizers, and more — all from a fast, frameless desktop app.
+<p align="center">
+  A Spotify-inspired desktop music client for <a href="https://www.plex.tv/">Plex</a>, built with Tauri 2 and React 19.<br />
+  Browse your library, play tracks with a Web Audio engine, manage playlists, explore radio & DJ modes, discover podcasts, enjoy visualizers, and more — all from a fast, frameless desktop app.
+</p>
 
 <p align="center">
   <img src="screenshots/main.png" alt="Hibiki" width="100%" />
