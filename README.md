@@ -1,25 +1,23 @@
 # Hibiki
 
-A Spotify-inspired desktop music client for [Plex](https://www.plex.tv/), built with Tauri 2 and React 19. Browse your library, play tracks with a native audio engine, manage playlists, explore radio & DJ modes, discover podcasts, scrobble to Last.fm, enjoy visualizers, and more — all from a fast, frameless desktop app.
+A Spotify-inspired desktop music client for [Plex](https://www.plex.tv/), built with Tauri 2 and React 19. Browse your library, play tracks with a Web Audio engine, manage playlists, explore radio & DJ modes, discover podcasts, enjoy visualizers, and more — all from a fast, frameless desktop app.
 
 > Frontend layout and design based on [tauri-spotify-clone](https://github.com/agmmnn/tauri-spotify-clone) by [@agmmnn](https://github.com/agmmnn).
 
 ## Features
 
 ### Playback
-- Native Rust audio engine (Symphonia) — FLAC, MP3, AAC, ALAC, Ogg Vorbis, WAV, PCM
-- Gapless playback + crossfade with 3 curve options
+- Web Audio engine with modular DSP chain — FLAC, MP3, AAC, ALAC, Ogg Vorbis, WAV
+- Gapless playback + crossfade with album-aware, time-based, and MixRamp modes
+- Dual-deck architecture with seamless track transitions
 - 10-band parametric EQ with built-in presets
-- ReplayGain / album gain normalization
-- Output device selection
-- BPM analysis
-- Audio disk cache for instant replay
+- Preamp, postgain, and limiter DSP nodes
 - Sleep timer
 
 ### Radio & Discovery
 - Track Radio, Artist Radio, Plex Stations
 - 6 DJ modes — Stretch, Gemini, Freeze, Twofer, Contempo, Groupie
-- Internet radio via radio-browser.info
+- Internet radio via radio-browser.info with ICY metadata parsing
 
 ### Podcasts
 - iTunes + Podcast Index search
@@ -33,28 +31,37 @@ A Spotify-inspired desktop music client for [Plex](https://www.plex.tv/), built 
 
 ### Library
 - Home hubs & recommendations
-- Smart playlists with infinite scroll + virtual scrolling
+- Playlists page with smart playlists and infinite scroll + virtual scrolling
 - Liked tracks, albums, and artists
 - Tag / genre browsing
 - Draggable sidebar playlists
 - Full-text search across tracks, albums, and artists
+- Plex websocket for real-time library updates
 
 ### Metadata & Integrations
 - **Last.fm** — scrobble, now-playing, love/unlove, metadata augment or replace mode
 - **Deezer** — artist images, album covers, genres, fan counts
 - **iTunes** — image fallback
-- Synced lyrics display
+- Synced lyrics display with adjustable offset
 
 ### Image Caching
 - Custom `image://` URI scheme with on-disk cache
 - Multi-provider fallback: Plex → Deezer → iTunes
 
 ### Appearance
-- 9 accent colors + custom hex picker
+- 9 accent colors + custom hex picker with color picker
 - Dark / light theme
 - Font selection
 - Card size slider
+- Compact mode
+- Reduced motion support
 - Easter eggs
+
+### Accessibility & Usability
+- Global keyboard hotkeys with help modal
+- Live announcer for screen readers
+- Reduced motion preference
+- i18n scaffolding (English)
 
 ### Platform
 - OS media keys (macOS / Windows / Linux via souvlaki)
@@ -71,12 +78,10 @@ A Spotify-inspired desktop music client for [Plex](https://www.plex.tv/), built 
 | UI framework | React 19 + TypeScript |
 | Styling | Tailwind CSS v3 |
 | Routing | Wouter |
-| State | Zustand v5 (28 stores) |
+| State | Zustand v5 |
 | Desktop shell | Tauri v2 |
-| Backend | Rust (140 Tauri commands) |
-| Audio decode | Symphonia 0.5 (FLAC, MP3, AAC, ALAC, Ogg, WAV, PCM) |
-| Audio output | cpal 0.15 (CoreAudio / WASAPI / ALSA) |
-| Audio resampling | rubato |
+| Backend | Rust (Tauri commands) |
+| Audio engine | Web Audio API (custom modular DSP) |
 | Media keys | souvlaki |
 | Database | rusqlite (SQLite, WAL mode) |
 | Visualizer | butterchurn (Milkdrop) |
@@ -158,33 +163,49 @@ bun run tauri build # production bundle
 .
 ├── src/                           # React/TypeScript frontend
 │   ├── components/
-│   │   ├── Pages/                 # Full-page views (Home, Artist, Album, Playlist, Search, Radio, Podcasts, …)
+│   │   ├── Pages/                 # Full-page views (Home, Artist, Album, Playlists, Search, Radio, Podcasts, …)
 │   │   ├── Player.tsx             # Playback bar
 │   │   ├── SideBar.tsx
-│   │   └── TopBar.tsx
-│   ├── stores/                    # 28 Zustand stores
+│   │   ├── TopBar.tsx
+│   │   ├── HotkeyHelpModal.tsx    # Keyboard shortcut reference
+│   │   └── LiveAnnouncer.tsx      # Accessibility live region
+│   ├── audio/
+│   │   ├── WebAudioEngine.ts      # Main audio engine orchestrator
+│   │   └── engine/                # Modular Web Audio DSP
+│   │       ├── deck.ts            #   Audio deck (source + gain + scheduling)
+│   │       ├── deckManager.ts     #   Dual-deck crossfade manager
+│   │       ├── signalChain.ts     #   DSP node routing
+│   │       ├── scheduler.ts       #   Gapless scheduling & preload
+│   │       ├── analyserBridge.ts  #   Analyser node for visualizers
+│   │       ├── crossfade/         #   Crossfade strategies (album-aware, time-based, MixRamp)
+│   │       └── dsp/               #   DSP nodes (EQ, preamp, postgain, limiter)
+│   ├── stores/                    # Zustand stores
 │   │   ├── playerStore.ts         #   Playback state machine, crossfade, queue
 │   │   ├── libraryStore.ts        #   Playlists, hubs, recentlyAdded, prefetch
-│   │   ├── connectionStore.ts     #   Server connection & settings
 │   │   ├── eqStore.ts             #   10-band EQ state & presets
 │   │   ├── radioStreamStore.ts    #   Internet radio streams
 │   │   ├── sleepTimerStore.ts     #   Sleep timer
 │   │   ├── visualizerStore.ts     #   Visualizer settings & presets
-│   │   └── …                      #   21 more (accent, font, theme, search, ui, …)
-│   ├── backends/                  # Provider abstraction layer
-│   │   ├── registry.ts            #   Provider registry (Plex, Last.fm, Deezer, Apple, Podcast)
-│   │   ├── types.ts               #   Backend interfaces
-│   │   └── init.ts                #   Bootstrap
-│   ├── lib/
-│   │   └── plex.ts                # TypeScript wrappers around Tauri invoke() commands
-│   └── types/
-│       └── plex.ts                # TypeScript interfaces mirroring Rust models
+│   │   └── …                      #   More (accent, font, theme, compact, custom colors, …)
+│   ├── backends/plex/             # Plex backend
+│   │   ├── provider.ts            #   MusicProvider implementation
+│   │   ├── connectionStore.ts     #   Server connection & settings
+│   │   ├── websocket.ts           #   Real-time Plex notifications
+│   │   └── …                      #   API, mappers, image URL, types
+│   ├── metadata/                  # Metadata providers (enrichment, not playback)
+│   │   ├── apple/                 #   iTunes image fallback
+│   │   ├── deezer/                #   Artist images, genres, fan counts
+│   │   └── lastfm/                #   Scrobbling, now-playing, love/unlove
+│   ├── i18n/                      # Internationalization
+│   ├── hooks/                     # Custom hooks (hotkeys, media image, reduced motion, …)
+│   ├── lib/                       # Utilities (image URL, ICY parser, app menu)
+│   └── types/                     # TypeScript interfaces
 │
 └── src-tauri/src/                 # Rust backend
-    ├── main.rs                    # App setup, state, 140 command registrations
-    ├── commands.rs                # All #[tauri::command] handlers
+    ├── main.rs                    # App setup, state, command registrations
+    ├── commands.rs                # #[tauri::command] handlers
     │
-    ├── plex/                      # Plex API client (14 modules)
+    ├── plex/                      # Plex API client
     │   ├── client.rs              #   HTTP client with retry/backoff
     │   ├── models.rs              #   Serde data types (Track, Album, Artist, Playlist, …)
     │   ├── library.rs             #   Browse sections, search, tags, on_deck, recently_added
@@ -199,22 +220,7 @@ bun run tauri build # production bundle
     │   ├── server.rs              #   Server identity & info
     │   └── auth.rs                #   Settings persistence
     │
-    ├── audio/                     # Native audio engine (14 modules)
-    │   ├── engine.rs              #   AudioEngine — orchestrates decode + output threads
-    │   ├── decoder.rs             #   HTTP fetch → Symphonia decode → ringbuf
-    │   ├── output.rs              #   cpal output stream (CoreAudio/WASAPI/ALSA)
-    │   ├── crossfade.rs           #   Crossfade with 3 curve options
-    │   ├── eq.rs                  #   10-band parametric equalizer
-    │   ├── normalization.rs       #   ReplayGain / album gain
-    │   ├── resampler.rs           #   Sample-rate conversion (rubato)
-    │   ├── analyzer.rs            #   Audio analysis (waveform, spectrum)
-    │   ├── bpm.rs                 #   BPM detection
-    │   ├── cache.rs               #   Disk-backed audio cache
-    │   ├── state.rs               #   Shared playback state
-    │   ├── commands.rs            #   Audio Tauri commands
-    │   └── types.rs               #   AudioCommand / AudioEvent enums
-    │
-    ├── db/                        # Local SQLite database (7 modules)
+    ├── db/                        # Local SQLite database
     │   ├── schema.rs              #   Migration runner
     │   ├── kv.rs                  #   Key-value store
     │   ├── artists.rs             #   Artist CRUD + locations + tags
@@ -223,9 +229,6 @@ bun run tauri build # production bundle
     │   ├── playlists.rs           #   Playlist CRUD + membership
     │   └── migrations/            #   SQL migration files
     │
-    ├── lastfm.rs                  # Last.fm API (scrobble, love, metadata)
-    ├── deezer.rs                  # Deezer public API (images, genres, fan counts)
-    ├── itunes.rs                  # iTunes Search API (image fallback)
     ├── itunes_throttle.rs         # iTunes rate limiter
     ├── podcast.rs                 # Podcast RSS feed parser
     ├── podcastindex.rs            # Podcast Index API
@@ -235,8 +238,6 @@ bun run tauri build # production bundle
 ```
 
 ## Running Tests
-
-The test suite includes 28 SQLite unit tests and 52 Plex integration tests. Integration tests hit a live Plex server — set your server address in `src-tauri/src/plex/` test helpers before running.
 
 ```bash
 bun run test
