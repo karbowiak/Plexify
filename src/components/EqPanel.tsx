@@ -1,5 +1,6 @@
 import { useCallback, useRef } from "react"
 import { useEqStore, EQ_LABELS, EQ_PRESETS } from "../stores/eqStore"
+import { useDeviceStore } from "../stores/deviceStore"
 
 const MIN_DB = -12
 const MAX_DB = 12
@@ -67,6 +68,7 @@ export default function EqPanel({ onClose }: Props) {
     currentDevice, deviceProfiles, saveProfileForDevice, deleteProfileForDevice,
   } = useEqStore()
 
+  const { currentDevice: deviceStoreDevice } = useDeviceStore()
   const profileDevices = Object.keys(deviceProfiles)
   const barRefs = useRef<(HTMLDivElement | null)[]>([])
 
@@ -94,6 +96,13 @@ export default function EqPanel({ onClose }: Props) {
     el.addEventListener("pointerup", onUp)
     el.addEventListener("lostpointercapture", onUp)
   }, [enabled, setBand])
+
+  const handleWheel = useCallback((e: React.WheelEvent, index: number) => {
+    if (!enabled) return
+    e.preventDefault()
+    const delta = e.deltaY < 0 ? 1 : -1
+    setBand(index, Math.max(MIN_DB, Math.min(MAX_DB, gains[index] + delta)))
+  }, [enabled, gains, setBand])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent, index: number) => {
     if (!enabled) return
@@ -138,6 +147,16 @@ export default function EqPanel({ onClose }: Props) {
           </button>
         </div>
       </div>
+
+      {/* Active output device */}
+      {(currentDevice || deviceStoreDevice) && (
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)]">
+          <span className="text-[10px] text-[color:var(--text-muted)] shrink-0">Output</span>
+          <span className="flex-1 min-w-0 text-[11px] text-[color:var(--text-primary)] truncate">
+            {currentDevice || deviceStoreDevice || "System default"}
+          </span>
+        </div>
+      )}
 
       {/* Preset grid */}
       <div className={`grid grid-cols-3 gap-1.5 px-4 py-3 border-b border-[var(--border)] transition-opacity ${!enabled ? "opacity-40 pointer-events-none" : ""}`}>
@@ -199,6 +218,7 @@ export default function EqPanel({ onClose }: Props) {
                   className="relative cursor-pointer overflow-hidden rounded-md bg-[var(--bg-surface)] focus-visible:ring-2 focus-visible:ring-accent"
                   style={{ width: 32, height: BAR_HEIGHT }}
                   onPointerDown={e => handlePointerDown(e, i)}
+                  onWheel={e => handleWheel(e, i)}
                   onDoubleClick={() => enabled && setBand(i, 0)}
                   onKeyDown={e => handleKeyDown(e, i)}
                 >
@@ -256,42 +276,31 @@ export default function EqPanel({ onClose }: Props) {
       </div>
 
       {/* Device Profiles */}
-      {profileDevices.length > 0 && (
-        <div className={`px-4 py-2 border-t border-[var(--border)] transition-opacity ${!enabled ? "opacity-40 pointer-events-none" : ""}`}>
+      {currentDevice && (
+        <div className="px-4 py-2 border-t border-[var(--border)]">
           <span className="text-[11px] text-[color:var(--text-muted)] font-semibold uppercase tracking-wider">Device Profiles</span>
           <div className="mt-1.5 flex flex-col gap-1">
-            {profileDevices.map((dev) => {
-              const hasProfile = !!deviceProfiles[dev]
-              const isActive = dev === currentDevice
+            {/* Always show current device first */}
+            {(() => {
+              const hasProfile = !!deviceProfiles[currentDevice]
               return (
-                <div
-                  key={dev}
-                  className={`flex items-center gap-2 py-1 px-2 rounded text-xs ${
-                    isActive ? "bg-[var(--accent-tint-subtle)]" : ""
-                  }`}
-                >
-                  {isActive && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
-                  )}
-                  <span className={`truncate flex-1 ${
-                    isActive ? "text-[color:var(--text-primary)]" : "text-[color:var(--text-muted)]"
-                  }`}>
-                    {dev}
-                  </span>
+                <div className="flex items-center gap-2 py-1 px-2 rounded text-xs bg-[var(--accent-tint-subtle)]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+                  <span className="truncate flex-1 text-[color:var(--text-primary)]">{currentDevice}</span>
                   {hasProfile && (
                     <svg className="w-3 h-3 text-accent shrink-0" viewBox="0 0 16 16" fill="currentColor">
                       <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
                     </svg>
                   )}
                   <button
-                    onClick={() => saveProfileForDevice(dev)}
+                    onClick={() => saveProfileForDevice(currentDevice)}
                     className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] text-[color:var(--text-muted)] hover:bg-[var(--bg-surface-hover)] hover:text-[color:var(--text-primary)] transition-colors shrink-0"
                   >
                     Save
                   </button>
                   {hasProfile && (
                     <button
-                      onClick={() => deleteProfileForDevice(dev)}
+                      onClick={() => deleteProfileForDevice(currentDevice)}
                       className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] text-[color:var(--text-muted)] hover:bg-red-500/20 hover:text-red-400 transition-colors shrink-0"
                     >
                       Clear
@@ -299,7 +308,25 @@ export default function EqPanel({ onClose }: Props) {
                   )}
                 </div>
               )
-            })}
+            })()}
+            {/* Other saved profiles */}
+            {profileDevices.filter((d) => d !== currentDevice).map((dev) => (
+              <div
+                key={dev}
+                className="flex items-center gap-2 py-1 px-2 rounded text-xs"
+              >
+                <span className="truncate flex-1 text-[color:var(--text-muted)]">{dev}</span>
+                <svg className="w-3 h-3 text-accent shrink-0" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
+                </svg>
+                <button
+                  onClick={() => deleteProfileForDevice(dev)}
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] text-[color:var(--text-muted)] hover:bg-red-500/20 hover:text-red-400 transition-colors shrink-0"
+                >
+                  Clear
+                </button>
+              </div>
+            ))}
           </div>
         </div>
       )}

@@ -137,7 +137,6 @@ export const useEqStore = create<EqState>()(
           engine.setEq(gains)
           sendPostgain(postgainDb)
         }
-        // Web Audio API uses system default device — no device query needed
       },
 
       setPostgainDb: (db) => {
@@ -156,12 +155,25 @@ export const useEqStore = create<EqState>()(
       },
 
       setCurrentDevice: (name) => {
-        set({ currentDevice: name })
-        // Auto-load matching profile if one exists
-        const profile = get().deviceProfiles[name]
-        if (profile) {
-          get().loadProfileForDevice(name)
+        const prev = get().currentDevice
+        const isSwitch = prev && prev !== name
+        // Auto-save outgoing device's EQ before switching
+        if (isSwitch) {
+          get().saveProfileForDevice(prev)
         }
+        set({ currentDevice: name })
+        if (!isSwitch) return // First detection — keep current EQ as-is
+        // Duck volume to mask filter transients, then apply new profile
+        const profile = get().deviceProfiles[name]
+        engine.duckAndApply(() => {
+          if (profile) {
+            get().loadProfileForDevice(name)
+          } else {
+            // No saved profile for new device — reset to flat
+            set({ gains: [...FLAT] as EqGains, enabled: false, postgainDb: 0, autoPostgain: true })
+            engine.setEqEnabled(false)
+          }
+        })
       },
 
       saveProfileForDevice: (deviceName) => {
@@ -211,4 +223,3 @@ export const useEqStore = create<EqState>()(
   ),
 )
 
-// No device change listener needed — Web Audio API uses system default

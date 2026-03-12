@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio_devices;
 mod commands;
 mod db;
 mod deezer;
@@ -250,6 +251,9 @@ pub fn run() {
             let media_session = MediaSessionState::start(app.handle());
             app.manage(media_session);
 
+            // Start audio device change listener (emits audio-device-changed events).
+            audio_devices::start_device_listener(app.handle());
+
             // Remove the native OS menu bar (redundant on Windows with our custom titlebar).
             app.remove_menu().ok();
 
@@ -441,6 +445,9 @@ pub fn run() {
             commands::podcast_get_categories,
             // Generic HTTP proxy
             commands::http_get_json,
+            // Audio device detection
+            commands::get_audio_output_device,
+            commands::get_audio_output_devices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

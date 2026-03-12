@@ -745,6 +745,31 @@ class WebAudioEngine {
     }
   }
 
+  /**
+   * Brief volume duck to mask EQ filter transients.
+   * Ramps master to 0 over duckMs, calls the callback, then ramps back up.
+   */
+  duckAndApply(fn: () => void, duckMs = 30): void {
+    if (!this.masterNode || !this.ctx) {
+      fn()
+      return
+    }
+    const gain = this.masterNode.gain
+    const now = this.ctx.currentTime
+    const duckSec = duckMs / 1000
+    gain.cancelScheduledValues(now)
+    gain.setValueAtTime(gain.value, now)
+    gain.linearRampToValueAtTime(0, now + duckSec)
+
+    setTimeout(() => {
+      fn()
+      const resumeTime = this.ctx!.currentTime
+      gain.cancelScheduledValues(resumeTime)
+      gain.setValueAtTime(0, resumeTime)
+      gain.linearRampToValueAtTime(this.volume, resumeTime + duckSec)
+    }, duckMs)
+  }
+
   // ---------------------------------------------------------------------------
   // Crossfade settings
   // ---------------------------------------------------------------------------
@@ -805,6 +830,7 @@ class WebAudioEngine {
   getSampleRate(): number {
     return this.ctx?.sampleRate ?? 44100
   }
+
 
   // ---------------------------------------------------------------------------
   // Position polling

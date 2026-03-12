@@ -1781,3 +1781,17 @@ pub async fn http_get_json(url: String) -> Result<serde_json::Value, String> {
     let json = resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())?;
     Ok(json)
 }
+
+// ---------------------------------------------------------------------------
+// Audio device detection
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_audio_output_device() -> String {
+    crate::audio_devices::get_default_output_device_name()
+}
+
+#[tauri::command]
+pub fn get_audio_output_devices() -> Vec<crate::audio_devices::AudioOutputDevice> {
+    crate::audio_devices::get_output_devices()
+}

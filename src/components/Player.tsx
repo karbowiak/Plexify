@@ -5,6 +5,7 @@ import { usePlayerStore } from "../stores"
 import { DJ_MODES } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
 import { useEqStore } from "../stores/eqStore"
+import { useDeviceStore } from "../stores/deviceStore"
 import { useAudioSettingsStore } from "../stores/audioSettingsStore"
 import { useVisualizerStore } from "../stores/visualizerStore"
 import { engine } from "../audio/WebAudioEngine"
@@ -382,9 +383,11 @@ export function Player() {
       cleanup = fn
       syncToEngine()
       syncAudioSettings()
+      useDeviceStore.getState().initDeviceTracking()
     })
     return () => {
       cleanup?.()
+      useDeviceStore.getState().dispose()
     }
   }, [])
 
