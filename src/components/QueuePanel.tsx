@@ -299,12 +299,6 @@ export function QueuePanel() {
 
   const nowPlayingRef = useRef<HTMLDivElement>(null)
 
-  // Auto-scroll to Now Playing when the panel opens
-  useEffect(() => {
-    if (isQueueOpen && nowPlayingRef.current) {
-      nowPlayingRef.current.scrollIntoView({ block: "center", behavior: "smooth" })
-    }
-  }, [isQueueOpen])
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
@@ -378,12 +372,23 @@ export function QueuePanel() {
     </div>
   )
 
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll so Now Playing sits at the top of the visible area
+  useEffect(() => {
+    if (nowPlayingRef.current && scrollRef.current) {
+      const container = scrollRef.current
+      const el = nowPlayingRef.current
+      container.scrollTop = el.offsetTop - container.offsetTop
+    }
+  }, [queueIndex, isQueueOpen])
+
   const list = queue.length === 0 ? (
     <div className="flex flex-1 items-center justify-center text-sm text-gray-500">
       Queue is empty
     </div>
   ) : (
-    <div className="flex-1 overflow-y-auto py-2">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto py-2">
       {/* --- Played section --- */}
       {playedTracks.length > 0 && (
         <>
@@ -403,7 +408,7 @@ export function QueuePanel() {
         </>
       )}
 
-      {/* --- Now Playing section --- */}
+      {/* --- Now Playing section (always at top) --- */}
       {currentTrack && (
         <>
           <div ref={nowPlayingRef}>
