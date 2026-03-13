@@ -1470,6 +1470,170 @@ pub async fn itunes_search_album(
 }
 
 // ---------------------------------------------------------------------------
+// MusicBrainz commands (no API key required — public endpoints)
+// ---------------------------------------------------------------------------
+
+/// Fetch MusicBrainz artist info: tags, area, type, Wikipedia URL.
+#[tauri::command]
+pub async fn musicbrainz_get_artist_info(
+    artist: String,
+) -> Result<Option<crate::musicbrainz::MusicBrainzArtistInfo>, String> {
+    crate::musicbrainz::get_artist_info(&artist)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Fetch MusicBrainz album info: tags, release type, release date.
+#[tauri::command]
+pub async fn musicbrainz_get_album_info(
+    artist: String,
+    album: String,
+) -> Result<Option<crate::musicbrainz::MusicBrainzAlbumInfo>, String> {
+    crate::musicbrainz::get_album_info(&artist, &album)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Look up MusicBrainz recording MBIDs for a track (for ListenBrainz submission).
+#[tauri::command]
+pub async fn musicbrainz_lookup_recording(
+    artist: String,
+    track: String,
+    album: String,
+) -> Result<Option<crate::musicbrainz::MusicBrainzRecordingMbids>, String> {
+    crate::musicbrainz::lookup_recording_mbids(&artist, &track, &album)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+// ---------------------------------------------------------------------------
+// ListenBrainz commands
+// ---------------------------------------------------------------------------
+
+/// Validate a ListenBrainz token, save to settings, and return the username.
+#[tauri::command]
+pub async fn listenbrainz_save_token(
+    token: String,
+    app: tauri::AppHandle,
+) -> Result<crate::listenbrainz::ListenBrainzTokenResult, String> {
+    use tauri::Manager;
+    let result = crate::listenbrainz::validate_token(&token)
+        .await
+        .map_err(|e| format!("{:#}", e))?;
+
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.listenbrainz_token = token;
+    settings.listenbrainz_username = result.username.clone();
+    settings.listenbrainz_enabled = true;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))?;
+
+    Ok(result)
+}
+
+/// Disconnect from ListenBrainz by clearing the token and username.
+#[tauri::command]
+pub async fn listenbrainz_disconnect(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.listenbrainz_token = String::new();
+    settings.listenbrainz_username = String::new();
+    settings.listenbrainz_enabled = false;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Enable or disable ListenBrainz scrobbling.
+#[tauri::command]
+pub async fn listenbrainz_set_enabled(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.listenbrainz_enabled = enabled;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Submit a "now playing" update to ListenBrainz.
+///
+/// No-op if ListenBrainz is disabled or token is empty.
+/// Optional MBID fields improve matching on the ListenBrainz side.
+#[tauri::command]
+pub async fn listenbrainz_submit_now_playing(
+    artist: String,
+    track: String,
+    album: String,
+    duration_ms: u64,
+    recording_mbid: Option<String>,
+    artist_mbids: Option<Vec<String>>,
+    release_mbid: Option<String>,
+    release_group_mbid: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+
+    if !settings.listenbrainz_enabled || settings.listenbrainz_token.is_empty() {
+        return Ok(());
+    }
+
+    crate::listenbrainz::submit_now_playing(
+        &settings.listenbrainz_token,
+        &artist,
+        &track,
+        &album,
+        duration_ms,
+        &recording_mbid.unwrap_or_default(),
+        &artist_mbids.unwrap_or_default(),
+        &release_mbid.unwrap_or_default(),
+        &release_group_mbid.unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| format!("{:#}", e))
+}
+
+/// Submit a completed listen to ListenBrainz.
+///
+/// No-op if ListenBrainz is disabled or token is empty.
+/// Optional MBID fields improve matching on the ListenBrainz side.
+#[tauri::command]
+pub async fn listenbrainz_submit_listen(
+    artist: String,
+    track: String,
+    album: String,
+    duration_ms: u64,
+    listened_at: u64,
+    recording_mbid: Option<String>,
+    artist_mbids: Option<Vec<String>>,
+    release_mbid: Option<String>,
+    release_group_mbid: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+
+    if !settings.listenbrainz_enabled || settings.listenbrainz_token.is_empty() {
+        return Ok(());
+    }
+
+    crate::listenbrainz::submit_listen(
+        &settings.listenbrainz_token,
+        &artist,
+        &track,
+        &album,
+        duration_ms,
+        listened_at,
+        &recording_mbid.unwrap_or_default(),
+        &artist_mbids.unwrap_or_default(),
+        &release_mbid.unwrap_or_default(),
+        &release_group_mbid.unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| format!("{:#}", e))
+}
+
+// ---------------------------------------------------------------------------
 // Local SQLite database
 // ---------------------------------------------------------------------------
 

@@ -9,7 +9,9 @@ mod genius;
 mod itunes;
 mod itunes_throttle;
 mod lastfm;
+mod listenbrainz;
 mod mediasession;
+mod musicbrainz;
 mod plex;
 mod plextv;
 mod podcast;
@@ -453,6 +455,16 @@ pub fn run() {
             commands::genius_set_always_fetch,
             commands::genius_search,
             commands::genius_get_lyrics,
+            // MusicBrainz integration
+            commands::musicbrainz_get_artist_info,
+            commands::musicbrainz_get_album_info,
+            commands::musicbrainz_lookup_recording,
+            // ListenBrainz integration
+            commands::listenbrainz_save_token,
+            commands::listenbrainz_disconnect,
+            commands::listenbrainz_set_enabled,
+            commands::listenbrainz_submit_now_playing,
+            commands::listenbrainz_submit_listen,
             // Generic HTTP proxy
             commands::http_get_json,
             // Audio device detection

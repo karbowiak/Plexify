@@ -28,6 +28,8 @@ import {
 
 import * as plex from "./api"
 import { lastfmScrobble, lastfmUpdateNowPlaying } from "../../metadata/lastfm/api"
+import { listenbrainzSubmitNowPlaying, listenbrainzSubmitListen, type ListenBrainzMbids } from "../../metadata/listenbrainz/api"
+import { useMbidStore } from "../../metadata/musicbrainz/mbidStore"
 import { buildPlexImageUrl } from "./imageUrl"
 import { pickBestMediaIndex } from "../../lib/dedup"
 
@@ -474,7 +476,7 @@ export class PlexProvider implements MusicProvider {
   }
 
   // ---------------------------------------------------------------------------
-  // Track lifecycle hooks — scrobbling to Last.fm
+  // Track lifecycle hooks — scrobbling to Last.fm + ListenBrainz
   // ---------------------------------------------------------------------------
 
   onTrackStart(track: MusicTrack): void {
@@ -485,6 +487,17 @@ export class PlexProvider implements MusicProvider {
       track.artistName ?? "",
       track.duration ?? 0,
     ).catch(() => {})
+
+    // Resolve MBIDs (cached or fresh) then submit to ListenBrainz
+    resolveTrackMbids(track).then(mbids => {
+      listenbrainzSubmitNowPlaying(
+        track.artistName ?? "",
+        track.title,
+        track.albumName ?? "",
+        track.duration ?? 0,
+        mbids,
+      ).catch(() => {})
+    }).catch(() => {})
   }
 
   onTrackEnd(track: MusicTrack, startedAtUnix: number, listenedMs: number): void {
@@ -497,5 +510,65 @@ export class PlexProvider implements MusicProvider {
       startedAtUnix,
       listenedMs,
     ).catch(() => {})
+
+    // Resolve MBIDs (likely already cached from onTrackStart) then submit
+    resolveTrackMbids(track).then(mbids => {
+      listenbrainzSubmitListen(
+        track.artistName ?? "",
+        track.title,
+        track.albumName ?? "",
+        track.duration ?? 0,
+        startedAtUnix,
+        mbids,
+      ).catch(() => {})
+    }).catch(() => {})
+  }
+}
+
+/**
+ * Resolve MusicBrainz IDs for a track — checks Plex GUID first, then falls
+ * back to the MusicBrainz recording lookup (cached in IndexedDB with 30-day TTL).
+ *
+ * Returns undefined if no MBIDs could be resolved (ListenBrainz will still
+ * accept the submission, just without MBID matching).
+ */
+async function resolveTrackMbids(track: MusicTrack): Promise<ListenBrainzMbids | undefined> {
+  const artist = track.artistName ?? ""
+  const title = track.title
+  const album = track.albumName ?? ""
+
+  if (!artist || !title) return undefined
+
+  // Check if Plex already provided an MBID in the guid field.
+  // Plex GUIDs can be: "mbid://recording/xxxxxxxx-..." or "plex://track/..."
+  const plexGuid = track.guid ?? ""
+  if (plexGuid.startsWith("mbid://")) {
+    // Extract the recording MBID from the Plex GUID — it's the UUID after the path segment
+    const match = plexGuid.match(/mbid:\/\/\w+\/([0-9a-f-]{36})/)
+    if (match) {
+      // We have the recording MBID from Plex, but still look up artist/release MBIDs
+      // from MusicBrainz for a more complete submission
+      const mbidData = await useMbidStore.getState().lookup(artist, title, album)
+      if (mbidData) {
+        return {
+          recordingMbid: mbidData.recording_mbid || match[1],
+          artistMbids: mbidData.artist_mbids,
+          releaseMbid: mbidData.release_mbid ?? undefined,
+          releaseGroupMbid: mbidData.release_group_mbid ?? undefined,
+        }
+      }
+      return { recordingMbid: match[1] }
+    }
+  }
+
+  // Plex doesn't have an MBID — look it up from MusicBrainz
+  const mbidData = await useMbidStore.getState().lookup(artist, title, album)
+  if (!mbidData) return undefined
+
+  return {
+    recordingMbid: mbidData.recording_mbid,
+    artistMbids: mbidData.artist_mbids,
+    releaseMbid: mbidData.release_mbid ?? undefined,
+    releaseGroupMbid: mbidData.release_group_mbid ?? undefined,
   }
 }

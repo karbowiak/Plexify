@@ -5,7 +5,6 @@ import { getRecentSearches, clearRecentSearches } from "../../lib/recentSearches
 import type { MusicItem, MusicTrack } from "../../types/music"
 import { MediaCard } from "../MediaCard"
 import { MediaGrid } from "../shared/MediaGrid"
-import { PriorityMediaCard } from "../PriorityMediaCard"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import { usePlayerStore } from "../../stores/playerStore"
 import { useContextMenu } from "../../hooks/useContextMenu"
@@ -133,8 +132,7 @@ export function Search() {
                     const onContextMenu = (item.type === "artist" || item.type === "album")
                       ? ctxMenu(item.type, item)
                       : undefined
-                    const usePriority = info.itemType === "artist" || info.itemType === "album"
-                    const Card = usePriority ? PriorityMediaCard : MediaCard
+                    const Card = MediaCard
                     return (
                       <Card
                         key={info.id}

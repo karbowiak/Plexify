@@ -21,6 +21,7 @@ import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, useLibraryStore, useUIStore } from "./stores"
 import { useLastfmStore } from "./metadata/lastfm/authStore"
 import { useGeniusStore } from "./metadata/genius/authStore"
+import { useListenBrainzStore } from "./metadata/listenbrainz/authStore"
 import "./stores/accentStore"    // import so the module runs applyAccent() on load
 import "./stores/themeStore"    // import so the module runs applyTheme() on load
 import "./stores/fontStore"     // import so the module runs applyFont() on load
@@ -46,6 +47,7 @@ function App() {
   )
   const initLastfm = useLastfmStore(s => s.initialize)
   const initGenius = useGeniusStore(s => s.initialize)
+  const initListenBrainz = useListenBrainzStore(s => s.initialize)
   const [location, navigate] = useLocation()
 
   useEffect(() => {
@@ -53,6 +55,7 @@ function App() {
     void createAppMenu(() => navigate("/settings"))
     void initLastfm()
     void initGenius()
+    void initListenBrainz()
   }, [])
 
   useEffect(() => {

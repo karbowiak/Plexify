@@ -344,6 +344,12 @@ export interface PlexSettings {
   genius_enabled: boolean
   /** When true, always fetch Genius lyrics even when Plex provides them. */
   genius_always_fetch: boolean
+  /** ListenBrainz user token. Empty if not configured. */
+  listenbrainz_token: string
+  /** ListenBrainz username, cached for display. Empty if not authenticated. */
+  listenbrainz_username: string
+  /** Whether ListenBrainz scrobbling is enabled. */
+  listenbrainz_enabled: boolean
 }
 
 // ---------------------------------------------------------------------------

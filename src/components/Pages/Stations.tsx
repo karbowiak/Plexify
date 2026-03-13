@@ -522,7 +522,8 @@ export function StationsPage() {
                 title={item.title}
                 desc="Mix for You"
                 thumb={thumb}
-                isArtist={false}
+                isArtist
+                artistName={mixTitleToArtistName(item.title)}
                 onClick={() => {
                   selectMix(item as MusicPlaylist)
                   navigate("/mix")

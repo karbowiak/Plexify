@@ -1,6 +1,7 @@
 import { Link } from "wouter"
 import clsx from "clsx"
 import { useTrackDrag } from "../hooks/useTrackDrag"
+import { useArtistImage, useAlbumImage } from "../hooks/useMediaImage"
 import type { DragPayload } from "../stores/dragStore"
 
 interface MediaCardProps {
@@ -23,9 +24,45 @@ interface MediaCardProps {
   onContextMenu?: (e: React.MouseEvent) => void
   /** When provided, enables dragging this card to playlists/queue. */
   dragPayload?: DragPayload
+  /** Artist name — enables priority-aware image resolution from external sources. */
+  artistName?: string | null
+  /** Album name — enables priority-aware album image resolution (requires artistName too). */
+  albumName?: string | null
 }
 
-export function MediaCard({ title, desc, thumb, thumbFallback, isArtist, scrollItem, large, href, onClick, prefetch, onPlay, onContextMenu, dragPayload }: MediaCardProps) {
+/**
+ * Resolves the best image for an artist card via the priority metadata system.
+ * Separate component to satisfy React's rules of hooks.
+ */
+function ArtistImageCard({ artistName, thumb, ...rest }: MediaCardProps & { artistName: string }) {
+  const resolved = useArtistImage(artistName, thumb)
+  return <MediaCardInner {...rest} thumb={resolved} />
+}
+
+/**
+ * Resolves the best image for an album card via the priority metadata system.
+ * Separate component to satisfy React's rules of hooks.
+ */
+function AlbumImageCard({ artistName, albumName, thumb, ...rest }: MediaCardProps & { artistName: string; albumName: string }) {
+  const resolved = useAlbumImage(artistName, albumName, thumb)
+  return <MediaCardInner {...rest} thumb={resolved} />
+}
+
+export function MediaCard(props: MediaCardProps) {
+  const { artistName, albumName } = props
+  // When artistName is provided, use priority-aware image resolution
+  if (artistName) {
+    if (props.isArtist) {
+      return <ArtistImageCard {...props} artistName={artistName} />
+    }
+    if (albumName) {
+      return <AlbumImageCard {...props} artistName={artistName} albumName={albumName} />
+    }
+  }
+  return <MediaCardInner {...props} />
+}
+
+function MediaCardInner({ title, desc, thumb, thumbFallback, isArtist, scrollItem, large, href, onClick, prefetch, onPlay, onContextMenu, dragPayload }: MediaCardProps) {
   const displayThumb = thumb || thumbFallback || null
   const trackDrag = useTrackDrag()
   const scrollStyle = scrollItem

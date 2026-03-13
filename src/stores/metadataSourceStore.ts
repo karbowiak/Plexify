@@ -12,13 +12,14 @@ import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { idbJSONStorage } from "./idbStorage"
 
-export type MetadataSource = "plex" | "deezer" | "lastfm" | "apple"
+export type MetadataSource = "plex" | "deezer" | "lastfm" | "apple" | "musicbrainz"
 
 export const SOURCE_LABELS: Record<MetadataSource, string> = {
   plex: "Plex",
   deezer: "Deezer",
   lastfm: "Last.fm",
   apple: "Apple Music",
+  musicbrainz: "MusicBrainz",
 }
 
 export const SOURCE_DESCRIPTIONS: Record<MetadataSource, string> = {
@@ -26,9 +27,10 @@ export const SOURCE_DESCRIPTIONS: Record<MetadataSource, string> = {
   deezer: "Deezer artist bios, fan counts, genres, and cover art",
   lastfm: "Last.fm biographies, tags, listener counts, and similar artists",
   apple: "Apple Music genres, release dates, and album artwork",
+  musicbrainz: "MusicBrainz tags/genres, release data, and artist info",
 }
 
-const DEFAULT_PRIORITY: MetadataSource[] = ["plex", "deezer", "lastfm", "apple"]
+const DEFAULT_PRIORITY: MetadataSource[] = ["plex", "deezer", "lastfm", "apple", "musicbrainz"]
 
 interface MetadataSourceState {
   /** Ordered list of metadata sources, highest priority first. */
@@ -47,6 +49,14 @@ export const useMetadataSourceStore = create<MetadataSourceState>()(
       name: "metadata-source-priority-v1",
       storage: idbJSONStorage,
       partialize: (s) => ({ priority: s.priority }),
+      onRehydrateStorage: () => (state) => {
+        if (!state) return
+        // Ensure newly added sources appear in existing saved priority lists
+        const missing = DEFAULT_PRIORITY.filter(s => !state.priority.includes(s))
+        if (missing.length > 0) {
+          useMetadataSourceStore.setState({ priority: [...state.priority, ...missing] })
+        }
+      },
     },
   ),
 )

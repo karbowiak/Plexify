@@ -11,7 +11,6 @@ import { useContextMenu } from "../../hooks/useContextMenu"
 import { makeOnPlay } from "../../lib/mediaPlay"
 import { ScrollRow } from "../ScrollRow"
 import { MediaCard } from "../MediaCard"
-import { PriorityMediaCard } from "../PriorityMediaCard"
 import { selectMix, shuffleTracks } from "./Mix"
 
 /** Strip common mix suffixes to get the artist name: "Ado Mix" → "Ado" */
@@ -242,7 +241,8 @@ export function Home() {
                 title={item.title}
                 desc="Mix for You"
                 thumb={thumb}
-                isArtist={false}
+                isArtist
+                artistName={mixTitleToArtistName(item.title)}
                 onClick={() => {
                   selectMix(item as MusicPlaylist)
                   navigate("/mix")
@@ -287,8 +287,7 @@ export function Home() {
           {recentlyAdded.slice(0, 30).map((item, idx) => {
             const info = getMediaInfo(item)
             if (!info) return null
-            const usePriority = info.itemType === "artist" || info.itemType === "album"
-            const Card = usePriority ? PriorityMediaCard : MediaCard
+            const Card = MediaCard
             return (
               <Card
                 key={`${item.id}-${idx}`}
@@ -419,8 +418,7 @@ export function Home() {
             {items.slice(0, 30).map((item, idx) => {
               const info = getMediaInfo(item, { showYear: isAnniversary })
               if (!info) return null
-              const usePriority = info.itemType === "artist" || info.itemType === "album"
-              const Card = usePriority ? PriorityMediaCard : MediaCard
+              const Card = MediaCard
               return (
                 <Card
                   key={`${item.id}-${idx}`}

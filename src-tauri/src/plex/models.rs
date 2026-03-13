@@ -1281,6 +1281,22 @@ pub struct PlexSettings {
     /// When false (default), only fetch from Genius when Plex has no lyrics.
     #[serde(default)]
     pub genius_always_fetch: bool,
+
+    // -----------------------------------------------------------------------
+    // ListenBrainz integration
+    // -----------------------------------------------------------------------
+
+    /// ListenBrainz user token (from https://listenbrainz.org/settings/).
+    #[serde(default)]
+    pub listenbrainz_token: String,
+
+    /// ListenBrainz username, cached after token validation.
+    #[serde(default)]
+    pub listenbrainz_username: String,
+
+    /// Whether ListenBrainz scrobbling is enabled.
+    #[serde(default)]
+    pub listenbrainz_enabled: bool,
 }
 
 fn default_lastfm_love_threshold() -> u8 {
