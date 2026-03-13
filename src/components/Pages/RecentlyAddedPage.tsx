@@ -5,7 +5,7 @@ import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import { makeOnPlay } from "../../lib/mediaPlay"
 import { MediaCard } from "../MediaCard"
 import { MediaGrid } from "../shared/MediaGrid"
-import { getMediaInfo } from "./Home"
+import { getMediaInfo, makeDragPayload } from "./Home"
 
 export function RecentlyAddedPage() {
   const recentlyAdded = useLibraryStore(s => s.recentlyAdded)
@@ -43,6 +43,7 @@ export function RecentlyAddedPage() {
                 href={info.href ?? undefined}
                 prefetch={makePrefetch(info)}
                 onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, provider })}
+                dragPayload={makeDragPayload(item)}
               />
             )
           })}

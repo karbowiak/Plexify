@@ -1,5 +1,7 @@
 import { Link } from "wouter"
 import clsx from "clsx"
+import { useTrackDrag } from "../hooks/useTrackDrag"
+import type { DragPayload } from "../stores/dragStore"
 
 interface MediaCardProps {
   title: string
@@ -19,23 +21,25 @@ interface MediaCardProps {
   /** When provided, shows a play button overlay on hover. Called on click. */
   onPlay?: (e: React.MouseEvent) => void
   onContextMenu?: (e: React.MouseEvent) => void
+  /** When provided, enables dragging this card to playlists/queue. */
+  dragPayload?: DragPayload
 }
 
-export function MediaCard({ title, desc, thumb, thumbFallback, isArtist, scrollItem, large, href, onClick, prefetch, onPlay, onContextMenu }: MediaCardProps) {
+export function MediaCard({ title, desc, thumb, thumbFallback, isArtist, scrollItem, large, href, onClick, prefetch, onPlay, onContextMenu, dragPayload }: MediaCardProps) {
   const displayThumb = thumb || thumbFallback || null
+  const trackDrag = useTrackDrag()
   const scrollStyle = scrollItem
     ? { width: large ? "calc(var(--card-size, 160px) * 1.33)" : "var(--card-size, 160px)" }
     : undefined
-  const inner = (
-    <div
-      onMouseEnter={prefetch}
-      onContextMenu={onContextMenu}
-      style={scrollStyle}
-      className={clsx(
-        "group cursor-pointer rounded-md bg-app-card p-3 transition-colors hover:bg-hl-card",
-        scrollItem && "flex-shrink-0"
-      )}
-    >
+
+  const dragHandlers = dragPayload ? {
+    onPointerDown: (e: React.PointerEvent) => trackDrag.onPointerDown(e, dragPayload),
+    onPointerMove: trackDrag.onPointerMove,
+    onPointerUp: trackDrag.onPointerUp,
+  } : undefined
+
+  const cardContent = (
+    <>
       <div className="relative mb-3">
         {displayThumb ? (
           <img
@@ -74,20 +78,58 @@ export function MediaCard({ title, desc, thumb, thumbFallback, isArtist, scrollI
       </div>
       <div className="truncate text-sm font-semibold text-white">{title}</div>
       <div className="mt-1 truncate text-xs text-neutral-400">{desc}</div>
-    </div>
+    </>
+  )
+
+  const cardClass = clsx(
+    "group cursor-pointer rounded-md bg-app-card p-3 transition-colors hover:bg-hl-card",
+    scrollItem && "flex-shrink-0"
   )
 
   if (href) {
     return (
-      <Link href={href} style={scrollStyle} onContextMenu={onContextMenu} className={clsx("no-underline hover:no-underline", scrollItem && "flex-shrink-0")}>
-        {inner}
+      <Link
+        href={href}
+        draggable={false}
+        style={scrollStyle}
+        onMouseEnter={prefetch}
+        onContextMenu={onContextMenu}
+        className={clsx("no-underline hover:no-underline", scrollItem && "flex-shrink-0")}
+        {...dragHandlers}
+      >
+        <div className={cardClass}>
+          {cardContent}
+        </div>
       </Link>
     )
   }
 
   if (onClick) {
-    return <div onClick={onClick} onContextMenu={onContextMenu} style={scrollStyle} className={clsx(scrollItem && "flex-shrink-0")}>{inner}</div>
+    return (
+      <div
+        onClick={onClick}
+        onMouseEnter={prefetch}
+        onContextMenu={onContextMenu}
+        style={scrollStyle}
+        className={clsx(scrollItem && "flex-shrink-0")}
+        {...dragHandlers}
+      >
+        <div className={cardClass}>
+          {cardContent}
+        </div>
+      </div>
+    )
   }
 
-  return inner
+  return (
+    <div
+      onMouseEnter={prefetch}
+      onContextMenu={onContextMenu}
+      style={scrollStyle}
+      className={cardClass}
+      {...dragHandlers}
+    >
+      {cardContent}
+    </div>
+  )
 }

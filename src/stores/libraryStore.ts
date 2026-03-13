@@ -146,6 +146,8 @@ interface LibraryState {
   removePlaylist: (id: string) => void
   /** Rename a playlist in the sidebar list. */
   renamePlaylist: (id: string, newTitle: string) => void
+  /** Optimistically reorder a track within the current playlist items. */
+  reorderPlaylistItems: (playlistId: string, fromIndex: number, toIndex: number) => void
   /** Called after any rating change to update cached data. */
   onItemRated: (id: string, itemType: "track" | "album" | "artist", newRating: number | null) => void
   /** Null out all TTL timestamps and playlist caches so the next fetch hits the network. */
@@ -513,6 +515,17 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
         ? { ...get().currentPlaylist!, title: newTitle }
         : get().currentPlaylist,
     })
+  },
+
+  reorderPlaylistItems: (playlistId: string, fromIndex: number, toIndex: number) => {
+    const items = [...(get().playlistItemsCache[playlistId] ?? get().currentPlaylistItems)]
+    if (fromIndex < 0 || fromIndex >= items.length || toIndex < 0 || toIndex >= items.length) return
+    const [moved] = items.splice(fromIndex, 1)
+    items.splice(toIndex, 0, moved)
+    set(state => ({
+      playlistItemsCache: { ...state.playlistItemsCache, [playlistId]: items },
+      ...(state.currentPlaylistId === playlistId ? { currentPlaylistItems: items } : {}),
+    }))
   },
 
   onItemRated: (id: string, itemType: "track" | "album" | "artist", newRating: number | null) => {

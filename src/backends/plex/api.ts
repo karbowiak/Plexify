@@ -262,6 +262,16 @@ export function addItemsToPlaylist(playlistId: number, itemIds: number[]): Promi
   return invoke("add_items_to_playlist", { playlistId, itemIds })
 }
 
+/** Remove items from a playlist by their playlist-specific item IDs. */
+export function removeItemsFromPlaylist(playlistId: number, playlistItemIds: number[]): Promise<void> {
+  return invoke("remove_items_from_playlist", { playlistId, playlistItemIds })
+}
+
+/** Move an item within a playlist (reorder). Use afterItemId=0 to move to top. */
+export function movePlaylistItem(playlistId: number, itemId: number, afterItemId: number): Promise<void> {
+  return invoke("move_playlist_item", { playlistId, itemId, afterItemId })
+}
+
 /** Delete a playlist by its rating key. */
 export function deletePlaylist(playlistId: number): Promise<void> {
   return invoke("delete_playlist", { playlistId })

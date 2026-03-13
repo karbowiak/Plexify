@@ -14,7 +14,7 @@ import { StarRating } from "./shared/StarRating"
 import {
   MenuItem as Item, MenuDivider as Divider, MenuSectionLabel as SectionLabel,
   IconPlay, IconNext, IconQueue, IconNewPlaylist, IconRadio, IconShare,
-  IconArtist, IconAlbum, IconPlaylist, IconBug, IconShuffle, IconEdit, IconDelete,
+  IconArtist, IconAlbum, IconPlaylist, IconBug, IconShuffle, IconEdit, IconDelete, IconRemove,
 } from "./shared/ContextMenuPrimitives"
 import { getRecentPlaylistIds, recordRecentPlaylist } from "../lib/recentPlaylists"
 import type { MusicTrack, MusicAlbum, MusicArtist, MusicPlaylist } from "../types/music"
@@ -83,11 +83,87 @@ function PlaylistSection({ itemIds, close, onNewPlaylist }: PlaylistSectionProps
 }
 
 // ---------------------------------------------------------------------------
+// Inline rename input (replaces window.prompt to avoid audio stopping)
+// ---------------------------------------------------------------------------
+
+function InlineRenameInput({ initialValue, onConfirm, onCancel }: {
+  initialValue: string
+  onConfirm: (name: string) => void
+  onCancel: () => void
+}) {
+  const [value, setValue] = useState(initialValue)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    // Auto-focus and select all text
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+
+  function handleSubmit() {
+    const trimmed = value.trim()
+    if (trimmed && trimmed !== initialValue) {
+      onConfirm(trimmed)
+    } else {
+      onCancel()
+    }
+  }
+
+  return (
+    <div className="px-3 py-1.5">
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === "Enter") handleSubmit()
+          if (e.key === "Escape") onCancel()
+          e.stopPropagation()
+        }}
+        onBlur={handleSubmit}
+        className="w-full rounded bg-white/10 border border-white/20 px-2 py-1 text-sm text-white focus:outline-none focus:border-accent/50"
+      />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Inline delete confirm (replaces window.confirm to avoid audio stopping)
+// ---------------------------------------------------------------------------
+
+function InlineDeleteConfirm({ title, onConfirm, onCancel }: {
+  title: string
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div className="px-3 py-2">
+      <p className="text-xs text-white/70 mb-2">Delete "{title}"?</p>
+      <div className="flex gap-2">
+        <button
+          onClick={onConfirm}
+          className="flex-1 rounded bg-red-600/80 px-2 py-1 text-xs text-white hover:bg-red-600 transition-colors"
+        >
+          Delete
+        </button>
+        <button
+          onClick={onCancel}
+          className="flex-1 rounded bg-white/10 px-2 py-1 text-xs text-white/70 hover:bg-white/20 transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
 export function ContextMenu() {
-  const { open: isOpen, x, y, type, data, close } = useContextMenuStore()
+  const { open: isOpen, x, y, type, data, playlistId: ctxPlaylistId, close } = useContextMenuStore()
   const debugEnabled = useDebugStore(s => s.debugEnabled)
   const showDebugPanel = useDebugPanelStore(s => s.show)
   const provider = useProviderStore(s => s.provider)
@@ -107,6 +183,16 @@ export function ContextMenu() {
   const [, navigate] = useLocation()
   const menuRef = useRef<HTMLDivElement>(null)
   const [menuPos, setMenuPos] = useState({ left: -9999, top: -9999 })
+  const [renaming, setRenaming] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+
+  // Reset inline states when menu reopens
+  useEffect(() => {
+    if (isOpen) {
+      setRenaming(false)
+      setConfirming(false)
+    }
+  }, [isOpen])
 
   // Close on Escape
   useEffect(() => {
@@ -129,7 +215,7 @@ export function ContextMenu() {
     const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))
     const top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))
     setMenuPos({ left, top })
-  }, [isOpen, x, y])
+  }, [isOpen, x, y, renaming, confirming])
 
   if (!isOpen || !type || !data) return null
 
@@ -143,15 +229,15 @@ export function ContextMenu() {
   let deezerUrl: string | null = null
   if (artist) {
     const cached = deezerState.artists[artist.title.toLowerCase()]
-    deezerUrl = cached?.data.deezer_url ?? null
+    deezerUrl = cached?.data?.deezer_url ?? null
   } else if (album) {
     const key = `${album.artistName.toLowerCase()}::${album.title.toLowerCase()}`
     const cached = deezerState.albums[key]
-    deezerUrl = cached?.data.deezer_url ?? null
+    deezerUrl = cached?.data?.deezer_url ?? null
   } else if (track) {
     const key = `${(track.artistName ?? "").toLowerCase()}::${(track.albumName ?? "").toLowerCase()}`
     const cached = deezerState.albums[key]
-    deezerUrl = cached?.data.deezer_url ?? null
+    deezerUrl = cached?.data?.deezer_url ?? null
   }
 
   // ── Actions ──────────────────────────────────────────────────────────────
@@ -215,6 +301,14 @@ export function ContextMenu() {
     close()
   }
 
+  function doRemoveFromPlaylist() {
+    if (!track || !ctxPlaylistId || !provider || !track.playlistItemId) return
+    void provider.removeFromPlaylist(ctxPlaylistId, [track.playlistItemId]).then(() => {
+      useLibraryStore.getState().invalidatePlaylistItems(ctxPlaylistId)
+    })
+    close()
+  }
+
   // Determine item IDs for "add to playlist"
   const itemIds = track
     ? [track.id]
@@ -265,10 +359,8 @@ export function ContextMenu() {
       close()
     }
 
-    function doRenamePlaylist() {
+    function doRenamePlaylist(newName: string) {
       if (!provider) return
-      const newName = window.prompt("Rename playlist", playlist!.title)
-      if (!newName || newName === playlist!.title) { close(); return }
       void provider.editPlaylist(playlist!.id, newName).then(() => {
         useLibraryStore.getState().renamePlaylist(playlist!.id, newName)
       })
@@ -277,7 +369,6 @@ export function ContextMenu() {
 
     function doDeletePlaylist() {
       if (!provider) return
-      if (!window.confirm(`Delete "${playlist!.title}"?`)) { close(); return }
       void provider.deletePlaylist(playlist!.id).then(() => {
         useLibraryStore.getState().removePlaylist(playlist!.id)
         // Navigate away if currently viewing this playlist
@@ -297,24 +388,40 @@ export function ContextMenu() {
           style={{ left: menuPos.left, top: menuPos.top }}
           className="fixed z-[9999] w-60 rounded-lg border border-white/10 bg-app-card shadow-2xl py-1 text-sm select-none"
         >
-          <Item icon={IconPlay} label="Play" onClick={doPlayPlaylist} />
-          <Item icon={IconShuffle} label="Play shuffled" onClick={doShufflePlaylist} />
-          {hasRadio && <Item icon={IconRadio} label="Start radio" onClick={() => {
-            void playRadio(playlist.id, "track")
-            close()
-          }} />}
-          <Divider />
-          {isEditable && <Item icon={IconEdit} label="Rename" onClick={doRenamePlaylist} />}
-          <Item icon={IconDelete} label="Delete" onClick={doDeletePlaylist} danger />
-          {debugEnabled && (
+          {renaming ? (
+            <InlineRenameInput
+              initialValue={playlist.title}
+              onConfirm={doRenamePlaylist}
+              onCancel={() => setRenaming(false)}
+            />
+          ) : confirming ? (
+            <InlineDeleteConfirm
+              title={playlist.title}
+              onConfirm={doDeletePlaylist}
+              onCancel={() => setConfirming(false)}
+            />
+          ) : (
             <>
+              <Item icon={IconPlay} label="Play" onClick={doPlayPlaylist} />
+              <Item icon={IconShuffle} label="Play shuffled" onClick={doShufflePlaylist} />
+              {hasRadio && <Item icon={IconRadio} label="Start radio" onClick={() => {
+                void playRadio(playlist.id, "track")
+                close()
+              }} />}
               <Divider />
-              <SectionLabel label="Debug" />
-              <Item
-                icon={IconBug}
-                label="Debug Info"
-                onClick={() => { showDebugPanel(type!, data!); close() }}
-              />
+              {isEditable && <Item icon={IconEdit} label="Rename" onClick={() => setRenaming(true)} />}
+              <Item icon={IconDelete} label="Delete" onClick={() => setConfirming(true)} danger />
+              {debugEnabled && (
+                <>
+                  <Divider />
+                  <SectionLabel label="Debug" />
+                  <Item
+                    icon={IconBug}
+                    label="Debug Info"
+                    onClick={() => { showDebugPanel(type!, data!); close() }}
+                  />
+                </>
+              )}
             </>
           )}
         </div>
@@ -355,6 +462,14 @@ export function ContextMenu() {
           size={14}
           onRated={close}
         />}
+
+        {/* Remove from playlist — when in a playlist context and track has playlistItemId */}
+        {track && ctxPlaylistId && track.playlistItemId && (
+          <>
+            <Divider />
+            <Item icon={IconRemove} label="Remove from playlist" onClick={doRemoveFromPlaylist} danger />
+          </>
+        )}
 
         {/* Add to playlist — tracks only */}
         {track && (

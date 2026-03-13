@@ -62,6 +62,8 @@ export interface MusicTrack {
   startRamp?: string | null
   endRamp?: string | null
   mediaInfo?: MediaInfo | null
+  /** Playlist-specific item ID (for remove-from-playlist). Only present on playlist item responses. */
+  playlistItemId?: string | null
   /** Opaque provider-specific data (e.g. full Plex Track object). */
   _providerData?: unknown
 }

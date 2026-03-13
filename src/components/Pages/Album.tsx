@@ -22,6 +22,7 @@ import { StarRating } from "../shared/StarRating"
 import { useDebugStore } from "../../stores/debugStore"
 import { useDebugPanelStore } from "../../stores/debugPanelStore"
 import { useCapability } from "../../hooks/useCapability"
+import { useTrackDrag } from "../../hooks/useTrackDrag"
 
 
 function TagChip({ tag, tagType }: { tag: string; tagType: "genre" | "mood" | "style" }) {
@@ -39,6 +40,7 @@ export function AlbumPage({ albumId }: { albumId: string }) {
   const provider = useProviderStore(s => s.provider)
   const { playTrack, playRadio, addToQueue, addNext, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playRadio: s.playRadio, addToQueue: s.addToQueue, addNext: s.addNext, currentTrack: s.currentTrack })))
   const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
+  const trackDrag = useTrackDrag()
   const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
   const hasRadio = useCapability("radio")
 
@@ -459,6 +461,9 @@ export function AlbumPage({ albumId }: { albumId: string }) {
                 onClick={() => void playTrack(track, tracks, album.title, `/album/${albumId}`)}
                 onMouseEnter={() => prefetchTrackAudio(track)}
                 onContextMenu={ctxMenu("track", track)}
+                onPointerDown={e => trackDrag.onPointerDown(e, { type: "track", ids: [track.id], label: track.title, tracks: [track] })}
+                onPointerMove={trackDrag.onPointerMove}
+                onPointerUp={trackDrag.onPointerUp}
               >
                 <td className="p-2 text-center w-8">
                   {isActive ? (
@@ -563,6 +568,7 @@ export function AlbumPage({ albumId }: { albumId: string }) {
                       thumb={(a as any).thumbUrl ?? null}
                       href={`/album/${a.id}`}
                       prefetch={() => prefetchAlbum(a.id)}
+                      dragPayload={{ type: "album", ids: [a.id], label: a.title }}
                       scrollItem
                     />
                   ))}
@@ -581,6 +587,7 @@ export function AlbumPage({ albumId }: { albumId: string }) {
                       thumb={(a as any).thumbUrl ?? null}
                       href={`/artist/${a.id}`}
                       prefetch={() => prefetchArtist(a.id)}
+                      dragPayload={{ type: "artist", ids: [a.id], label: a.title }}
                       isArtist
                       scrollItem
                     />

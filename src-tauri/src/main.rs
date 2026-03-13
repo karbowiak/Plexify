@@ -345,6 +345,8 @@ pub fn run() {
             commands::get_liked_albums,
             commands::create_playlist,
             commands::add_items_to_playlist,
+            commands::remove_items_from_playlist,
+            commands::move_playlist_item,
             commands::delete_playlist,
             commands::edit_playlist,
             // Play queue

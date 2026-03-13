@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, usePlayerStore, useUIStore } from "../../stores"
 import { useProviderStore } from "../../stores/providerStore"
@@ -24,9 +24,10 @@ const ROW_HEIGHT_PX = 40
 export function Playlist({ playlistId }: { playlistId: string }) {
   // Granular selectors: changes to playlistItemsCache (background prefetch)
   // do NOT trigger re-renders of this component.
-  const { fetchPlaylistItems, fetchMorePlaylistItems } = useLibraryStore(useShallow(s => ({
+  const { fetchPlaylistItems, fetchMorePlaylistItems, reorderPlaylistItems } = useLibraryStore(useShallow(s => ({
     fetchPlaylistItems: s.fetchPlaylistItems,
     fetchMorePlaylistItems: s.fetchMorePlaylistItems,
+    reorderPlaylistItems: s.reorderPlaylistItems,
   })))
   const currentPlaylist = useLibraryStore(s => s.currentPlaylist)
   const currentPlaylistItems = useLibraryStore(s => s.currentPlaylistItems)
@@ -127,6 +128,26 @@ export function Playlist({ playlistId }: { playlistId: string }) {
 
     return () => scrollEl.removeEventListener("scroll", check)
   }, [playlistId, isLoading, isFetchingMore, isFullyLoaded])
+
+  // Reorder is only available for non-smart playlists in default sort order with no filter
+  const canReorder = !!currentPlaylist && !currentPlaylist.smart && sortCol === "default" && !debouncedQuery
+
+  const handleReorder = useCallback((fromIndex: number, toIndex: number) => {
+    if (!provider || !canReorder) return
+    const items = currentPlaylistItems
+    const movedTrack = items[fromIndex]
+    if (!movedTrack?.playlistItemId) return
+
+    const afterIndex = toIndex > fromIndex ? toIndex : toIndex - 1
+    const afterTrack = afterIndex >= 0 ? items[afterIndex] : null
+    const afterItemId = afterTrack?.playlistItemId ?? "0"
+
+    reorderPlaylistItems(playlistId, fromIndex, toIndex)
+
+    provider.movePlaylistItem(playlistId, movedTrack.playlistItemId, afterItemId).catch(() => {
+      void fetchPlaylistItems(playlistId)
+    })
+  }, [provider, canReorder, currentPlaylistItems, playlistId, reorderPlaylistItems, fetchPlaylistItems])
 
   if (!currentPlaylist && !isLoading) {
     return <div className="p-8 text-gray-400">Playlist not found.</div>
@@ -268,6 +289,8 @@ export function Playlist({ playlistId }: { playlistId: string }) {
         spacerHeight={spacerHeight}
         isFetchingMore={isFetchingMore}
         currentTrackId={currentTrack?.id ?? null}
+        playlistId={currentPlaylist.smart ? undefined : playlistId}
+        onReorder={canReorder ? handleReorder : undefined}
       />
     </div>
   )

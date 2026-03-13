@@ -220,12 +220,20 @@ export class PlexProvider implements MusicProvider {
     await plex.addItemsToPlaylist(Number(playlistId), itemIds.map(Number))
   }
 
+  async removeFromPlaylist(playlistId: string, playlistItemIds: string[]): Promise<void> {
+    await plex.removeItemsFromPlaylist(Number(playlistId), playlistItemIds.map(Number))
+  }
+
   async deletePlaylist(playlistId: string): Promise<void> {
     await plex.deletePlaylist(Number(playlistId))
   }
 
   async editPlaylist(playlistId: string, title?: string, summary?: string): Promise<void> {
     await plex.editPlaylist(Number(playlistId), title, summary)
+  }
+
+  async movePlaylistItem(playlistId: string, itemId: string, afterItemId: string): Promise<void> {
+    await plex.movePlaylistItem(Number(playlistId), Number(itemId), Number(afterItemId))
   }
 
   // ---------------------------------------------------------------------------

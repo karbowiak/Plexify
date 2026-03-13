@@ -5,7 +5,7 @@ import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import { makeOnPlay } from "../../lib/mediaPlay"
 import { MediaCard } from "../MediaCard"
 import { MediaGrid } from "../shared/MediaGrid"
-import { getMediaInfo } from "./Home"
+import { getMediaInfo, makeDragPayload } from "./Home"
 
 export function HubPage({ hubId }: { hubId: string }) {
   const { hubs } = useLibraryStore(useShallow(s => ({ hubs: s.hubs })))
@@ -58,6 +58,7 @@ export function HubPage({ hubId }: { hubId: string }) {
                 href={info.href ?? undefined}
                 prefetch={makePrefetch(info)}
                 onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, provider })}
+                dragPayload={makeDragPayload(item)}
               />
             )
           })}

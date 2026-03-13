@@ -10,6 +10,7 @@
 
 import { MediaCard } from "./MediaCard"
 import { useArtistImage, useAlbumImage } from "../hooks/useMediaImage"
+import type { DragPayload } from "../stores/dragStore"
 
 interface PriorityMediaCardProps {
   title: string
@@ -28,6 +29,7 @@ interface PriorityMediaCardProps {
   artistName?: string | null
   /** Album name used to look up external metadata (only relevant when isArtist=false). */
   albumName?: string | null
+  dragPayload?: DragPayload
 }
 
 function ArtistVariant({ artistName, thumb, ...rest }: PriorityMediaCardProps & { isArtist: true }) {

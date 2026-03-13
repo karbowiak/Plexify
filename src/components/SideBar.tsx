@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter"
-import { useMemo, useRef, useState } from "react"
+import { useMemo, useRef, useState, useCallback, useEffect } from "react"
 import clsx from "clsx"
 import { useShallow } from "zustand/react/shallow"
 import {
@@ -23,6 +23,8 @@ import { useResizable } from "../hooks/useResizable"
 import { IS_MACOS } from "../lib/platform"
 import { useContextMenu } from "../hooks/useContextMenu"
 import { useCapability } from "../hooks/useCapability"
+import { useProviderStore } from "../stores/providerStore"
+import { useDragStore } from "../stores/dragStore"
 import type { MusicPlaylist } from "../types/music"
 
 // ---------------------------------------------------------------------------
@@ -59,11 +61,28 @@ function SortablePlaylistItem({ playlist, location, playPlaylist, ctxMenu, justD
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: playlist.id,
   })
+  const isDropTarget = !playlist.smart
+  // Subscribe to hover state from pointer-based drag system
+  const isHovered = useDragStore(s => s.isDragging && s.hoveredPlaylistId === playlist.id)
+  const [dropFlash, setDropFlash] = useState<"success" | "error" | null>(null)
+
+  // Listen for media-drop custom events targeted at this playlist
+  useEffect(() => {
+    if (!isDropTarget) return
+    function onDrop(e: Event) {
+      const { targetPlaylistId } = (e as CustomEvent).detail
+      if (targetPlaylistId !== playlist.id) return
+      setDropFlash("success")
+      setTimeout(() => setDropFlash(null), 1000)
+    }
+    window.addEventListener("plexify-media-drop", onDrop)
+    return () => window.removeEventListener("plexify-media-drop", onDrop)
+  }, [isDropTarget, playlist.id])
+
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
-    // Prevent the browser from sending click events to the <Link> while dragging
     pointerEvents: isDragging ? "none" : undefined,
   }
 
@@ -71,14 +90,23 @@ function SortablePlaylistItem({ playlist, location, playPlaylist, ctxMenu, justD
   const artUrl = playlist.thumbUrl
 
   return (
-    <li ref={setNodeRef} style={style} {...attributes} {...listeners}>
+    <li
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      data-playlist-drop-target={isDropTarget ? playlist.id : undefined}
+    >
       <Link
         href={href}
         onClick={e => { if (justDragged.current) { e.preventDefault(); e.stopPropagation() } }}
         onContextMenu={ctxMenu("playlist", playlist)}
         className={clsx(
-          "group flex cursor-default items-center gap-3 rounded-md px-1 py-[5px] no-underline hover:bg-accent-tint hover:no-underline",
-          location !== href ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-primary)]"
+          "group flex cursor-default items-center gap-3 rounded-md px-1 py-[5px] no-underline hover:bg-accent-tint hover:no-underline transition-all duration-200",
+          location !== href ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-primary)]",
+          isHovered && isDropTarget && "ring-2 ring-accent/60 bg-accent/10",
+          dropFlash === "success" && "ring-2 ring-green-500/60 bg-green-500/10",
+          dropFlash === "error" && "ring-2 ring-red-500/60 bg-red-500/10",
         )}
       >
         <div className="relative h-10 w-10 flex-shrink-0 overflow-hidden rounded bg-app-surface">
@@ -116,6 +144,35 @@ export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) 
   const playPlaylist = usePlayerStore(useShallow(s => s.playPlaylist))
   const isArtExpanded = useUIStore(s => s.isArtExpanded)
   const { handler: ctxMenu } = useContextMenu()
+  const provider = useProviderStore(s => s.provider)
+
+  // Handle media drops (tracks, albums, artists) from the pointer-based drag system
+  useEffect(() => {
+    async function onDrop(e: Event) {
+      const { payload, targetPlaylistId } = (e as CustomEvent).detail
+      if (!targetPlaylistId || !provider) return
+
+      try {
+        // Pass IDs directly — Plex resolves album/artist URIs to their tracks server-side.
+        // For tracks, add one at a time since the PUT endpoint can silently ignore
+        // comma-separated URIs.
+        const itemIds: string[] = payload.ids
+        if (payload.type === "track" && itemIds.length > 1) {
+          for (const id of itemIds) {
+            await provider.addToPlaylist(targetPlaylistId, [id])
+          }
+        } else if (itemIds.length > 0) {
+          await provider.addToPlaylist(targetPlaylistId, itemIds)
+        }
+        useLibraryStore.getState().invalidatePlaylistItems(targetPlaylistId)
+      } catch (err) {
+        console.error("[SideBar] addToPlaylist failed:", err)
+      }
+    }
+    window.addEventListener("plexify-media-drop", onDrop)
+    return () => window.removeEventListener("plexify-media-drop", onDrop)
+  }, [provider])
+
   const { width, onMouseDown } = useResizable({
     key: "plex-sidebar-width",
     defaultWidth: 240,

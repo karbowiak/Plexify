@@ -21,6 +21,9 @@ import RadioPanel from "./RadioPanel"
 import PlayerPopover from "./PlayerPopover"
 import VisualizerCanvas from "./VisualizerCanvas"
 import { StarRating } from "./shared/StarRating"
+import { useContextMenu } from "../hooks/useContextMenu"
+import { useContextMenuStore } from "../stores/contextMenuStore"
+import { useTrackDrag } from "../hooks/useTrackDrag"
 import VisualizerFullscreen from "./VisualizerFullscreen"
 import SquigglyVolumeSlider from "./SquigglyVolumeSlider"
 import { useSleepTimerStore } from "../stores/sleepTimerStore"
@@ -258,6 +261,10 @@ function RadioPlayerBar() {
 export function Player() {
   useEasterEggs()
   const vinylSpin = useEasterEggStore(s => s.vinylSpin)
+  const { handler: ctxMenu } = useContextMenu()
+  const showContextMenu = useContextMenuStore(s => s.show)
+  const trackDrag = useTrackDrag()
+  const threeDotRef = useRef<HTMLButtonElement>(null)
   const volumeSliderRef = useRef<HTMLDivElement>(null)
   const volumeTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [seekHoverPct, setSeekHoverPct] = useState<number | null>(null)
@@ -560,11 +567,15 @@ export function Player() {
 
             {/* Left: current track info */}
             <div
-              className="min-w-[11.25rem] transition-all duration-300"
+              className="group/left min-w-[11.25rem] transition-all duration-300"
               style={isArtExpanded && thumbUrl
                 ? { width: `calc(30% + ${sidebarWidth - 80}px)`, paddingLeft: sidebarWidth }
                 : { width: "30%" }
               }
+              onContextMenu={currentTrack ? ctxMenu("track", currentTrack) : undefined}
+              onPointerDown={currentTrack ? (e: React.PointerEvent) => trackDrag.onPointerDown(e, { type: "track", ids: [currentTrack.id], label: currentTrack.title, tracks: [currentTrack] }) : undefined}
+              onPointerMove={currentTrack ? trackDrag.onPointerMove : undefined}
+              onPointerUp={currentTrack ? trackDrag.onPointerUp : undefined}
             >
               <div className="flex items-center">
                 <div className="mr-3 flex items-center">
@@ -650,6 +661,20 @@ export function Player() {
                             size={11}
                           />
                         </div>
+                        <button
+                          ref={threeDotRef}
+                          onClick={e => {
+                            e.stopPropagation()
+                            const rect = threeDotRef.current?.getBoundingClientRect()
+                            if (rect) showContextMenu(rect.left, rect.bottom + 4, "track", currentTrack)
+                          }}
+                          className="flex-shrink-0 flex h-5 w-5 items-center justify-center rounded text-white/30 hover:text-white/70 transition-colors opacity-0 group-hover/left:opacity-100"
+                          title="More options"
+                        >
+                          <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                            <circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/>
+                          </svg>
+                        </button>
                       </div>
                     )}
                   </div>

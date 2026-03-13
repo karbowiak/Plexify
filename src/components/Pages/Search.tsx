@@ -9,6 +9,7 @@ import { PriorityMediaCard } from "../PriorityMediaCard"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import { usePlayerStore } from "../../stores/playerStore"
 import { useContextMenu } from "../../hooks/useContextMenu"
+import { makeDragPayload } from "./Home"
 
 type MediaType = "artist" | "album" | "track" | "playlist"
 
@@ -145,6 +146,7 @@ export function Search() {
                         onClick={onClick}
                         prefetch={prefetch}
                         onContextMenu={onContextMenu}
+                        dragPayload={makeDragPayload(item)}
                         artistName={"artistName" in info ? info.artistName : undefined}
                         albumName={"albumName" in info ? info.albumName : undefined}
                       />

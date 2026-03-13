@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useResizable } from "../hooks/useResizable"
 import {
   DndContext,
@@ -19,6 +19,10 @@ import { usePlayerStore } from "../stores"
 import { formatMs } from "../lib/formatters"
 import { useUIStore } from "../stores/uiStore"
 import { isDjGenerated, isRadioGenerated } from "../stores/playerStore"
+import { useDragStore } from "../stores/dragStore"
+import type { DragPayload } from "../stores/dragStore"
+import { useProviderStore } from "../stores/providerStore"
+import type { MusicTrack } from "../types/music"
 import { LyricsContent } from "./LyricsPanel"
 
 
@@ -263,6 +267,36 @@ export function QueuePanel() {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   )
 
+  const addToQueue = usePlayerStore(s => s.addToQueue)
+  const provider = useProviderStore(s => s.provider)
+  const isHoveredDrop = useDragStore(s => s.isDragging && s.hoveredQueue)
+  const [dropFlash, setDropFlash] = useState(false)
+
+  // Listen for media drops onto queue (tracks, albums, artists)
+  useEffect(() => {
+    async function onQueueDrop(e: Event) {
+      const { payload, targetQueue } = (e as CustomEvent).detail as { payload: DragPayload; targetQueue: boolean }
+      if (!targetQueue) return
+
+      let tracks: MusicTrack[] | undefined
+      if (payload.type === "track") {
+        tracks = payload.tracks
+      } else if (payload.type === "album" && provider) {
+        tracks = await provider.getAlbumTracks(payload.ids[0])
+      } else if (payload.type === "artist" && provider) {
+        tracks = await provider.getArtistPopularTracks(payload.ids[0])
+      }
+
+      if (tracks?.length) {
+        addToQueue(tracks)
+        setDropFlash(true)
+        setTimeout(() => setDropFlash(false), 1000)
+      }
+    }
+    window.addEventListener("plexify-media-drop", onQueueDrop)
+    return () => window.removeEventListener("plexify-media-drop", onQueueDrop)
+  }, [addToQueue, provider])
+
   const nowPlayingRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to Now Playing when the panel opens
@@ -451,7 +485,8 @@ export function QueuePanel() {
         style={{ width: isQueueOpen ? queueWidth : 0 }}
       >
         <div
-          className="relative flex h-full flex-col bg-app-bg border-l border-[var(--border)]"
+          data-queue-drop-target
+          className={`relative flex h-full flex-col bg-app-bg border-l border-[var(--border)] transition-shadow duration-200 ${isHoveredDrop ? "ring-2 ring-inset ring-accent/60" : ""} ${dropFlash ? "ring-2 ring-inset ring-green-500/60" : ""}`}
           style={{ width: queueWidth, minWidth: queueWidth }}
         >
           <div
@@ -475,9 +510,10 @@ export function QueuePanel() {
         />
       )}
       <div
-        className={`fixed right-0 top-0 bottom-24 z-50 w-80 flex flex-col bg-app-bg border-l border-[var(--border)] shadow-2xl rounded-l-2xl overflow-hidden transition-transform duration-300 ease-in-out ${
+        data-queue-drop-target
+        className={`fixed right-0 top-0 bottom-24 z-50 w-80 flex flex-col bg-app-bg border-l border-[var(--border)] shadow-2xl rounded-l-2xl overflow-hidden transition-[transform,box-shadow] duration-300 ease-in-out ${
           isQueueOpen ? "translate-x-0" : "translate-x-full"
-        }`}
+        } ${isHoveredDrop ? "ring-2 ring-inset ring-accent/60" : ""} ${dropFlash ? "ring-2 ring-inset ring-green-500/60" : ""}`}
       >
         {header}
         {list}

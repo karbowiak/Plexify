@@ -93,8 +93,10 @@ export interface MusicProvider {
   getPlaylistItems(playlistId: string, offset?: number, limit?: number): Promise<PagedResult<MusicTrack>>
   createPlaylist(title: string, itemIds: string[]): Promise<MusicPlaylist>
   addToPlaylist(playlistId: string, itemIds: string[]): Promise<void>
+  removeFromPlaylist(playlistId: string, playlistItemIds: string[]): Promise<void>
   deletePlaylist(playlistId: string): Promise<void>
   editPlaylist(playlistId: string, title?: string, summary?: string): Promise<void>
+  movePlaylistItem(playlistId: string, itemId: string, afterItemId: string): Promise<void>
 
   // --- Liked ---
   getLikedTracks(limit?: number): Promise<MusicTrack[]>

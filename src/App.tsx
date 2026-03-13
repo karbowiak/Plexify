@@ -11,6 +11,7 @@ import LyricsPanel from "./components/LyricsPanel"
 import { UpdateDialog } from "./components/UpdateDialog"
 import { ContextMenu } from "./components/ContextMenu"
 import { DebugPanel } from "./components/DebugPanel"
+import { DragOverlay } from "./components/DragOverlay"
 import { HotkeyHelpModal } from "./components/HotkeyHelpModal"
 import { useDebugPanelStore } from "./stores/debugPanelStore"
 import { createAppMenu } from "./lib/appMenu"
@@ -127,6 +128,7 @@ function App() {
       {hotkeyHelpOpen && <HotkeyHelpModal onClose={() => setHotkeyHelpOpen(false)} />}
       {debugPanelOpen && <DebugPanel />}
       <LiveAnnouncer />
+      <DragOverlay />
     </div>
   )
 }

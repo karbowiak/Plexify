@@ -25,6 +25,7 @@ import { StarRating } from "../shared/StarRating"
 import { useDebugStore } from "../../stores/debugStore"
 import { useDebugPanelStore } from "../../stores/debugPanelStore"
 import { useCapability } from "../../hooks/useCapability"
+import { useTrackDrag } from "../../hooks/useTrackDrag"
 
 
 function dedupe<T extends { id: string }>(items: T[]): T[] {
@@ -76,6 +77,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
   const provider = useProviderStore(s => s.provider)
   const { playTrack, playFromUri, playRadio, addToQueue, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playFromUri: s.playFromUri, playRadio: s.playRadio, addToQueue: s.addToQueue, currentTrack: s.currentTrack })))
   const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
+  const trackDrag = useTrackDrag()
   const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
   const shouldDedup = useUIStore(s => s.deduplicateAlbums)
   const hasRadio = useCapability("radio")
@@ -576,6 +578,9 @@ export function ArtistPage({ artistId }: { artistId: string }) {
                     onMouseEnter={() => prefetchTrackAudio(track)}
                     onContextMenu={ctxMenu("track", track)}
                     className={`group flex cursor-pointer items-center gap-3 rounded-md px-3 py-1.5 ${isActive || isContextTarget ? "bg-hl-menu" : "hover:bg-hl-menu"}`}
+                    onPointerDown={e => trackDrag.onPointerDown(e, { type: "track", ids: [track.id], label: track.title, tracks: [track] })}
+                    onPointerMove={trackDrag.onPointerMove}
+                    onPointerUp={trackDrag.onPointerUp}
                   >
                     {isActive ? (
                       <>
@@ -672,6 +677,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
                   if (uri) void playFromUri(uri, false, album.title, `/album/${album.id}`)
                 }}
                 onContextMenu={ctxMenu("album", album)}
+                dragPayload={{ type: "album", ids: [album.id], label: album.title }}
                 scrollItem
               />
             ))}
@@ -693,6 +699,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
                   if (uri) void playFromUri(uri, false, album.title, `/album/${album.id}`)
                 }}
                 onContextMenu={ctxMenu("album", album)}
+                dragPayload={{ type: "album", ids: [album.id], label: album.title }}
                 scrollItem
               />
             ))}
@@ -721,6 +728,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
                     if (uri) void playFromUri(uri, false, a.title, `/album/${a.id}`)
                   }}
                   onContextMenu={ctxMenu("album", a)}
+                  dragPayload={{ type: "album", ids: [a.id], label: a.title }}
                   scrollItem
                 />
               ))}
@@ -743,6 +751,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
                   if (uri) void playFromUri(uri, false, a.title, `/artist/${a.id}`)
                 }}
                 onContextMenu={ctxMenu("artist", a)}
+                dragPayload={{ type: "artist", ids: [a.id], label: a.title }}
                 isArtist
                 scrollItem
               />
@@ -768,6 +777,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
                     if (uri) void playFromUri(uri, false, a.title, `/artist/${a.id}`)
                   }}
                   onContextMenu={ctxMenu("artist", a)}
+                  dragPayload={{ type: "artist", ids: [a.id], label: a.title }}
                   isArtist
                   scrollItem
                 />

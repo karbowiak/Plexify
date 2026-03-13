@@ -8,7 +8,7 @@ type ContextMenuData = MusicTrack | MusicAlbum | MusicArtist | MusicPlaylist
  * Unified hook for context menu integration.
  *
  * Returns:
- * - `handler(type, data)` — builds an `onContextMenu` React handler
+ * - `handler(type, data, playlistId?)` — builds an `onContextMenu` React handler
  * - `isTarget(id)` — true if this id's row should be highlighted
  */
 export function useContextMenu() {
@@ -17,11 +17,11 @@ export function useContextMenu() {
   const targetId = useContextMenuStore(s => (s.data as any)?.id ?? null)
 
   const handler = useCallback(
-    (type: ContextMenuType, data: ContextMenuData) =>
+    (type: ContextMenuType, data: ContextMenuData, playlistId?: string | null) =>
       (e: React.MouseEvent) => {
         e.preventDefault()
         e.stopPropagation()
-        show(e.clientX, e.clientY, type, data)
+        show(e.clientX, e.clientY, type, data, playlistId)
       },
     [show],
   )

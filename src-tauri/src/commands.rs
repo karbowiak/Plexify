@@ -483,6 +483,33 @@ pub async fn add_items_to_playlist(
         .map_err(|e| format!("{:#}", e))
 }
 
+/// Remove items from a playlist by their playlist-specific item IDs.
+#[tauri::command]
+pub async fn remove_items_from_playlist(
+    playlist_id: i64,
+    playlist_item_ids: Vec<i64>,
+    state: State<'_, PlexState>,
+) -> Result<(), String> {
+    let c = client!(state);
+    c.remove_items(playlist_id, &playlist_item_ids)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Move an item within a playlist (reorder).
+#[tauri::command]
+pub async fn move_playlist_item(
+    playlist_id: i64,
+    item_id: i64,
+    after_item_id: i64,
+    state: State<'_, PlexState>,
+) -> Result<(), String> {
+    let c = client!(state);
+    c.move_item(playlist_id, item_id, after_item_id)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
 /// Delete a playlist.
 #[tauri::command]
 pub async fn delete_playlist(

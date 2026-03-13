@@ -11,7 +11,9 @@ interface ContextMenuState {
   y: number
   type: ContextMenuType | null
   data: ContextMenuData | null
-  show: (x: number, y: number, type: ContextMenuType, data: ContextMenuData) => void
+  /** When non-null, the context menu was opened from within a playlist view */
+  playlistId: string | null
+  show: (x: number, y: number, type: ContextMenuType, data: ContextMenuData, playlistId?: string | null) => void
   close: () => void
 }
 
@@ -21,7 +23,8 @@ export const useContextMenuStore = create<ContextMenuState>((set) => ({
   y: 0,
   type: null,
   data: null,
+  playlistId: null,
 
-  show: (x, y, type, data) => set({ open: true, x, y, type, data }),
+  show: (x, y, type, data, playlistId) => set({ open: true, x, y, type, data, playlistId: playlistId ?? null }),
   close: () => set({ open: false }),
 }))

@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react"
 import { useLibraryStore } from "../../stores"
 import { useUIStore } from "../../stores/uiStore"
 import { MediaCard } from "../MediaCard"
+import type { MusicTrack } from "../../types/music"
 import { ScrollRow } from "../ScrollRow"
 
 export function Library() {
@@ -56,6 +57,7 @@ export function Library() {
               desc={track.artistName}
               thumb={track.thumbUrl}
               href={track.albumId ? `/album/${track.albumId}` : undefined}
+              dragPayload={{ type: "track", ids: [track.id], label: track.title, tracks: [track as MusicTrack] }}
               scrollItem
             />
           ))}
@@ -71,6 +73,7 @@ export function Library() {
               desc={album.artistName ?? ""}
               thumb={album.thumbUrl}
               href={`/album/${album.id}`}
+              dragPayload={{ type: "album", ids: [album.id], label: album.title }}
               scrollItem
             />
           ))}
@@ -87,6 +90,7 @@ export function Library() {
               thumb={artist.thumbUrl}
               isArtist
               href={`/artist/${artist.id}`}
+              dragPayload={{ type: "artist", ids: [artist.id], label: artist.title }}
               scrollItem
             />
           ))}

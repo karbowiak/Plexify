@@ -135,6 +135,7 @@ export function TagPage({ tagType, tagName }: { tagType: TagType; tagName: strin
               thumb={album.thumbUrl}
               href={`/album/${album.id}`}
               prefetch={() => prefetchAlbum(album.id)}
+              dragPayload={{ type: "album", ids: [album.id], label: album.title }}
             />
           ))}
         </MediaGrid>

@@ -101,6 +101,7 @@ export function plexTrackToMusicTrack(t: Track, img: ImgResolver): MusicTrack {
       audioStreamId: stream?.id ?? null,
       hasAudioStream: !!part?.key,
     },
+    playlistItemId: t.playlist_item_id != null ? String(t.playlist_item_id) : null,
     _providerData: t,
   }
 }

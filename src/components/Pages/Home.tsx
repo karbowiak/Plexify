@@ -6,6 +6,7 @@ import { useProviderStore } from "../../stores/providerStore"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import type { MusicItem, MusicPlaylist, MusicTrack } from "../../types/music"
 import type { MusicProvider } from "../../providers/types"
+import type { DragPayload } from "../../stores/dragStore"
 import { useContextMenu } from "../../hooks/useContextMenu"
 import { makeOnPlay } from "../../lib/mediaPlay"
 import { ScrollRow } from "../ScrollRow"
@@ -108,6 +109,20 @@ export function getMediaInfo(item: MusicItem, opts?: { showYear?: boolean }) {
       }
     default:
       return null
+  }
+}
+
+/** Build a drag payload for any media item (track, album, artist). */
+export function makeDragPayload(item: MusicItem): DragPayload | undefined {
+  switch (item.type) {
+    case "track":
+      return { type: "track", ids: [item.id], label: item.title, tracks: [item as MusicTrack] }
+    case "album":
+      return { type: "album", ids: [item.id], label: item.title }
+    case "artist":
+      return { type: "artist", ids: [item.id], label: item.title }
+    default:
+      return undefined
   }
 }
 
@@ -285,6 +300,7 @@ export function Home() {
                 prefetch={makePrefetch(info)}
                 onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, provider })}
                 onContextMenu={makeOnContextMenu(item)}
+                dragPayload={makeDragPayload(item)}
                 artistName={"artistName" in info ? info.artistName : undefined}
                 albumName={"albumName" in info ? info.albumName : undefined}
                 scrollItem
@@ -370,6 +386,7 @@ export function Home() {
                     prefetch={makePrefetch(info)}
                     onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, provider })}
                     onContextMenu={makeOnContextMenu(item)}
+                    dragPayload={makeDragPayload(item)}
                     scrollItem
                     large
                   />
@@ -415,6 +432,7 @@ export function Home() {
                   prefetch={makePrefetch(info)}
                   onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, provider })}
                   onContextMenu={makeOnContextMenu(item)}
+                  dragPayload={makeDragPayload(item)}
                   artistName={"artistName" in info ? info.artistName : undefined}
                   albumName={"albumName" in info ? info.albumName : undefined}
                   scrollItem
