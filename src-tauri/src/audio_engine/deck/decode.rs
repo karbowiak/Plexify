@@ -6,13 +6,31 @@
 //!   that fills as HTTP chunks arrive. Playback starts after the first batch.
 
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{self, CodecRegistry, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use tracing::{debug, warn};
+
+/// Custom codec registry with all symphonia built-in codecs plus external adapters
+/// for Opus (libopus) and AAC (Fraunhofer FDK AAC with HE-AAC support).
+static CODEC_REGISTRY: Lazy<CodecRegistry> = Lazy::new(|| {
+    let mut registry = CodecRegistry::new();
+    // Register symphonia's built-in codecs
+    symphonia::default::register_enabled_codecs(&mut registry);
+    // Register external adapters
+    registry.register_all::<symphonia_adapter_libopus::OpusDecoder>();
+    registry.register_all::<symphonia_adapter_fdk_aac::AacDecoder>();
+    registry
+});
+
+/// Access the custom codec registry (includes Opus + FDK-AAC adapters).
+pub fn codec_registry() -> &'static CodecRegistry {
+    &CODEC_REGISTRY
+}
 
 use super::streaming::StreamingReader;
 
@@ -80,13 +98,15 @@ pub fn probe_from_source(mss: MediaSourceStream, ext: Option<&str>) -> Result<De
     let duration_samples = track.codec_params.n_frames;
     let track_id = track.id;
 
-    let decoder = symphonia::default::get_codecs()
+    let decoder = CODEC_REGISTRY
         .make(&track.codec_params, &DecoderOptions::default())
         .context("failed to create decoder")?;
 
+    let codec_name = codec_type_name(track.codec_params.codec);
     debug!(
         sample_rate,
         channels,
+        codec = codec_name,
         duration_samples = duration_samples.unwrap_or(0),
         "audio probed"
     );
@@ -187,6 +207,21 @@ pub fn decode_all(setup: &mut DecoderSetup) -> Result<Vec<f32>> {
     );
 
     Ok(all_samples)
+}
+
+/// Human-readable name for a symphonia codec type.
+fn codec_type_name(ct: codecs::CodecType) -> &'static str {
+    match ct {
+        codecs::CODEC_TYPE_FLAC => "FLAC",
+        codecs::CODEC_TYPE_MP3 => "MP3",
+        codecs::CODEC_TYPE_MP2 => "MP2",
+        codecs::CODEC_TYPE_MP1 => "MP1",
+        codecs::CODEC_TYPE_AAC => "AAC",
+        codecs::CODEC_TYPE_OPUS => "Opus",
+        codecs::CODEC_TYPE_VORBIS => "Vorbis",
+        codecs::CODEC_TYPE_ALAC => "ALAC",
+        _ => "other",
+    }
 }
 
 #[cfg(test)]

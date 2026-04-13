@@ -59,6 +59,10 @@ struct CacheEntry {
     filename: String,
     size_bytes: u64,
     last_accessed: u64,
+    /// Computed EBU R128 gain in dB (for tracks where Plex lacks loudness data, e.g. Opus).
+    /// None = not yet analyzed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    computed_gain_db: Option<f32>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -140,6 +144,22 @@ impl AudioCache {
         Some(path)
     }
 
+    /// Get the computed loudness gain for a cached track (if analyzed).
+    pub fn get_computed_gain(&self, rating_key: i64) -> Option<f32> {
+        let idx = self.index.lock().ok()?;
+        idx.entries.get(&rating_key)?.computed_gain_db
+    }
+
+    /// Store a computed loudness gain for a cached track.
+    pub fn set_computed_gain(&self, rating_key: i64, gain_db: f32) {
+        if let Ok(mut idx) = self.index.lock() {
+            if let Some(entry) = idx.entries.get_mut(&rating_key) {
+                entry.computed_gain_db = Some(gain_db);
+                idx.save(&self.index_path());
+            }
+        }
+    }
+
     /// Begin writing a new cache file. Returns a `CacheWriter` that receives
     /// chunks and must be finished (or aborted) when done.
     pub fn begin_write(&self, rating_key: i64, ext: &str) -> Result<CacheWriter, String> {
@@ -214,6 +234,7 @@ impl AudioCache {
                     filename,
                     size_bytes,
                     last_accessed: now_secs(),
+                    computed_gain_db: None,
                 },
             );
             idx.total_bytes += size_bytes;

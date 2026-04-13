@@ -62,8 +62,16 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # Cross-platform audio device enumeration & playback
 cpal = "0.15"
 
-# Audio decoding (all common formats: FLAC, MP3, AAC, ALAC, Vorbis, WAV, PCM)
-symphonia = { version = "0.5", features = ["all"] }
+# Audio decoding — native AAC excluded (fdk-aac adapter replaces it with HE-AAC support)
+symphonia = { version = "0.5", default-features = false, features = [
+    "adpcm", "alac", "flac", "mp1", "mp2", "mp3", "pcm", "vorbis",  # codecs (no "aac")
+    "caf", "isomp4", "mkv", "ogg", "aiff", "wav",                    # formats
+] }
+symphonia-adapter-libopus = "0.2"
+symphonia-adapter-fdk-aac = "0.1"
+
+# EBU R128 loudness analysis (for Opus tracks where Plex lacks proper loudness data)
+ebur128 = "0.1"
 
 # Lock-free SPSC ring buffer (decode thread → audio thread)
 ringbuf = "0.4"

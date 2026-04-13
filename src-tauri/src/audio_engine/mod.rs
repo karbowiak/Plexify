@@ -12,6 +12,7 @@
 pub mod bridge;
 pub mod cache;
 pub mod callback;
+pub mod loudness;
 pub mod command;
 pub mod crossfade;
 pub mod deck;
@@ -510,8 +511,10 @@ fn handle_play(
             let source_channels = result.source_channels;
             let has_more = result.has_more;
 
+            // Resolve gain: Plex metadata → cached analysis → fresh EBU R128 analysis
+            let gain_db = resolve_gain_db(meta, url, cache);
             let norm_gain = if norm_enabled {
-                meta.gain_db.map_or(1.0, |db| 10.0_f32.powf(db / 20.0))
+                gain_db.map_or(1.0, |db| 10.0_f32.powf(db / 20.0))
             } else {
                 1.0
             };
@@ -603,8 +606,9 @@ fn handle_preload(
             let source_channels = result.source_channels;
             let has_more = result.has_more;
 
+            let gain_db = resolve_gain_db(meta, url, cache);
             let norm_gain = if norm_enabled {
-                meta.gain_db.map_or(1.0, |db| 10.0_f32.powf(db / 20.0))
+                gain_db.map_or(1.0, |db| 10.0_f32.powf(db / 20.0))
             } else {
                 1.0
             };
@@ -1032,4 +1036,45 @@ fn cache_ramps(meta: &TrackMeta, audio_cmd_tx: &Sender<AudioCommand>) {
             },
         });
     }
+}
+
+/// Resolve the normalization gain for a track.
+///
+/// Priority:
+/// 1. Plex-provided gain_db (most tracks)
+/// 2. Cached computed gain from previous EBU R128 analysis
+/// 3. Fresh EBU R128 analysis (for Opus/other tracks where Plex lacks loudness data)
+///    — blocks until analysis completes, result is cached for next time
+fn resolve_gain_db(
+    meta: &TrackMeta,
+    url: &str,
+    cache: &Arc<AudioCache>,
+) -> Option<f32> {
+    // 1. Plex-provided gain
+    if let Some(db) = meta.gain_db {
+        return Some(db);
+    }
+
+    // 2. Previously computed gain from cache
+    if let Some(db) = cache.get_computed_gain(meta.rating_key) {
+        debug!(rating_key = meta.rating_key, gain_db = format!("{:.1}", db), "using cached computed gain");
+        return Some(db);
+    }
+
+    // 3. Compute gain for cached files that lack Plex loudness data
+    let ext = cache::extract_extension(url);
+    if let Some(cached_path) = cache.lookup(meta.rating_key) {
+        debug!(rating_key = meta.rating_key, "running loudness analysis (no Plex gain data)");
+        match loudness::analyze_loudness(&cached_path, &ext) {
+            Ok(gain_db) => {
+                cache.set_computed_gain(meta.rating_key, gain_db);
+                return Some(gain_db);
+            }
+            Err(e) => {
+                warn!(rating_key = meta.rating_key, error = %e, "loudness analysis failed");
+            }
+        }
+    }
+
+    None
 }

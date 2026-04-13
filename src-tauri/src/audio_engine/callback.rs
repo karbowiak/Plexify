@@ -154,11 +154,14 @@ impl AudioCallbackState {
     // -----------------------------------------------------------------------
 
     pub fn process_callback(&mut self, data: &mut [f32]) {
-        // 1. Drain decoded samples into deck buffers (lock-free)
-        self.drain_sample_batches();
-
-        // 2. Process commands (lock-free)
+        // 1. Process commands first (lock-free)
+        //    LoadDeck must be processed before draining samples so the deck
+        //    knows its rating_key and generation — otherwise initial batches
+        //    that arrive in the same callback tick are rejected as stale.
         self.process_commands();
+
+        // 2. Drain decoded samples into deck buffers (lock-free)
+        self.drain_sample_batches();
 
         // 3. Check buffering → playing resume
         self.check_buffering_resume();
