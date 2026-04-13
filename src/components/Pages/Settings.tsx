@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, useMemo } from "react"
 import { useLocation } from "wouter"
 import { open } from "@tauri-apps/plugin-shell"
 import clsx from "clsx"
-// Audio cache and device APIs removed — Web Audio engine uses browser-managed resources
 import { clearImageCache, getImageCacheInfo, type ImageCacheInfo } from "../../lib/imageCache"
+import { engine } from "../../audio/RustAudioEngine"
 import { getVersion } from "@tauri-apps/api/app"
 import { useAudioSettingsStore } from "../../stores/audioSettingsStore"
 import { useUpdateStore } from "../../stores/updateStore"
@@ -38,7 +38,7 @@ import { clearMetadataCache, getMetadataCacheStats } from "../../stores/metadata
 
 type Section =
   | "plex" | "metadata" | `metadata/${string}`
-  | "playback" | "appearance" | "cache" | "general" | "about" | "eastereggs"
+  | "appearance" | "cache" | "general" | "about" | "eastereggs"
 
 const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
   {
@@ -56,15 +56,6 @@ const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
     icon: (
       <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
         <path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" />
-      </svg>
-    ),
-  },
-  {
-    id: "playback",
-    label: "Playback",
-    icon: (
-      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
       </svg>
     ),
   },
@@ -241,126 +232,8 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
 }
 
-const PREAMP_OPTIONS = [3, 0, -3, -6, -9, -12] as const
-const MIXRAMP_DB_OPTIONS = [-7, -10, -14, -17, -21, -25] as const
-const CROSSFADE_OPTIONS = [
-  { label: "Off",  ms: 0 },
-  { label: "2s",   ms: 2000 },
-  { label: "4s",   ms: 4000 },
-  { label: "6s",   ms: 6000 },
-  { label: "8s",   ms: 8000 },
-  { label: "10s",  ms: 10000 },
-] as const
-const SMART_CROSSFADE_MAX_OPTIONS = [
-  { label: "5s",   ms: 5000 },
-  { label: "10s",  ms: 10000 },
-  { label: "15s",  ms: 15000 },
-  { label: "20s",  ms: 20000 },
-  { label: "25s",  ms: 25000 },
-  { label: "30s",  ms: 30000 },
-] as const
-
-function PlaybackSection() {
-  const {
-    normalizationEnabled, setNormalizationEnabled,
-    crossfadeWindowMs, setCrossfadeWindowMs,
-    sameAlbumCrossfade, setSameAlbumCrossfade,
-    smartCrossfade, setSmartCrossfade,
-    smartCrossfadeMaxMs, setSmartCrossfadeMaxMs,
-    mixrampDb, setMixrampDb,
-    preampDb, setPreampDb,
-    albumGainMode, setAlbumGainMode,
-  } = useAudioSettingsStore()
-
-  return (
-    <div className="flex flex-col gap-5 max-w-2xl">
-
-      {/* Audio Processing */}
-      <SettingCard title="Audio Processing">
-        <div className="flex flex-col gap-5">
-          <SettingRow label="Normalization" description="Volume-levels tracks using ReplayGain data so loud and quiet tracks play at a consistent loudness." inline>
-            <Toggle value={normalizationEnabled} onChange={setNormalizationEnabled} />
-          </SettingRow>
-
-          <SettingRow label="ReplayGain Mode" description="Track mode normalises each track independently. Album mode preserves intended loudness differences between tracks on the same album.">
-            <PillGroup
-              options={[false, true] as const}
-              value={albumGainMode}
-              onChange={setAlbumGainMode}
-              getLabel={v => v ? "Album" : "Track"}
-            />
-          </SettingRow>
-
-          <SettingRow label="Pre-amp" description="Adjust the output level before the EQ. Lower this if heavy EQ boosts cause clipping.">
-            <PillGroup
-              options={PREAMP_OPTIONS}
-              value={preampDb}
-              onChange={setPreampDb}
-              getLabel={db => `${db > 0 ? `+${db}` : db} dB`}
-            />
-          </SettingRow>
-        </div>
-      </SettingCard>
-
-      {/* Crossfade */}
-      <SettingCard title="Crossfade">
-        <div className="flex flex-col gap-5">
-          <SettingRow label="Duration">
-            <PillGroup
-              options={CROSSFADE_OPTIONS}
-              value={CROSSFADE_OPTIONS.find(o => o.ms === crossfadeWindowMs) ?? CROSSFADE_OPTIONS[0]}
-              onChange={opt => setCrossfadeWindowMs(opt.ms)}
-              getLabel={opt => opt.label}
-              isActive={(opt, val) => opt.ms === val.ms}
-            />
-          </SettingRow>
-
-          <SettingRow label="Same-album tracks" description="Suppressing crossfade preserves gapless playback for live albums and classical works.">
-            <PillGroup
-              options={[false, true] as const}
-              value={sameAlbumCrossfade}
-              onChange={setSameAlbumCrossfade}
-              getLabel={v => v ? "Allow" : "Suppress"}
-            />
-          </SettingRow>
-        </div>
-      </SettingCard>
-
-      {/* Smart Crossfade (Sweet Fades) */}
-      <SettingCard title="Smart Crossfade">
-        <div className="flex flex-col gap-5">
-          <SettingRow label="Enabled" description="Uses MixRamp to overlap tracks at naturally quiet moments — no artificial volume dipping. Falls back to equal-power crossfade when ramp data is unavailable." inline>
-            <Toggle value={smartCrossfade} onChange={setSmartCrossfade} />
-          </SettingRow>
-
-          {smartCrossfade && (
-            <>
-              <SettingRow label="Fallback duration" description="Maximum crossfade duration when MixRamp data is unavailable or the threshold isn't reached.">
-                <PillGroup
-                  options={SMART_CROSSFADE_MAX_OPTIONS}
-                  value={SMART_CROSSFADE_MAX_OPTIONS.find(o => o.ms === smartCrossfadeMaxMs) ?? SMART_CROSSFADE_MAX_OPTIONS[3]}
-                  onChange={opt => setSmartCrossfadeMaxMs(opt.ms)}
-                  getLabel={opt => opt.label}
-                  isActive={(opt, val) => opt.ms === val.ms}
-                />
-              </SettingRow>
-
-              <SettingRow label="Overlap threshold" description="Where tracks overlap during transitions. Lower values create longer, more gradual overlaps. Higher values create tighter, shorter transitions.">
-                <PillGroup
-                  options={MIXRAMP_DB_OPTIONS}
-                  value={mixrampDb}
-                  onChange={setMixrampDb}
-                  getLabel={db => `${db} dB`}
-                />
-              </SettingRow>
-            </>
-          )}
-        </div>
-      </SettingCard>
-
-    </div>
-  )
-}
+// Playback section removed — crossfade is always-on with smart defaults,
+// normalization defaults to track mode +3dB, controllable via EQ panel.
 
 // ---------------------------------------------------------------------------
 // Appearance section (was Experience)
@@ -818,12 +691,27 @@ function VisualizerColorsCard() {
 // Cache section
 // ---------------------------------------------------------------------------
 
+const CACHE_SIZE_OPTIONS = [
+  { label: "1 GB", bytes: 1 * 1024 * 1024 * 1024 },
+  { label: "2 GB", bytes: 2 * 1024 * 1024 * 1024 },
+  { label: "5 GB", bytes: 5 * 1024 * 1024 * 1024 },
+  { label: "10 GB", bytes: 10 * 1024 * 1024 * 1024 },
+  { label: "20 GB", bytes: 20 * 1024 * 1024 * 1024 },
+  { label: "50 GB", bytes: 50 * 1024 * 1024 * 1024 },
+  { label: "Unlimited", bytes: 0 },
+]
+
 function CacheSection() {
   const [imgCacheInfo, setImgCacheInfo] = useState<ImageCacheInfo | null>(null)
   const [imgClearing, setImgClearing] = useState(false)
   const [libClearing, setLibClearing] = useState(false)
   const [metaClearing, setMetaClearing] = useState(false)
+  const [audioCacheStats, setAudioCacheStats] = useState<{ total_bytes: number; file_count: number; max_bytes: number } | null>(null)
+  const [audioCacheClearing, setAudioCacheClearing] = useState(false)
   const [, forceUpdate] = useState(0)
+
+  const cacheMaxBytes = useAudioSettingsStore(s => s.cacheMaxBytes)
+  const setCacheMaxBytes = useAudioSettingsStore(s => s.setCacheMaxBytes)
 
   const libStore = useLibraryStore.getState()
   const playlistCount = libStore.playlists.length
@@ -836,6 +724,7 @@ function CacheSection() {
 
   useEffect(() => {
     void getImageCacheInfo().then(setImgCacheInfo).catch(() => {})
+    void engine.getCacheStats().then(setAudioCacheStats).catch(() => {})
   }, [])
 
   async function handleClearImages() {
@@ -861,8 +750,56 @@ function CacheSection() {
     setTimeout(() => { setMetaClearing(false); forceUpdate(n => n + 1) }, 300)
   }
 
+  async function handleClearAudioCache() {
+    setAudioCacheClearing(true)
+    try {
+      engine.clearCache()
+      // Give Rust a moment to process, then refresh stats
+      await new Promise(r => setTimeout(r, 200))
+      const stats = await engine.getCacheStats()
+      setAudioCacheStats(stats)
+    } finally {
+      setAudioCacheClearing(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-5 max-w-2xl">
+      {/* Audio Cache */}
+      <SettingCard title="Audio Cache" description="Cached audio files from Plex for instant replay. Tracks are cached as they play.">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-white">Cached Tracks</p>
+            <p className="text-xs text-white/40 mt-0.5">
+              {audioCacheStats
+                ? `${formatBytes(audioCacheStats.total_bytes)} · ${audioCacheStats.file_count} ${audioCacheStats.file_count === 1 ? "track" : "tracks"}`
+                : "Loading..."}
+            </p>
+          </div>
+          <button
+            onClick={() => void handleClearAudioCache()}
+            disabled={audioCacheClearing || (audioCacheStats?.file_count ?? 0) === 0}
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+          >
+            {audioCacheClearing ? "Clearing..." : "Clear"}
+          </button>
+        </div>
+        <div className="flex items-center gap-4 mt-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-white">Max Cache Size</p>
+          </div>
+          <select
+            value={cacheMaxBytes}
+            onChange={e => setCacheMaxBytes(Number(e.target.value))}
+            className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 transition-colors flex-shrink-0"
+          >
+            {CACHE_SIZE_OPTIONS.map(opt => (
+              <option key={opt.bytes} value={opt.bytes}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+      </SettingCard>
+
       {/* Image Cache */}
       <SettingCard title="Image Cache" description="Artwork fetched from Plex and external metadata sources.">
         <div className="flex items-center gap-4">
@@ -1712,7 +1649,6 @@ const EASTER_EGG_NAV = {
 
 export function SettingsPage({ section: sectionProp }: { section?: string }) {
   const [, navigate] = useLocation()
-  const easterEggsUnlocked = useEasterEggStore(s => s.unlocked)
 
   // Map old routes to new ones
   const mappedSection = (() => {
@@ -1730,7 +1666,7 @@ export function SettingsPage({ section: sectionProp }: { section?: string }) {
     navigate(s === "plex" ? "/settings" : `/settings/${s}`)
   }
 
-  const navItems = easterEggsUnlocked ? [...NAV, EASTER_EGG_NAV] : NAV
+  const navItems = [...NAV, EASTER_EGG_NAV]
 
   return (
     <div className="flex h-full">
@@ -1781,7 +1717,6 @@ export function SettingsPage({ section: sectionProp }: { section?: string }) {
         {section.startsWith("metadata/") && (
           <MetadataSubPage backendId={section.slice(9)} goBack={() => setSection("metadata")} />
         )}
-        {section === "playback" && <PlaybackSection />}
         {section === "appearance" && <AppearanceSection />}
         {section === "cache" && <CacheSection />}
         {section === "general" && <GeneralSection />}

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio_devices;
+mod audio_engine;
 mod commands;
 mod db;
 mod deezer;
@@ -257,6 +258,20 @@ pub fn run() {
             // Start audio device change listener (emits audio-device-changed events).
             audio_devices::start_device_listener(app.handle());
 
+            // Start the Rust audio engine (cpal output, symphonia decode, DSP chain).
+            match audio_engine::AudioEngine::start(app.handle().clone()) {
+                Ok(engine) => {
+                    app.manage(audio_engine::bridge::AudioEngineState(
+                        std::sync::Arc::new(engine),
+                    ));
+                }
+                Err(e) => {
+                    tracing::error!("Failed to start audio engine: {}", e);
+                    // Still manage a dummy state so commands don't crash — they'll
+                    // just fail gracefully when trying to send to a dead channel.
+                }
+            }
+
             // Remove the native OS menu bar (redundant on Windows with our custom titlebar).
             app.remove_menu().ok();
 
@@ -375,6 +390,7 @@ pub fn run() {
             commands::get_stream_url,
             commands::get_thumb_url,
             commands::get_audio_transcode_url,
+            commands::fetch_audio_bytes,
             // Server info (Phase 5)
             commands::get_identity,
             commands::get_server_info,
@@ -470,6 +486,30 @@ pub fn run() {
             // Audio device detection
             commands::get_audio_output_device,
             commands::get_audio_output_devices,
+            // Rust audio engine
+            audio_engine::bridge::audio_play,
+            audio_engine::bridge::audio_preload_next,
+            audio_engine::bridge::audio_pause,
+            audio_engine::bridge::audio_resume,
+            audio_engine::bridge::audio_stop,
+            audio_engine::bridge::audio_seek,
+            audio_engine::bridge::audio_set_volume,
+            audio_engine::bridge::audio_set_normalization,
+            audio_engine::bridge::audio_set_preamp_gain,
+            audio_engine::bridge::audio_set_eq,
+            audio_engine::bridge::audio_set_eq_enabled,
+            audio_engine::bridge::audio_set_eq_postgain,
+            audio_engine::bridge::audio_duck_and_apply,
+            audio_engine::bridge::audio_set_crossfade_window,
+            audio_engine::bridge::audio_set_same_album_crossfade,
+            audio_engine::bridge::audio_set_smart_crossfade,
+            audio_engine::bridge::audio_set_smart_crossfade_max,
+            audio_engine::bridge::audio_set_mixramp_db,
+            audio_engine::bridge::audio_set_visualizer_enabled,
+            audio_engine::bridge::audio_get_sample_rate,
+            audio_engine::bridge::audio_set_cache_max_bytes,
+            audio_engine::bridge::audio_clear_cache,
+            audio_engine::bridge::audio_get_cache_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

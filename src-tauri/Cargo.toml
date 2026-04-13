@@ -59,8 +59,17 @@ crossbeam-channel = "0.5"
 # SQLite database
 rusqlite = { version = "0.31", features = ["bundled"] }
 
-# Cross-platform audio device enumeration
+# Cross-platform audio device enumeration & playback
 cpal = "0.15"
+
+# Audio decoding (all common formats: FLAC, MP3, AAC, ALAC, Vorbis, WAV, PCM)
+symphonia = { version = "0.5", features = ["all"] }
+
+# Lock-free SPSC ring buffer (decode thread → audio thread)
+ringbuf = "0.4"
+
+# FFT for visualizer frequency analysis
+realfft = "3.5"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -846,6 +846,26 @@ pub async fn get_audio_transcode_url(
     }
 }
 
+/// Download an audio file's bytes via the Rust HTTP client.
+///
+/// The audio engine uses this instead of `fetch()` from inside WKWebView,
+/// because CFNetwork drops large media transfers with `NSURLErrorNetworkConnectionLost`
+/// (Tauri's WKWebView fetch is unreliable for multi-MB media bodies). Routing
+/// through reqwest also gets the proper Plex headers, retry middleware, and
+/// `accept_invalid_certs` for `*.plex.direct` self-signed certs for free.
+///
+/// Returns raw binary via `tauri::ipc::Response`, which avoids the JSON/base64
+/// IPC serialization overhead and lands as an ArrayBuffer on the JS side.
+#[tauri::command]
+pub async fn fetch_audio_bytes(
+    url: String,
+    state: State<'_, PlexState>,
+) -> Result<tauri::ipc::Response, String> {
+    let c = client!(state);
+    let bytes = c.fetch_bytes(&url).await.map_err(|e| format!("{:#}", e))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 // ---------------------------------------------------------------------------
 // Server info (Phase 5)
 // ---------------------------------------------------------------------------

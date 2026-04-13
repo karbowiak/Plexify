@@ -5,8 +5,7 @@ import { formatMs, formatSize, formatSampleRate } from "../lib/formatters"
 import type { MusicTrack } from "../types/music"
 import { useTrackEnrichment } from "../hooks/useMetadataEnrichment"
 import { useDebugStore } from "../stores/debugStore"
-import { parseRamp, engine } from "../audio/WebAudioEngine"
-import { useAudioSettingsStore } from "../stores/audioSettingsStore"
+import { parseRamp, engine } from "../audio/RustAudioEngine"
 
 
 interface Props {
@@ -23,9 +22,10 @@ export default function TrackInfoPanel({ onClose }: Props) {
     currentTrack?.artistName ?? null,
     currentTrack?.title ?? null,
   )
-  const smartCrossfade = useAudioSettingsStore(s => s.smartCrossfade)
-  const crossfadeWindowMs = useAudioSettingsStore(s => s.crossfadeWindowMs)
-  const mixrampDb = useAudioSettingsStore(s => s.mixrampDb)
+  // Crossfade is always on with smart defaults (MixRamp when available)
+  const smartCrossfade = true
+  const crossfadeWindowMs = 4000
+  const mixrampDb = -17
   const nextTrackShallow = queue[queueIndex + 1] ?? null
 
   // Fetch full metadata to get stream details (bit depth, sample rate, etc.)

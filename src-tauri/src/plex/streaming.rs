@@ -39,10 +39,15 @@ impl PlexClient {
         bitrate: Option<i32>,
         codec: Option<&str>,
     ) -> String {
+        // Percent-encode the part_key — it contains slashes and potentially
+        // other reserved characters that must be encoded as a query-param
+        // value, otherwise Plex returns 400.
+        let encoded_path: String =
+            url::form_urlencoded::byte_serialize(part_key.as_bytes()).collect();
         let mut url = format!(
             "/music/:/transcode/universal/start.mp3\
              ?path={}&X-Plex-Token={}&directPlay=0&directStream=1",
-            part_key, self.token
+            encoded_path, self.token
         );
 
         if let Some(b) = bitrate {
@@ -95,6 +100,10 @@ mod tests {
         assert!(url.contains("transcode"), "URL should include transcode path: {}", url);
         assert!(!url.contains("maxAudioBitrate"), "URL should not include bitrate when not set: {}", url);
         assert!(!url.contains("audioCodec"), "URL should not include codec when not set: {}", url);
+        // part_key must be percent-encoded in the query parameter
+        assert!(url.contains("path=%2Flibrary%2Fparts%2F12345%2F1234567890%2Ffile.flac"),
+            "path should be percent-encoded: {}", url);
+        assert!(!url.contains("path=/library/"), "path must NOT contain raw slashes: {}", url);
     }
 
     #[test]
@@ -103,5 +112,6 @@ mod tests {
         let url = c.audio_transcode_url("/library/parts/12345/1234567890/file.flac", Some(320), Some("mp3"));
         assert!(url.contains("maxAudioBitrate=320"), "URL should include bitrate: {}", url);
         assert!(url.contains("audioCodec=mp3"), "URL should include codec: {}", url);
+        assert!(url.contains("path=%2Flibrary"), "path should be percent-encoded: {}", url);
     }
 }

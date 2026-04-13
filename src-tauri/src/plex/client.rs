@@ -53,6 +53,24 @@ pub struct PlexClient {
     pub client_id: String,
     pub machine_identifier: String,
     pub client: ClientWithMiddleware,
+    /// Separate reqwest client for `fetch_bytes` (audio download path).
+    ///
+    /// Plex closes idle keep-alive connections aggressively, and reqwest's
+    /// pool happily hands those stale sockets out for new requests. For the
+    /// large-body media path we use a dedicated client with **pooling disabled**
+    /// so every download opens a fresh TCP/TLS connection. ~50–100ms handshake
+    /// overhead per fetch, fully reliable.
+    media_client: reqwest::Client,
+    /// Serializes media fetches process-wide. Plex has a bug (at least on the
+    /// versions we've tested against) where two concurrent large-body downloads
+    /// from the same client cause one in-flight transfer to be killed mid-body
+    /// with "end of file before message length reached". The standalone
+    /// integration test `probe_concurrent_two_files` can't reproduce it, but
+    /// it's 100% reproducible inside the Tauri app where the active track
+    /// fetch and preloaded next-track fetch fire back-to-back. Serializing
+    /// trades a bit of preload parallelism for reliability. The lock is
+    /// async-safe so other tokio work runs freely while a fetch holds it.
+    fetch_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl PlexClient {
@@ -106,16 +124,35 @@ impl PlexClient {
             default_headers.insert("X-Plex-Client-Identifier", v);
         }
 
-        // Build HTTP client
+        // Build HTTP client.
+        //
+        // `pool_idle_timeout(3s)` defends against Plex closing idle keep-alive
+        // connections from under us — reqwest's default of 90s is well above
+        // Plex's server-side timeout, which means the pool keeps handing out
+        // dead sockets after even brief idle periods. 3s is short enough to
+        // avoid stale entries while still allowing back-to-back API calls to
+        // reuse a connection.
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(config.max_connections)
+            .pool_idle_timeout(std::time::Duration::from_secs(3))
             // 120s: smart playlists with 100k+ tracks can take a long time to
             // evaluate server-side even with correct pagination params.
             .timeout(std::time::Duration::from_secs(120))
             .danger_accept_invalid_certs(config.accept_invalid_certs)
-            .default_headers(default_headers)
+            .default_headers(default_headers.clone())
             .build()
             .context("Failed to build HTTP client")?;
+
+        // Dedicated client for `fetch_bytes`. No connection pooling at all —
+        // every audio download opens a fresh TCP/TLS connection. See the
+        // `media_client` field doc for the rationale.
+        let media_client = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .timeout(std::time::Duration::from_secs(120))
+            .danger_accept_invalid_certs(config.accept_invalid_certs)
+            .default_headers(default_headers)
+            .build()
+            .context("Failed to build media HTTP client")?;
 
         // Add middleware
         let client = ClientBuilder::new(client)
@@ -128,6 +165,8 @@ impl PlexClient {
             client_id: config.client_id,
             machine_identifier: String::new(),
             client,
+            media_client,
+            fetch_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -420,6 +459,59 @@ impl PlexClient {
 
         Ok(wrapper.container)
     }
+
+    /// Get cloneable handles for streaming audio fetches.
+    ///
+    /// Returns the fetch serialization lock, the no-pool HTTP client, and the
+    /// Plex token. The caller can move these into an async task to hold the lock
+    /// for the duration of a streaming download.
+    pub fn media_fetch_parts(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Mutex<()>>,
+        reqwest::Client,
+        String,
+    ) {
+        (
+            self.fetch_lock.clone(),
+            self.media_client.clone(),
+            self.token.clone(),
+        )
+    }
+
+    /// Fetch the raw response body bytes for a pre-built full URL.
+    ///
+    /// Used by the audio engine to download media files for in-memory decoding.
+    /// Routes through `media_client` (no connection pooling) and serializes
+    /// against any other in-flight `fetch_bytes` call via `fetch_lock`. See the
+    /// field docs for the rationale on both — TL;DR Plex's media endpoint hates
+    /// reused pooled connections AND hates concurrent large-body downloads.
+    #[instrument(skip(self))]
+    pub async fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        debug!("fetch_bytes: {}", url);
+        let _guard = self.fetch_lock.lock().await;
+
+        let response = self
+            .media_client
+            .get(url)
+            .header("X-Plex-Token", &self.token)
+            .send()
+            .await
+            .context("fetch_bytes request failed")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("HTTP {} for URL: {}", status, url));
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .context("fetch_bytes failed reading body")?;
+        debug!("fetch_bytes complete: {} bytes", bytes.len());
+        Ok(bytes.to_vec())
+    }
+
 
     /// Perform a PUT request against a pre-built full URL (no `build_url` call).
     ///

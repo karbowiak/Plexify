@@ -2,13 +2,11 @@ import { create } from "zustand"
 import { persist } from "zustand/middleware"
 
 interface EasterEggState {
-  unlocked: boolean
   rainbow: boolean
   partyMode: boolean
   vinylSpin: boolean
   vaporwave: boolean
 
-  unlock: () => void
   toggleRainbow: () => void
   togglePartyMode: () => void
   toggleVinylSpin: () => void
@@ -18,13 +16,11 @@ interface EasterEggState {
 export const useEasterEggStore = create<EasterEggState>()(
   persist(
     (set) => ({
-      unlocked: false,
       rainbow: false,
       partyMode: false,
       vinylSpin: false,
       vaporwave: false,
 
-      unlock: () => set({ unlocked: true }),
       toggleRainbow: () => set((s) => ({ rainbow: !s.rainbow })),
       togglePartyMode: () => set((s) => ({ partyMode: !s.partyMode })),
       toggleVinylSpin: () => set((s) => ({ vinylSpin: !s.vinylSpin })),

@@ -8,9 +8,9 @@ import { useEqStore } from "../stores/eqStore"
 import { useDeviceStore } from "../stores/deviceStore"
 import { useAudioSettingsStore } from "../stores/audioSettingsStore"
 import { useVisualizerStore } from "../stores/visualizerStore"
-import { engine } from "../audio/WebAudioEngine"
+import { engine } from "../audio/RustAudioEngine"
 import { formatMs } from "../lib/formatters"
-import { IconBlockquote, IconZzz, IconActivity, IconMaximize, IconAdjustments, IconPlaylist, IconVolume, IconVolume2, IconVolumeOff, IconHeadphones, IconArrowsCross } from "@tabler/icons-react"
+import { IconBlockquote, IconZzz, IconActivity, IconMaximize, IconAdjustments, IconPlaylist, IconVolume, IconVolume2, IconVolumeOff, IconHeadphones } from "@tabler/icons-react"
 import { useCapability } from "../hooks/useCapability"
 import { useLongPress } from "../hooks/useLongPress"
 import EqPanel from "./EqPanel"
@@ -277,6 +277,7 @@ export function Player() {
   const {
     currentTrack,
     isPlaying,
+    isBuffering,
     volume,
     shuffle,
     repeat,
@@ -302,6 +303,7 @@ export function Player() {
   } = usePlayerStore(useShallow(s => ({
     currentTrack: s.currentTrack,
     isPlaying: s.isPlaying,
+    isBuffering: s.isBuffering,
     volume: s.volume,
     shuffle: s.shuffle,
     repeat: s.repeat,
@@ -355,7 +357,6 @@ export function Player() {
     toggleArtExpanded: s.toggleArtExpanded,
   })))
   const { enabled: eqEnabled, syncToEngine } = useEqStore(useShallow(s => ({ enabled: s.enabled, syncToEngine: s.syncToEngine })))
-  const cfWindowMs = useAudioSettingsStore(s => s.crossfadeWindowMs)
   const syncAudioSettings = useAudioSettingsStore(s => s.syncToEngine)
   const hasRadio = useCapability("radio")
   const hasDjModes = useCapability("djModes")
@@ -500,8 +501,6 @@ export function Player() {
 
   // Short DJ name (strip "DJ " prefix) for inline display
   const djShortName = djMode ? DJ_MODES.find(d => d.key === djMode)?.name.replace("DJ ", "") ?? djMode : null
-
-  const cfActive = cfWindowMs > 0
 
   // When internet radio is active, show the radio-specific player bar
   if (isInternetRadioActive) return <RadioPlayerBar />
@@ -735,7 +734,12 @@ export function Player() {
                   {...playPauseLongPress}
                   className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--text-primary)] text-[var(--bg-base)] hover:scale-[1.06] select-none"
                 >
-                  {isPlaying ? (
+                  {isBuffering ? (
+                    <svg className="animate-spin" height="16" width="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="8" cy="8" r="6" strokeOpacity="0.25" />
+                      <path d="M8 2a6 6 0 0 1 6 6" strokeLinecap="round" />
+                    </svg>
+                  ) : isPlaying ? (
                     <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
                       <path d="M2.7 1a.7.7 0 0 0-.7.7v12.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V1.7a.7.7 0 0 0-.7-.7H2.7zm8 0a.7.7 0 0 0-.7.7v12.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V1.7a.7.7 0 0 0-.7-.7h-2.6z" />
                     </svg>
@@ -811,16 +815,6 @@ export function Player() {
                   {(close) => <DjPanel onClose={close} />}
                 </PlayerPopover>}
 
-                {/* Crossfade indicator */}
-                {cfActive && (
-                  <div
-                    title={`Crossfade: ${cfWindowMs / 1000}s`}
-                    className="flex items-center gap-1 rounded-full bg-accent/15 px-2.5 h-7 text-accent"
-                  >
-                    <IconArrowsCross size={14} stroke={1.5} />
-                    <span className="text-[0.6875rem] font-semibold">{cfWindowMs / 1000}s</span>
-                  </div>
-                )}
 
                 {/* Lyrics — only shown when lyrics are available */}
                 {hasLyrics && lyricsLines !== null && (

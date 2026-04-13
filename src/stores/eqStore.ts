@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import { engine } from "../audio/WebAudioEngine"
+import { engine } from "../audio/RustAudioEngine"
 
 // ---------------------------------------------------------------------------
 // Constants

@@ -1,106 +1,45 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import { engine } from "../audio/WebAudioEngine"
+import { engine } from "../audio/RustAudioEngine"
 
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
 interface AudioSettingsState {
-  normalizationEnabled: boolean
-  crossfadeWindowMs: number
-  sameAlbumCrossfade: boolean
-  smartCrossfade: boolean
-  smartCrossfadeMaxMs: number
-  mixrampDb: number
-  preampDb: number
-  albumGainMode: boolean
+  cacheMaxBytes: number
 
-  setNormalizationEnabled: (enabled: boolean) => void
-  setCrossfadeWindowMs: (ms: number) => void
-  setSameAlbumCrossfade: (enabled: boolean) => void
-  setSmartCrossfade: (enabled: boolean) => void
-  setSmartCrossfadeMaxMs: (ms: number) => void
-  setMixrampDb: (db: number) => void
-  setPreampDb: (db: number) => void
-  setAlbumGainMode: (enabled: boolean) => void
+  setCacheMaxBytes: (bytes: number) => void
   syncToEngine: () => void
 }
 
 export const useAudioSettingsStore = create<AudioSettingsState>()(
   persist(
     (set, get) => ({
-      normalizationEnabled: true,
-      crossfadeWindowMs: 4000,
-      sameAlbumCrossfade: false,
-      smartCrossfade: true,
-      smartCrossfadeMaxMs: 20000,
-      mixrampDb: -17,
-      preampDb: 0,
-      albumGainMode: false,
+      cacheMaxBytes: 5 * 1024 * 1024 * 1024, // 5 GB default
 
-      setNormalizationEnabled: (enabled) => {
-        set({ normalizationEnabled: enabled })
-        engine.setNormalizationEnabled(enabled)
-      },
-
-      setCrossfadeWindowMs: (ms) => {
-        set({ crossfadeWindowMs: ms })
-        engine.setCrossfadeWindow(ms)
-      },
-
-      setSameAlbumCrossfade: (enabled) => {
-        set({ sameAlbumCrossfade: enabled })
-        engine.setSameAlbumCrossfade(enabled)
-      },
-
-      setSmartCrossfade: (enabled) => {
-        set({ smartCrossfade: enabled })
-        engine.setSmartCrossfade(enabled)
-      },
-
-      setSmartCrossfadeMaxMs: (ms) => {
-        set({ smartCrossfadeMaxMs: ms })
-        engine.setSmartCrossfadeMax(ms)
-      },
-
-      setMixrampDb: (db) => {
-        set({ mixrampDb: db })
-        engine.setMixrampDb(db)
-      },
-
-      setPreampDb: (db) => {
-        set({ preampDb: db })
-        engine.setPreampGain(db)
-      },
-
-      setAlbumGainMode: (enabled) => {
-        set({ albumGainMode: enabled })
-        // No direct engine call needed — gain value is resolved at play time
+      setCacheMaxBytes: (bytes) => {
+        set({ cacheMaxBytes: bytes })
+        engine.setCacheMaxBytes(bytes)
       },
 
       syncToEngine: () => {
-        const { normalizationEnabled, crossfadeWindowMs, sameAlbumCrossfade, smartCrossfade, smartCrossfadeMaxMs, mixrampDb, preampDb } = get()
-        engine.setNormalizationEnabled(normalizationEnabled)
-        engine.setCrossfadeWindow(crossfadeWindowMs)
-        engine.setSameAlbumCrossfade(sameAlbumCrossfade)
-        engine.setSmartCrossfade(smartCrossfade)
-        engine.setSmartCrossfadeMax(smartCrossfadeMaxMs)
-        engine.setMixrampDb(mixrampDb)
-        engine.setPreampGain(preampDb)
+        const { cacheMaxBytes } = get()
+        // Hardcoded defaults — always on, not user-configurable
+        engine.setNormalizationEnabled(true)
+        engine.setPreampGain(3) // +3 dB default pre-amp
+        engine.setCrossfadeWindow(4000)
+        engine.setSameAlbumCrossfade(false) // gapless for albums
+        engine.setSmartCrossfade(true) // always use MixRamp when available
+        engine.setSmartCrossfadeMax(20000)
+        engine.setMixrampDb(-17)
+        engine.setCacheMaxBytes(cacheMaxBytes)
       },
     }),
     {
       name: "plex-audio-settings-v1",
       partialize: (state) => ({
-        normalizationEnabled: state.normalizationEnabled,
-        crossfadeWindowMs: state.crossfadeWindowMs,
-        sameAlbumCrossfade: state.sameAlbumCrossfade,
-        smartCrossfade: state.smartCrossfade,
-        smartCrossfadeMaxMs: state.smartCrossfadeMaxMs,
-        mixrampDb: state.mixrampDb,
-        preampDb: state.preampDb,
-        albumGainMode: state.albumGainMode,
+        cacheMaxBytes: state.cacheMaxBytes,
       }),
     },
   ),

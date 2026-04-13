@@ -5,7 +5,7 @@ import { idbJSONStorage } from "./idbStorage"
 import type { RadioStation } from "../lib/radiobrowser"
 import { radiobrowserClick } from "../lib/radiobrowser"
 import { radioPlay, radioStop, radioPause, radioResume, radioSetVolume, radioOnEvents } from "../lib/radioAudio"
-import { engine } from "../audio/WebAudioEngine"
+import { engine } from "../audio/RustAudioEngine"
 import { usePlayerStore } from "./playerStore"
 import { parseIcyString } from "../lib/icyParser"
 

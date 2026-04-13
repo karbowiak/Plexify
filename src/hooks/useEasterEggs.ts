@@ -1,9 +1,7 @@
-import { useEffect, useRef } from "react"
+import { useEffect } from "react"
 import { useEasterEggStore } from "../stores/easterEggStore"
 import { useAccentStore, applyAccent } from "../stores/accentStore"
 import { useVisualizerStore } from "../stores/visualizerStore"
-
-const UNLOCK_TRIGGER = "itseasterbunny"
 
 function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   s /= 100; l /= 100
@@ -14,23 +12,6 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 }
 
 export function useEasterEggs() {
-  const bufRef = useRef("")
-
-  // Keystroke detection: typing "itseasterbunny" unlocks the easter eggs section
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return
-      if (e.key.length !== 1) return
-      bufRef.current = (bufRef.current + e.key.toLowerCase()).slice(-UNLOCK_TRIGGER.length)
-      if (bufRef.current === UNLOCK_TRIGGER) {
-        useEasterEggStore.getState().unlock()
-        bufRef.current = ""
-      }
-    }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [])
 
   // Rainbow mode: cycle --accent / --accent-rgb CSS variables
   const rainbow = useEasterEggStore(s => s.rainbow)

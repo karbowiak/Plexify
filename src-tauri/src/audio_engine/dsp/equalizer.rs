@@ -1,0 +1,127 @@
+//! 10-band parametric EQ matching the JS engine's BiquadFilterNode configuration.
+//!
+//! Bands: 32, 64, 125, 250, 500, 1K, 2K, 4K, 8K, 16K Hz
+//! Types: lowshelf (32Hz), peaking (64-8000Hz), highshelf (16kHz)
+//! Q values: 0.7 (shelves), 1.4 (peaking)
+
+use super::biquad::{BiquadFilter, BiquadType};
+use super::traits::DspBlock;
+
+pub const NUM_BANDS: usize = 10;
+
+const EQ_FREQS: [f64; NUM_BANDS] = [
+    32.0, 64.0, 125.0, 250.0, 500.0,
+    1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+];
+
+pub struct Equalizer {
+    enabled: bool,
+    filters: [BiquadFilter; NUM_BANDS],
+}
+
+impl Equalizer {
+    pub fn new(sample_rate: u32) -> Self {
+        let filters = std::array::from_fn(|i| {
+            let (ftype, q) = match i {
+                0 => (BiquadType::Lowshelf, 0.7),
+                9 => (BiquadType::Highshelf, 0.7),
+                _ => (BiquadType::Peaking, 1.4),
+            };
+            BiquadFilter::new(ftype, EQ_FREQS[i], q, sample_rate)
+        });
+        Self {
+            enabled: false,
+            filters,
+        }
+    }
+
+    /// Set all 10 band gains at once (in dB).
+    pub fn set_gains(&mut self, gains_db: &[f32; NUM_BANDS]) {
+        for (filter, &db) in self.filters.iter_mut().zip(gains_db.iter()) {
+            filter.set_gain_db(if self.enabled { db as f64 } else { 0.0 });
+        }
+    }
+
+    /// Update sample rate on all filters (e.g., when output device changes).
+    pub fn set_sample_rate(&mut self, rate: u32) {
+        for f in &mut self.filters {
+            f.set_sample_rate(rate);
+        }
+    }
+
+    /// Reset all filter states (call on track change or seek).
+    pub fn reset(&mut self) {
+        for f in &mut self.filters {
+            f.reset();
+        }
+    }
+}
+
+impl DspBlock for Equalizer {
+    fn set_enabled(&mut self, enabled: bool) { self.enabled = enabled; }
+
+    fn process(&mut self, samples: &mut [f32], _sample_rate: u32, channels: u16) {
+        if !self.enabled {
+            return;
+        }
+        for filter in &mut self.filters {
+            filter.process(samples, channels);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flat_eq_is_near_passthrough() {
+        let mut eq = Equalizer::new(44100);
+        eq.set_enabled(true);
+        eq.set_gains(&[0.0; NUM_BANDS]);
+
+        // Generate 1 second of white-ish noise
+        let n = 44100;
+        let mut samples: Vec<f32> = (0..n).map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0).collect();
+        let orig = samples.clone();
+        eq.process(&mut samples, 44100, 1);
+
+        // Allow small numerical difference from filter processing
+        let max_diff: f32 = samples.iter().zip(orig.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_diff < 0.01, "flat EQ should be near-passthrough, max_diff={}", max_diff);
+    }
+
+    #[test]
+    fn disabled_is_passthrough() {
+        let mut eq = Equalizer::new(44100);
+        eq.set_enabled(false);
+        eq.set_gains(&[12.0; NUM_BANDS]); // gains set but disabled
+
+        let mut samples = vec![0.5f32, -0.5, 0.3, -0.3];
+        let orig = samples.clone();
+        eq.process(&mut samples, 44100, 2);
+        assert_eq!(samples, orig);
+    }
+
+    #[test]
+    fn bass_boost_increases_low_frequency_energy() {
+        let mut eq = Equalizer::new(44100);
+        eq.set_enabled(true);
+        let mut gains = [0.0f32; NUM_BANDS];
+        gains[0] = 12.0; // 32Hz lowshelf +12dB
+        gains[1] = 12.0; // 64Hz +12dB
+        eq.set_gains(&gains);
+
+        // Generate low frequency sine (50Hz)
+        let n = 44100;
+        let mut samples: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * 50.0 * i as f32 / 44100.0).sin())
+            .collect();
+        let orig_energy: f32 = samples.iter().map(|s| s * s).sum();
+        eq.process(&mut samples, 44100, 1);
+        let boosted_energy: f32 = samples.iter().map(|s| s * s).sum();
+        assert!(boosted_energy > orig_energy * 2.0, "bass boost should increase 50Hz energy");
+    }
+}

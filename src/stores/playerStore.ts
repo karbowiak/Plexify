@@ -2,11 +2,10 @@ import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { listen } from "@tauri-apps/api/event"
 import { fireAndForget } from "../lib/async"
-import { engine } from "../audio/WebAudioEngine"
+import { engine } from "../audio/RustAudioEngine"
 import type { MusicTrack } from "../types/music"
 import type { LevelData, LyricLineData } from "../providers/types"
 import { useProviderStore } from "./providerStore"
-import { useAudioSettingsStore } from "./audioSettingsStore"
 import { useNotificationStore } from "./notificationStore"
 import { evictMap } from "./cacheUtils"
 import { sendNotification } from "@tauri-apps/plugin-notification"
@@ -435,6 +434,22 @@ export function prefetchTrackAudio(track: MusicTrack): void {
 const _gainCache = new Map<string, { trackGain: number | null; albumGain: number | null }>()
 
 /**
+ * Detect whether we're playing in an album context: the track's neighbors
+ * in the queue share the same albumId. When true, album gain is preferred
+ * to preserve intended loudness relationships within the album.
+ */
+function isPlayingAlbumContext(track: MusicTrack): boolean {
+  if (!track.albumId) return false
+  const state = usePlayerStore.getState()
+  const idx = state.queue.findIndex(t => t.id === track.id)
+  if (idx < 0) return false
+  // Check if the previous or next track is from the same album
+  const prev = idx > 0 ? state.queue[idx - 1] : null
+  const next = idx < state.queue.length - 1 ? state.queue[idx + 1] : null
+  return (prev?.albumId === track.albumId) || (next?.albumId === track.albumId)
+}
+
+/**
  * Session-level waveform stream-ID cache: track id → audio stream id (null = "no audio stream").
  * Same fallback pattern as _gainCache — list endpoints don't include Stream sub-elements.
  */
@@ -469,14 +484,15 @@ async function fetchAudioStreamId(track: MusicTrack): Promise<number | null> {
 /**
  * Get the gain for a track, fetching full metadata if the track object
  * has no stream data (which happens for tracks loaded via list endpoints).
- * Respects `audioSettingsStore.albumGainMode` — uses album_gain when enabled.
+ * Uses album gain when playing within an album context (consecutive tracks
+ * share the same albumId), track gain otherwise.
  */
 async function fetchGainDb(track: MusicTrack): Promise<number | null> {
-  const { albumGainMode } = useAudioSettingsStore.getState()
-
-  // Helper to pick the right gain value
+  // Detect album context: if the queue has consecutive same-album tracks,
+  // use album gain to preserve intended relative loudness within the album.
+  const useAlbumGain = isPlayingAlbumContext(track)
   const pickGain = (trackGain: number | null, albumGain: number | null) =>
-    albumGainMode ? (albumGain ?? trackGain) : trackGain
+    useAlbumGain ? (albumGain ?? trackGain) : trackGain
 
   // Fast path: gain already on the MusicTrack (mapped from stream data)
   if (track.gain !== null || track.albumGain !== null) {
